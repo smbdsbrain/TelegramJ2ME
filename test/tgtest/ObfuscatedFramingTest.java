@@ -9,7 +9,10 @@ import tg.crypto.Rng;
 import tg.crypto.Sha256;
 import tg.io.ObfuscatedTransport;
 import tg.io.Transport;
+import tg.mt.Abridged;
 import tg.mt.Intermediate;
+import tg.mt.MsgIdGen;
+import tg.mt.MtPlain;
 import tg.mt.ProxySecret;
 
 /** Wire-level obfuscated2 and intermediate framing tests. */
@@ -22,6 +25,7 @@ public final class ObfuscatedFramingTest implements Test
         obfuscatedHeaderAndStream();
         intermediateSend();
         paddedReceiveAndErrors();
+        overPaddedFrames();
     }
 
     private void obfuscatedHeaderAndStream() throws Exception
@@ -126,6 +130,85 @@ public final class ObfuscatedFramingTest implements Test
             new Intermediate(new MemoryTransport(truncated),
                     Rng.forTesting(Assert.ascii("short")), false, true).receive();
             Assert.fail("truncated intermediate packet accepted");
+        }
+        catch (IOException expected) { }
+    }
+
+    /**
+     * A live MTProxy answered res_pq with 22 bytes of transport padding, well
+     * past the documented 0-15, and the frame layer rejected the whole packet.
+     * The padded-intermediate length is recoverable from the MTProto envelope,
+     * so the tail size is not ours to police - only the envelope has to fit.
+     */
+    private void overPaddedFrames() throws Exception
+    {
+        byte[] plain = new byte[100];        // 20-byte header + an 80-byte resPQ
+        putLe(plain, 16, 80);
+        for (int i = 0; i < 80; i++) { plain[20 + i] = (byte) (i + 1); }
+
+        Intermediate frame = new Intermediate(new MemoryTransport(frame(plain, 22)),
+                Rng.forTesting(Assert.ascii("over-padded")), true, true);
+        Assert.equal("res_pq recovered from an over-padded frame", 100, frame.receive());
+
+        // What actually failed on the handset was the whole plaintext path, so
+        // assert the body arrives intact rather than just the framing length.
+        MtPlain mtPlain = new MtPlain(
+                new Intermediate(new MemoryTransport(frame(plain, 22)),
+                        Rng.forTesting(Assert.ascii("over-padded-plain")), true, true),
+                new MsgIdGen());
+        Assert.bytesEqual("over-padded body reaches MtPlain intact",
+                slice(plain, 20, 80), mtPlain.receive());
+
+        // A bare transport error is four bytes, but a padding-happy carrier
+        // pads that too, and -404 is worth far more than "packet is too short".
+        int[] errorPadding = { 0, 3, 15, 31 };
+        for (int i = 0; i < errorPadding.length; i++)
+        {
+            byte[] code = { 0x6c, (byte) 0xfe, (byte) 0xff, (byte) 0xff };   // -404
+            Intermediate errorFrame = new Intermediate(
+                    new MemoryTransport(frame(code, errorPadding[i])),
+                    Rng.forTesting(Assert.ascii("err" + errorPadding[i])), true, true);
+            int len = errorFrame.receive();
+            Assert.equal("padded transport error stays 4 bytes", 4, len);
+            Assert.equal("padded transport error decodes", -404,
+                         Abridged.asTransportError(errorFrame.buffer(), len));
+        }
+
+        // Encrypted frames cannot be relaxed the same way: the length is only
+        // recoverable modulo the AES block, so a full hidden block is invisible
+        // here and only the msg_key check downstream can catch it.
+        byte[] encrypted = new byte[40];
+        encrypted[0] = 1;
+        for (int pad = 0; pad <= 15; pad++)
+        {
+            Intermediate strict = new Intermediate(new MemoryTransport(frame(encrypted, pad)),
+                    Rng.forTesting(Assert.ascii("enc" + pad)), true, true);
+            Assert.equal("encrypted length recovered with " + pad + " padding",
+                         40, strict.receive());
+        }
+        Intermediate hidden = new Intermediate(new MemoryTransport(frame(encrypted, 16)),
+                Rng.forTesting(Assert.ascii("enc16")), true, true);
+        Assert.equal("a whole hidden block is invisible to the frame layer",
+                     56, hidden.receive());
+
+        // Relaxing the tail must not weaken desync detection: the envelope
+        // still has to fit inside the frame that was actually read.
+        byte[] lying = new byte[40];
+        putLe(lying, 16, 1000);
+        try
+        {
+            new Intermediate(new MemoryTransport(frame(lying, 0)),
+                    Rng.forTesting(Assert.ascii("lying")), true, true).receive();
+            Assert.fail("plaintext body length outside the frame accepted");
+        }
+        catch (IOException expected) { }
+
+        byte[] small = new byte[20];
+        try
+        {
+            new Intermediate(new MemoryTransport(frame(small, Intermediate.MAX_PADDING + 1)),
+                    Rng.forTesting(Assert.ascii("flood")), true, true).receive();
+            Assert.fail("unbounded padding accepted");
         }
         catch (IOException expected) { }
     }

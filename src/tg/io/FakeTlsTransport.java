@@ -16,12 +16,16 @@ public final class FakeTlsTransport implements Transport
 {
     private static final int MAX_RECORD = 16384;
 
+    /** Above this a record buffer is used once and dropped rather than retained. */
+    private static final int MAX_REUSED_RECORD = 4096;
+
     private final Transport delegate;
     private final Rng rng;
     private final byte[] secret;
     private final String domain;
 
     private byte[] readBuffer = new byte[0];
+    private byte[] writeRecord = new byte[0];
     private int readAt;
     private boolean firstWrite;
 
@@ -82,9 +86,22 @@ public final class FakeTlsTransport implements Transport
                 delegate.write(ccs, 0, ccs.length);
                 firstWrite = false;
             }
-            byte[] head = { 0x17, 0x03, 0x03, (byte) (n >>> 8), (byte) n };
-            delegate.write(head, 0, head.length);
-            delegate.write(buf, off, n);
+            // Header and body go out together. The socket underneath is
+            // unbuffered on the device, so writing them separately put a
+            // 5-byte TCP segment ahead of every record.
+            byte[] record = writeRecord;
+            if (record.length < 5 + n)
+            {
+                record = new byte[5 + n];
+                if (5 + n <= MAX_REUSED_RECORD) { writeRecord = record; }
+            }
+            record[0] = 0x17;
+            record[1] = 0x03;
+            record[2] = 0x03;
+            record[3] = (byte) (n >>> 8);
+            record[4] = (byte) n;
+            System.arraycopy(buf, off, record, 5, n);
+            delegate.write(record, 0, 5 + n);
             off += n;
             len -= n;
         }

@@ -23,6 +23,92 @@ public final class TransportPhase1Test implements Test
         x25519Points();
         http();
         fakeTls();
+        fakeTlsRecordFraming();
+    }
+
+    /**
+     * Record boundaries are the proxy's choice, not ours: a packet may arrive
+     * split across records with a ChangeCipherSpec wedged in between, and our
+     * own packets must leave as one record each.
+     */
+    private void fakeTlsRecordFraming() throws Exception
+    {
+        byte[] secret = Assert.unhex("00112233445566778899aabbccddeeff");
+        FakeServerTransport raw = new FakeServerTransport(secret);
+        FakeTlsTransport tls = new FakeTlsTransport(raw,
+                Rng.forTesting(Assert.ascii("record-framing")), secret, "example.com");
+        tls.connect("proxy", 443, 1000);
+
+        byte[] whole = Assert.ascii("sixteen-byte-pkt");
+        ByteArrayOutputStream split = new ByteArrayOutputStream();
+        appendRecord(split, 0x17, whole, 0, 6);
+        appendRecord(split, 0x14, new byte[] { 1 }, 0, 1);
+        appendRecord(split, 0x17, whole, 6, whole.length - 6);
+        raw.queueRaw(split.toByteArray());
+
+        byte[] rejoined = new byte[whole.length];
+        tls.readFully(rejoined, 0, rejoined.length);
+        Assert.bytesEqual("packet rejoined across a record boundary", whole, rejoined);
+
+        // The send side, through the same stack the MTProxy route builds. It
+        // needs its own server: ObfuscatedTransport.connect reruns the FakeTLS
+        // handshake underneath it.
+        FakeServerTransport sendRaw = new FakeServerTransport(secret);
+        Transport obfs = new tg.io.ObfuscatedTransport(
+                new FakeTlsTransport(sendRaw,
+                        Rng.forTesting(Assert.ascii("record-framing-tls")),
+                        secret, "example.com"),
+                Rng.forTesting(Assert.ascii("record-framing-obfs")),
+                tg.io.ObfuscatedTransport.PROTOCOL_PADDED_INTERMEDIATE, 2, null);
+        obfs.connect("proxy", 443, 1000);
+        sendRaw.afterHello.reset();
+
+        tg.mt.Intermediate frame = new tg.mt.Intermediate(obfs,
+                Rng.forTesting(Assert.ascii("record-framing-frame")), true, true);
+        byte[] packet = new byte[20];
+        frame.send(packet, 0, packet.length);
+
+        int[] lengths = recordLengths(sendRaw.afterHello.toByteArray());
+        Assert.equal("a padded packet leaves as one TLS record", 1, lengths.length);
+        // Real TLS 1.3 cannot produce an application-data record below 17 bytes
+        // (one content-type byte plus a 16-byte AEAD tag), so anything smaller
+        // is a giveaway that this is not TLS at all.
+        Assert.isTrue("record is not impossibly small for TLS 1.3", lengths[0] >= 17);
+        Assert.isTrue("record carries length prefix, payload and padding",
+                      lengths[0] >= 24 && lengths[0] <= 24 + 15);
+    }
+
+    private static void appendRecord(ByteArrayOutputStream out, int type,
+                                     byte[] body, int off, int len)
+    {
+        out.write(type); out.write(3); out.write(3);
+        out.write(len >>> 8); out.write(len & 0xff);
+        out.write(body, off, len);
+    }
+
+    /** Lengths of the 0x17 records in a raw TLS stream, in order. */
+    private static int[] recordLengths(byte[] stream)
+    {
+        int count = 0;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int[] out = pass == 0 ? null : new int[count];
+            int at = 0;
+            count = 0;
+            while (at + 5 <= stream.length)
+            {
+                int type = stream[at] & 0xff;
+                int len = ((stream[at + 3] & 0xff) << 8) | (stream[at + 4] & 0xff);
+                if (type == 0x17)
+                {
+                    if (out != null) { out[count] = len; }
+                    count++;
+                }
+                at += 5 + len;
+            }
+            if (out != null) { return out; }
+        }
+        return new int[0];
     }
 
     private void x25519Points()
@@ -215,6 +301,13 @@ public final class TransportPhase1Test implements Test
                 if (n < 0) { throw new IOException("fake server eof"); }
                 got += n;
             }
+        }
+
+        /** Feed an already-framed TLS record stream, boundaries and all. */
+        void queueRaw(byte[] records)
+        {
+            input = records;
+            inputAt = 0;
         }
 
         void queueApplication(byte[] payload)
