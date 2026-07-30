@@ -1,5 +1,9 @@
 # TelegramJ2ME
 
+[![CI](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml/badge.svg)](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/smbdsbrain/TelegramJ2ME?sort=semver)](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)
+[![License: WTFPL](https://img.shields.io/badge/license-WTFPL-blue.svg)](LICENSE)
+
 Telegram messaging on phones from the Java ME era.
 
 TelegramJ2ME is an experimental client that speaks **MTProto 2.0 directly on
@@ -28,6 +32,35 @@ UI, including a 320×240 landscape layout.
 > Runtime testing has only been performed in MicroEmulator. TelegramJ2ME has
 > not yet been tested on a physical Java ME phone, so hardware compatibility,
 > performance, permissions and installation behaviour remain unverified.
+
+---
+
+## Install
+
+Prebuilt MIDlets are attached to every release:
+**[latest release](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)**.
+
+Download **both files** of one variant into the **same folder**, copy that folder to
+the phone (USB, Bluetooth or memory card), then open the `.jad` from the phone's file
+manager. If the handset refuses the `.jad`, open the `.jar` instead — most will
+install it directly.
+
+| Variant | When |
+|---|---|
+| `TelegramJ2ME-<version>.jar` + `.jad` | Start here. Crash reports name real classes, which is worth a lot while the client is this young. |
+| `TelegramJ2ME-<version>-min.jar` + `.jad` | Optimised and obfuscated, roughly 30% smaller. Use it if your phone rejects the normal build as too large. |
+
+The `.jad` records the exact byte size of its `.jar`, so don't rename either file and
+don't mix files from different variants or releases — the AMS aborts the install on a
+one-byte disagreement. Checksums are published as `SHA256SUMS.txt`.
+
+Opening the release link in the phone's own browser to install over the air will not
+work: GitHub requires modern TLS, which these handsets do not have.
+
+> [!IMPORTANT]
+> Nobody has run this on a physical phone yet. Installing it and reporting what
+> happens is genuinely useful — the handset model plus whatever
+> `TelegramJ2ME Probe` reports is exactly the missing information.
 
 ---
 
@@ -74,7 +107,8 @@ The build detects it automatically and switches to WTK's `cldcapi11.jar` /
 |---|---|---|---|
 | `dist/probe.jar` | ~38 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
 | `dist/crypto.jar` | ~54 KB | + the crypto stack | vectors and benchmarks on the device |
-| `dist/tg.jar` | ~193 KB | full client | the messenger |
+| `dist/tg.jar` | ~393 KB | full client | the messenger |
+| `dist/tg.jar` with `-Release` | ~285 KB | full client, optimised + obfuscated | when the handset caps install size |
 
 `probe.jar` deliberately excludes crypto and Telegram code so ProGuard shrinks
 it to something small enough to sideload and reinstall quickly on a 2011 phone.
@@ -83,6 +117,20 @@ it to something small enough to sideload and reinstall quickly on a 2011 phone.
 ./tools/build.ps1 -Target probe
 ./tools/build.ps1 -Target crypto
 ./tools/build.ps1 -Target tg -Env production
+./tools/build.ps1 -Target tg -Env production -Release   # smaller, obfuscated
+```
+
+Every build preverifies (`-microedition`), so both variants carry the CLDC
+`StackMap` the handset's verifier demands. `-Release` additionally drops
+[config/proguard-debug.pro](config/proguard-debug.pro), which is the file that
+otherwise holds `-dontoptimize` / `-dontobfuscate`.
+
+`-ArtifactName` renames the pair and rewrites `MIDlet-Jar-URL` to match, which is
+how releases produce versioned filenames:
+
+```powershell
+./tools/build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-0.1.0
+./tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.1.0
 ```
 
 ### Live testing against real servers
@@ -171,6 +219,13 @@ Both `secrets/` and `generated/` are gitignored, so the values reach the JAR
 without ever reaching git — `bootstrap.ps1` verifies that and fails if the
 secrets file is not ignored.
 
+`TG_API_ID` / `TG_API_HASH` environment variables take precedence over the file.
+That is how CI injects repository secrets without writing them to the runner's
+disk; see [docs/releasing.md](docs/releasing.md).
+
+Builds without credentials still succeed — `Secrets.CONFIGURED` becomes `false`
+and API-layer calls fail — so forks and pull requests need no setup.
+
 **Never** commit `api_id`, `api_hash`, a phone number, or an `auth_key`.
 
 Before publishing or contributing, run the repository audit:
@@ -183,6 +238,11 @@ It checks the complete would-be commit set, verifies that private directories
 are excluded, looks for common credential formats and confirms that exact
 values from local secret files do not appear elsewhere. Match contents are
 never printed.
+
+It also warns about commits that were pushed and later force-pushed away. A
+clean working tree does not unpublish those: GitHub keeps serving the orphaned
+commit at `/commit/<sha>` with nothing in the UI to suggest it exists, so
+rewriting history is not a way to retract a file that has already been pushed.
 
 Which data centres a build talks to is a build flag, not a config value: an
 `auth_key` is bound to one environment, so flipping it at runtime with a stale

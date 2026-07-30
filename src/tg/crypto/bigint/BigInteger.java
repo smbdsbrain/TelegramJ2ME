@@ -275,7 +275,7 @@ public class BigInteger
             primeProducts[i] = product;
         }
     }
-
+    
     private int sign; // -1 means -ve; +1 means +ve; 0 means 0;
     private int[] magnitude; // array of ints with [0] being the most significant
     private int nBits = -1; // cache bitCount() value
@@ -402,7 +402,7 @@ public class BigInteger
 
     /**
      * If sign >= 0, packs bytes into an array of ints, most significant first
-     * If sign <  0, packs 2's complement of bytes into
+     * If sign <  0, packs 2's complement of bytes into 
      * an array of ints, most significant first,
      * adding an extra most significant byte in case bval = {0x80, 0x00, ..., 0x00}
      *
@@ -427,7 +427,7 @@ public class BigInteger
             }
 
             int nInts = (bval.length - firstSignificant + 3) / 4;
-            int bCount = (bval.length - firstSignificant) % 4;
+            int bCount = (bval.length - firstSignificant) % 4;            
             if (bCount == 0)
                 bCount = 4;
             // n = k * (n / k) + n % k
@@ -467,7 +467,7 @@ public class BigInteger
             int i;
             int[] mag;
             int firstSignificant;
-
+            
 
             // strip leading -1's
             for (firstSignificant = 0; firstSignificant < bval.length - 1
@@ -555,8 +555,8 @@ public class BigInteger
             return mag;
         }
     }
-
-
+    
+    
 
     public BigInteger(int sign, byte[] mag) throws NumberFormatException
     {
@@ -619,7 +619,7 @@ public class BigInteger
     private void nextRndBytes(Random rnd, byte[] bytes)
     {
         int numRequested = bytes.length;
-        int numGot = 0,
+        int numGot = 0, 
         r = 0;
 
         // PORT: CLDC has no java.security.SecureRandom. tg.crypto.Rng subclasses
@@ -1773,7 +1773,7 @@ public class BigInteger
         {
             int[] tmp = new int[n];
             System.arraycopy(zVal, 0, tmp, n - zVal.length, zVal.length);
-            zVal = tmp;
+            zVal = tmp;  
         }
 
         // Sliding window from MSW to LSW
@@ -2305,7 +2305,7 @@ public class BigInteger
             {
                 throw new ArithmeticException("Result too large");
             }
-            return ONE.shiftLeft((int)powOf2);
+            return ONE.shiftLeft((int)powOf2); 
         }
 
         BigInteger y = BigInteger.ONE, z = this;
@@ -2343,7 +2343,7 @@ public class BigInteger
 
         return (int) acc;
     }
-
+    
     /**
      * return x = x % y - done in place (y value preserved)
      */
@@ -2379,7 +2379,7 @@ public class BigInteger
             }
             else
             {
-                int len = y.length - yStart;
+                int len = y.length - yStart; 
                 c = new int[len];
                 System.arraycopy(y, yStart, c, 0, len);
             }
@@ -2798,7 +2798,7 @@ public class BigInteger
     {
         if (sign == 0)
         {
-            return new byte[1];
+            return new byte[1]; 
         }
 
         int bitLength = bitLength();
@@ -2871,7 +2871,7 @@ public class BigInteger
         return bytes;
     }
 
-    public BigInteger xor(BigInteger val)
+    public BigInteger xor(BigInteger val) 
     {
         if (this.sign == 0)
         {
@@ -2991,9 +2991,9 @@ public class BigInteger
 
         return result;
     }
-
-    public BigInteger setBit(int n)
-        throws ArithmeticException
+    
+    public BigInteger setBit(int n) 
+        throws ArithmeticException 
     {
         if (n < 0)
         {
@@ -3013,9 +3013,9 @@ public class BigInteger
 
         return or(ONE.shiftLeft(n));
     }
-
-    public BigInteger clearBit(int n)
-        throws ArithmeticException
+    
+    public BigInteger clearBit(int n) 
+        throws ArithmeticException 
     {
         if (n < 0)
         {
@@ -3036,8 +3036,8 @@ public class BigInteger
         return andNot(ONE.shiftLeft(n));
     }
 
-    public BigInteger flipBit(int n)
-        throws ArithmeticException
+    public BigInteger flipBit(int n) 
+        throws ArithmeticException 
     {
         if (n < 0)
         {
@@ -3082,7 +3082,7 @@ public class BigInteger
             rdx = 10;
         }
 
-
+        
         // NOTE: This *should* be unnecessary, since the magnitude *should* never have leading zero digits
         int firstNonZero = 0;
         while (firstNonZero < magnitude.length)
@@ -3321,7 +3321,7 @@ public class BigInteger
         return offset;
     }
 
-    public boolean testBit(int n)
+    public boolean testBit(int n) 
         throws ArithmeticException
     {
         if (n < 0)

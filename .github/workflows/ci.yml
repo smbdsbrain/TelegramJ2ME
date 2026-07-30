@@ -1,0 +1,102 @@
+name: CI
+
+# Builds every target and runs the desktop suite on a clean runner. No secrets
+# are used: without api_id / api_hash the build emits Secrets.CONFIGURED = false
+# and carries on, so pull requests from forks work unchanged.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # The toolchain is Windows PowerShell throughout: tools/_env.ps1 resolves
+    # bin\javac.exe and joins classpaths with ';'. Public repositories get
+    # Windows runner minutes for free.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 9 removed -source 1.3 / -target 1.1, which CLDC 1.1 requires, so 8
+      # is not a preference. Temurin 8 also still ships jre/lib/rt.jar, which
+      # tools/_env.ps1 needs for the fallback bootclasspath when WTK is absent.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Point the toolchain at JDK 8
+        shell: pwsh
+        run: echo "JDK8_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # sdk/ is ~35 MB of pinned downloads, dominated by the ProGuard zip. The
+      # lock file carries the sha256 of every artifact, so its hash is the
+      # correct cache key: change a pin and the cache misses by construction.
+      - name: Cache pinned toolchain
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: sdk-${{ runner.os }}-${{ hashFiles('tools/sdk.lock.json') }}
+
+      - name: Bootstrap
+        shell: pwsh
+        run: ./tools/bootstrap.ps1
+
+      # bootstrap regenerates src/tg/crypto/bigint/BigInteger.java from the
+      # vendored Bouncy Castle source, and that file is committed. If the two
+      # disagree, the checked-in copy was hand-edited or the porter changed -
+      # either way the repository no longer reproduces itself.
+      - name: Checked-in generated sources are reproducible
+        shell: pwsh
+        run: |
+          $dirty = & git status --porcelain
+          if ($dirty) {
+            Write-Host "bootstrap modified tracked files:"
+            $dirty | ForEach-Object { Write-Host "  $_" }
+            & git diff --stat
+            exit 1
+          }
+          Write-Host "clean"
+
+      - name: Desktop test suite
+        shell: pwsh
+        run: ./tools/test.ps1
+
+      # Each target is a different ProGuard entry-point set, so all three have
+      # to be built to know that shrinking still resolves.
+      - name: Build probe
+        shell: pwsh
+        run: ./tools/build.ps1 -Target probe
+
+      - name: Build crypto
+        shell: pwsh
+        run: ./tools/build.ps1 -Target crypto
+
+      - name: Build tg
+        shell: pwsh
+        run: ./tools/build.ps1 -Target tg
+
+      # The obfuscated variant is what release.yml ships as -min. It is only
+      # ever exercised here, so a keep rule that stops covering the code would
+      # otherwise surface for the first time during a release.
+      - name: Build tg (optimised + obfuscated)
+        shell: pwsh
+        run: ./tools/build.ps1 -Target tg -Release -ArtifactName tg-min
+
+      - name: Public audit
+        shell: pwsh
+        run: ./tools/audit-public.ps1
+
+      - name: Report JAR sizes
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -Filter *.jar |
+            Select-Object Name, @{n='KB';e={[math]::Round($_.Length/1KB,1)}} |
+            Format-Table -AutoSize | Out-String | Write-Host

@@ -7,7 +7,10 @@
     protected void destroyApp(boolean);
 }
 
-# The MTProto layer dispatches TL constructors from a generated table. Once
-# generated/ exists, keep its dispatch entry points so shrinking cannot remove
-# a type that is only ever reached by constructor id.
--keep class tg.tl.TlRegistry { *; }
+# No keep rule is needed for the TL layer. tg.tl.TlParser dispatches on an int
+# kind with a switch and tg.api.TlSchema is a data table, so every TL type is
+# reached through an ordinary reference that ProGuard can trace. Nothing is
+# resolved by name, which is also why -Release may obfuscate this target.
+#
+# (There used to be a -keep for tg.tl.TlRegistry here. That class was never
+# written - the rule matched nothing and protected nothing.)

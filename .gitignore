@@ -46,8 +46,19 @@ __pycache__/
 # --- editors / OS ---
 .vscode/
 .idea/
+.claude/
 *.iml
+nbproject/
+.settings/
+.classpath
+.project
 Thumbs.db
 desktop.ini
+.DS_Store
 *~
 *.swp
+*.bak
+# Vendored upstream sources are kept verbatim alongside their port; everything
+# else ending in .orig is an editor/merge leftover.
+*.orig
+!/third_party/**/*.orig

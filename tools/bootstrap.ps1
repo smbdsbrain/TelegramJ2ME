@@ -35,7 +35,7 @@ $lockPath = Join-Path $PSScriptRoot "sdk.lock.json"
 $problems = New-Object System.Collections.ArrayList
 
 Write-Host ""
-Write-Host "j2me-mtproto-client :: bootstrap" -ForegroundColor White
+Write-Host "TelegramJ2ME :: bootstrap" -ForegroundColor White
 Write-Host "repo: $RepoRoot"
 Write-Host ""
 
@@ -241,12 +241,18 @@ Write-Step "Telegram application identity"
 $secrets = Get-TelegramSecrets
 if ($secrets.apiId -gt 0 -and $secrets.apiHash) {
     Write-Ok "$($secrets.source): api_id=$($secrets.apiId), api_hash $(Format-SecretDigest $secrets.apiHash)"
-    $ignored = & git -C $RepoRoot check-ignore $secrets.source 2>$null
-    if ($ignored) {
-        Write-Ok "$($secrets.source) is gitignored"
+    if ($secrets.source -eq "environment") {
+        # TG_API_ID / TG_API_HASH came from the environment (CI), so there is no
+        # file on disk that could be committed and nothing to gitignore.
+        Write-Ok "credentials come from the environment - nothing written to disk"
     } else {
-        Write-Bad "$($secrets.source) is NOT gitignored - it will be committed."
-        [void]$problems.Add("secrets-not-ignored")
+        $ignored = & git -C $RepoRoot check-ignore $secrets.source 2>$null
+        if ($ignored) {
+            Write-Ok "$($secrets.source) is gitignored"
+        } else {
+            Write-Bad "$($secrets.source) is NOT gitignored - it will be committed."
+            [void]$problems.Add("secrets-not-ignored")
+        }
     }
 } else {
     Write-Warn2 "no credentials yet - everything up to auth_key generation still works."

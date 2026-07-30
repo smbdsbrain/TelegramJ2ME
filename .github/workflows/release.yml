@@ -1,0 +1,179 @@
+name: Release
+
+# Push a v* tag to publish installable MIDlets on a GitHub Release.
+#
+# workflow_dispatch runs the same build and uploads the artifacts, but does not
+# publish anything - use it to download and try the exact files a release would
+# contain before committing to a tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write        # required by softprops/action-gh-release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Point the toolchain at JDK 8
+        shell: pwsh
+        run: echo "JDK8_HOME=$env:JAVA_HOME" >> $env:GITHUB_ENV
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache pinned toolchain
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: sdk-${{ runner.os }}-${{ hashFiles('tools/sdk.lock.json') }}
+
+      # tools/build.ps1 owns the version; the tag must agree with it. Without
+      # this check a mistyped tag ships a JAD whose MIDlet-Version contradicts
+      # the release it was downloaded from, and the AMS believes the JAD.
+      - name: Resolve and verify version
+        shell: pwsh
+        run: |
+          $m = Select-String -Path tools/build.ps1 -Pattern '^\$AppVersion\s*=\s*"([^"]+)"' |
+                 Select-Object -First 1
+          if (-not $m) { Write-Host 'cannot find $AppVersion in tools/build.ps1'; exit 1 }
+          $version = $m.Matches[0].Groups[1].Value
+          Write-Host "tools/build.ps1 version: $version"
+
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $tag = '${{ github.ref_name }}' -replace '^v', ''
+            if ($tag -ne $version) {
+              Write-Host ('tag "{0}" does not match $AppVersion "{1}".' -f '${{ github.ref_name }}', $version)
+              Write-Host 'Bump $AppVersion in tools/build.ps1, or retag.'
+              exit 1
+            }
+            Write-Host "tag matches"
+          } else {
+            Write-Host "manual run - no tag to verify"
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Bootstrap
+        shell: pwsh
+        run: ./tools/bootstrap.ps1
+
+      - name: Desktop test suite
+        shell: pwsh
+        run: ./tools/test.ps1
+
+      # -Env production is not optional here: the default is Telegram's test
+      # data centres, which hold no real accounts. An auth_key is bound to one
+      # environment, so a test-DC build cannot be fixed at runtime.
+      - name: Build TelegramJ2ME
+        shell: pwsh
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: ./tools/build.ps1 -Target tg -Env production -ArtifactName "TelegramJ2ME-$env:APP_VERSION"
+
+      # Smaller JAR for handsets that cap install size, at the cost of readable
+      # stack traces in bug reports.
+      - name: Build TelegramJ2ME (min)
+        shell: pwsh
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: ./tools/build.ps1 -Target tg -Env production -Release -ArtifactName "TelegramJ2ME-$env:APP_VERSION-min"
+
+      - name: Verify JAD/JAR consistency
+        shell: pwsh
+        run: |
+          $bad = $false
+          foreach ($jad in Get-ChildItem dist -Filter *.jad) {
+            $text = Get-Content $jad.FullName -Raw
+            $url  = ([regex]::Match($text, 'MIDlet-Jar-URL:\s*(.+)')).Groups[1].Value.Trim()
+            $size = [int]([regex]::Match($text, 'MIDlet-Jar-Size:\s*(\d+)')).Groups[1].Value
+            $jar  = Join-Path $jad.DirectoryName $url
+            if (-not (Test-Path $jar)) {
+              Write-Host "$($jad.Name): MIDlet-Jar-URL '$url' does not exist"; $bad = $true; continue
+            }
+            $actual = (Get-Item $jar).Length
+            # A single byte of disagreement here and the handset aborts the
+            # install with an error that names nothing useful.
+            if ($actual -ne $size) {
+              Write-Host "$($jad.Name): MIDlet-Jar-Size $size but $url is $actual bytes"; $bad = $true; continue
+            }
+            Write-Host "$($jad.Name) -> $url ($actual bytes) OK"
+          }
+          if ($bad) { exit 1 }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File |
+            Where-Object { $_.Extension -in '.jar', '.jad' } |
+            Sort-Object Name |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content dist/SHA256SUMS.txt -Encoding ASCII
+          Get-Content dist/SHA256SUMS.txt | Write-Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: midlets
+          path: |
+            dist/TelegramJ2ME-*.jar
+            dist/TelegramJ2ME-*.jad
+            dist/SHA256SUMS.txt
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      # No name: filter, so every artifact lands under dist/<artifact-name>/.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+          body: |
+            TelegramJ2ME ${{ github.ref_name }} — Telegram over MTProto 2.0, directly on a Java ME phone.
+
+            ### Install
+
+            Download **both** files of one variant into the **same folder**, copy that
+            folder to the phone (USB, Bluetooth or memory card), then open the `.jad`
+            in the phone's file manager. If the handset refuses the `.jad`, open the
+            `.jar` instead — most will install it directly.
+
+            | Variant | Use |
+            |---|---|
+            | `TelegramJ2ME-*.jar` + `.jad` | Start here. Crash reports name real classes, which is useful while the client is this young. |
+            | `TelegramJ2ME-*-min.jar` + `.jad` | Optimised and obfuscated — noticeably smaller. Try it if your phone rejects the normal build as too large. |
+
+            The `.jad` records the exact byte size of its `.jar`, so do not rename
+            either file and do not mix files from different variants or releases.
+
+            Installing over the air by opening the release link in the phone's browser
+            will not work: GitHub needs modern TLS, which these handsets do not have.
+
+            Verify downloads against `SHA256SUMS.txt`.
+
+            > **This has never run on a physical phone.** Everything so far was tested
+            > in MicroEmulator. Compatibility, performance and permission behaviour on
+            > real hardware are unknown — reports are genuinely useful, especially with
+            > your handset model and what `TelegramJ2ME Probe` shows.
+
+            TelegramJ2ME is an independent project. It is not affiliated with or
+            endorsed by Telegram, and it is not a security-audited everyday client.

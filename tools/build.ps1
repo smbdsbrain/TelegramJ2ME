@@ -27,9 +27,16 @@
     Turn on ProGuard optimisation and obfuscation. Off by default: readable
     stack traces matter more than bytes until we have hardware results.
 
+.PARAMETER ArtifactName
+    Base name for dist/<name>.jar and dist/<name>.jad. Defaults to the target.
+    The JAD's MIDlet-Jar-URL is derived from it, so renaming the files after the
+    build would break the install - use this instead. Release builds pass a
+    versioned name, e.g. TelegramJ2ME-0.1.0.
+
 .EXAMPLE
     ./tools/build.ps1 -Target probe
     ./tools/build.ps1 -Profile desktop
+    ./tools/build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-0.1.0
 #>
 [CmdletBinding()]
 param(
@@ -45,25 +52,32 @@ param(
     [ValidateSet('test', 'production')][string]$Env = 'test',
     [switch]$Release,
     [switch]$SkipApiCheck,
-    [switch]$Clean
+    [switch]$Clean,
+    [string]$ArtifactName = ""
 )
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_env.ps1"
 
+# Single source of truth for the released version. .github/workflows/release.yml
+# reads this line and refuses to publish if it disagrees with the git tag, so a
+# mistyped tag cannot ship a JAD whose MIDlet-Version is wrong.
 $AppVersion = "0.1.0"
-$AppVendor  = "j2me-mtproto-client"
+$AppVendor  = "smbdsbrain"
 
 $MidletClass = @{
     probe  = "tg.app.ProbeMidlet"
     crypto = "tg.app.CryptoMidlet"
     tg     = "tg.app.TgMidlet"
 }[$Target]
+# What the phone's application menu shows under the icon.
 $MidletName = @{
-    probe  = "TgProbe"
-    crypto = "TgCrypto"
-    tg     = "TgClient"
+    probe  = "TelegramJ2ME Probe"
+    crypto = "TelegramJ2ME Crypto"
+    tg     = "TelegramJ2ME"
 }[$Target]
+
+if (-not $ArtifactName) { $ArtifactName = $Target }
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -274,16 +288,22 @@ if (-not $SkipApiCheck) {
 }
 
 # -- 3. preverify + shrink --------------------------------------------------
-Write-Step "ProGuard (-microedition: preverify + shrink)"
+$pgWhat = if ($Release) { "preverify + shrink + optimise + obfuscate" } else { "preverify + shrink" }
+Write-Step "ProGuard (-microedition: $pgWhat)"
 if (-not (Test-Path $ProGuardJar)) { Write-Bad "proguard.jar missing - run bootstrap.ps1"; exit 1 }
 
 $pgArgs = @(
     "-jar", $ProGuardJar,
     "@$(Join-Path $RepoRoot 'config\proguard-common.pro')",
-    "@$(Join-Path $RepoRoot ("config\proguard-{0}.pro" -f $Target))",
-    "-injars", $classDir,
-    "-outjars", $preverDir
+    "@$(Join-Path $RepoRoot ("config\proguard-{0}.pro" -f $Target))"
 )
+# -dontoptimize / -dontobfuscate are boolean: once ProGuard has seen them no
+# later option can undo them. So the release path omits the file rather than
+# trying to override it.
+if (-not $Release) {
+    $pgArgs += "@$(Join-Path $RepoRoot 'config\proguard-debug.pro')"
+}
+$pgArgs += @("-injars", $classDir, "-outjars", $preverDir)
 foreach ($lib in ($bootCp -split ';')) {
     if ($lib) { $pgArgs += @("-libraryjars", $lib) }
 }
@@ -336,7 +356,7 @@ MicroEdition-Configuration: CLDC-1.1
 "@ -replace "`r`n", "`n" | Set-Content -Path $manifest -Encoding ASCII -NoNewline
 Add-Content -Path $manifest -Value "`n" -Encoding ASCII -NoNewline
 
-$jarPath = Join-Path $distDir "$Target.jar"
+$jarPath = Join-Path $distDir "$ArtifactName.jar"
 if (Test-Path $jarPath) {
     try {
         Remove-Item $jarPath -Force -ErrorAction Stop
@@ -355,7 +375,13 @@ $jarSize = (Get-Item $jarPath).Length
 
 # -- 5. JAD -----------------------------------------------------------------
 # MIDlet-Jar-Size must match the JAR byte-for-byte or the AMS aborts the install.
-$jadPath = Join-Path $distDir "$Target.jad"
+#
+# MIDlet-Jar-URL stays relative on purpose. The realistic install path is
+# "copy both files to the phone and open the .jad", where relative is the only
+# thing that works. An absolute GitHub release URL would not help either: the
+# download redirects to another host, and a 2011 handset's TLS stack cannot
+# negotiate with it anyway.
+$jadPath = Join-Path $distDir "$ArtifactName.jad"
 @"
 MIDlet-Name: $MidletName
 MIDlet-Version: $AppVersion
@@ -363,13 +389,13 @@ MIDlet-Vendor: $AppVendor
 MIDlet-1: $MidletName,,$MidletClass
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
-MIDlet-Jar-URL: $Target.jar
+MIDlet-Jar-URL: $ArtifactName.jar
 MIDlet-Jar-Size: $jarSize
 MIDlet-Description: Direct MTProto 2.0 client, build $buildId
 "@ -replace "`r`n", "`n" | Set-Content -Path $jadPath -Encoding ASCII
 
-Write-Ok "dist/$Target.jar  ($([math]::Round($jarSize / 1KB, 1)) KB)"
-Write-Ok "dist/$Target.jad  (MIDlet-Jar-Size: $jarSize)"
+Write-Ok "dist/$ArtifactName.jar  ($([math]::Round($jarSize / 1KB, 1)) KB)"
+Write-Ok "dist/$ArtifactName.jad  (MIDlet-Jar-Size: $jarSize)"
 
 Write-Host ""
 Write-Host "build OK. Run it with:  ./tools/run-emulator.ps1 -Target $Target" -ForegroundColor Green

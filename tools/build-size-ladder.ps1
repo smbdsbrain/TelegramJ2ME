@@ -68,10 +68,10 @@ foreach ($sizeKiB in @(64, 128, 256, 512, 1024, 1536, 2048)) {
     }
 
     $jad = @"
-MIDlet-Name: TgProbe ${sizeKiB}k
+MIDlet-Name: TelegramJ2ME Probe ${sizeKiB}k
 MIDlet-Version: 0.1.0
-MIDlet-Vendor: j2me-mtproto-client
-MIDlet-1: TgProbe,,tg.app.ProbeMidlet
+MIDlet-Vendor: smbdsbrain
+MIDlet-1: TelegramJ2ME Probe,,tg.app.ProbeMidlet
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
 MIDlet-Jar-URL: probe-${sizeKiB}k.jar

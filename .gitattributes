@@ -8,3 +8,12 @@
 *.png binary
 *.jar binary
 *.jad text eol=crlf
+
+# Vendored upstream files are verified byte-for-byte against the sha256 pins in
+# tools/sdk.lock.json, so nothing may rewrite them on the way into or out of
+# git. The committed copies had already drifted from upstream by 71 bytes of
+# trailing whitespace, which made bootstrap.ps1 fail its own hash check on every
+# fresh clone, and `* text=auto` above would have rewritten the CRLF endings too
+# on the next commit. -text pins the bytes; the pin is the provenance claim.
+/third_party/bc/BigInteger.java.orig -text
+/third_party/bc/LICENSE.html -text

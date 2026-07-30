@@ -161,11 +161,26 @@ function Get-JarClassList ($jarPath) {
 # account, so they are read from a gitignored file and never committed. The
 # generated Secrets.java lands in generated/, which is also gitignored.
 #
-# Preferred location:  secrets/telegram.yaml
-# Fallback:            config/app.properties
+# Precedence:
+#   1. TG_API_ID / TG_API_HASH environment variables
+#   2. secrets/telegram.yaml
+#   3. config/app.properties
+#
+# The environment comes first so CI can inject repository secrets without ever
+# writing them to the runner's disk - nothing to leave behind in a cache, an
+# uploaded artifact or a `git status` diff.
 # --------------------------------------------------------------------------
 function Get-TelegramSecrets {
     $result = @{ apiId = 0; apiHash = ""; title = ""; name = ""; source = "none" }
+
+    if ($env:TG_API_ID -and $env:TG_API_HASH) {
+        $result.apiId   = [int]($env:TG_API_ID -replace '[^0-9]', '')
+        $result.apiHash = $env:TG_API_HASH.Trim()
+        $result.title   = if ($env:TG_APP_TITLE) { $env:TG_APP_TITLE.Trim() } else { "TelegramJ2ME" }
+        $result.name    = if ($env:TG_APP_NAME)  { $env:TG_APP_NAME.Trim() }  else { "telegramj2me" }
+        $result.source  = "environment"
+        return $result
+    }
 
     # Minimal flat "key: value" reader. The file is ours and one level deep, so
     # a real YAML parser would be a dependency bought for nothing.

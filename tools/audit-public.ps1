@@ -126,6 +126,41 @@ try {
         }
     }
 
+    # ----------------------------------------------------------------------
+    # Everything above audits the working tree. That is not the whole attack
+    # surface: a force-push does not delete the commit it replaced. GitHub keeps
+    # the orphan reachable at /commit/<sha> forever, with nothing in the UI to
+    # hint it exists, and the push is mirrored into the public events archive.
+    # Rewriting history to strip a file therefore does not unpublish it.
+    #
+    # The reflog for a remote-tracking branch records one entry per push, so
+    # more than one entry means at least one push was not a fast-forward.
+    # Reported as a warning, not a failure: on a repository that has always been
+    # public and never rewritten there is nothing to do, and a fresh clone has
+    # no reflog at all.
+    # ----------------------------------------------------------------------
+    $orphanWarnings = New-Object System.Collections.Generic.List[string]
+    $branch = (& git rev-parse --abbrev-ref HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $branch -and $branch -ne "HEAD") {
+        $remoteRef = "origin/$branch"
+        $reflog = @(& git reflog show $remoteRef 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $reflog.Count -gt 1) {
+            $tip = (& git rev-parse $remoteRef 2>$null)
+            foreach ($line in $reflog) {
+                if ($line -match '^([0-9a-f]{7,40})\s') {
+                    $sha = (& git rev-parse $Matches[1] 2>$null)
+                    if ($LASTEXITCODE -ne 0 -or -not $sha -or $sha -eq $tip) { continue }
+                    # Still in the published history? Then it was a plain
+                    # fast-forward and nothing was orphaned.
+                    & git merge-base --is-ancestor $sha $tip 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0 -and -not $orphanWarnings.Contains($sha)) {
+                        $orphanWarnings.Add($sha)
+                    }
+                }
+            }
+        }
+    }
+
     if ($failures.Count -gt 0) {
         Write-Bad "public audit found $($failures.Count) issue(s); contents are hidden:"
         $failures | Sort-Object | ForEach-Object { Write-Host "    $_" }
@@ -134,6 +169,18 @@ try {
 
     Write-Ok "public audit passed: $($candidates.Count) file(s)"
     Write-Ok "private paths excluded; no local secret reuse or common credential formats found"
+
+    if ($orphanWarnings.Count -gt 0) {
+        Write-Host ""
+        Write-Warn2 "$($orphanWarnings.Count) commit(s) were pushed and then force-pushed away."
+        Write-Warn2 "A clean working tree does not unpublish them - GitHub still serves each one:"
+        foreach ($sha in $orphanWarnings) {
+            Write-Host "         https://github.com/<owner>/<repo>/commit/$sha" -ForegroundColor DarkGray
+        }
+        Write-Warn2 "Check what they contain (git show --stat <sha>). To actually remove them,"
+        Write-Warn2 "delete and recreate the repository, or ask GitHub Support to expire the objects."
+    }
+
     exit 0
 } finally {
     Pop-Location

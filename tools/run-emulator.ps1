@@ -31,10 +31,16 @@
     uses a separate JVM user.home below local/microemulator/ and therefore a
     physically separate MicroEmulator configuration and RMS.
 
+.PARAMETER ArtifactName
+    Which dist/<name>.jar to launch. Defaults to the target. Needed to run a
+    build made with build.ps1 -ArtifactName - in particular the obfuscated
+    release variant, which is the one worth smoke-testing before publishing.
+
 .EXAMPLE
     ./tools/run-emulator.ps1 -Target probe
     ./tools/run-emulator.ps1 -Target probe -UseWtk
     ./tools/run-emulator.ps1 -Target tg -EmulatorProfile 2fa
+    ./tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.1.0-min
 #>
 [CmdletBinding()]
 param(
@@ -43,17 +49,20 @@ param(
     [switch]$Ota,
     [switch]$Headless,
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
-    [string]$EmulatorProfile = 'default'
+    [string]$EmulatorProfile = 'default',
+    [string]$ArtifactName = ""
 )
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_env.ps1"
 
-$jar = Join-Path $RepoRoot "dist\$Target.jar"
-$jad = Join-Path $RepoRoot "dist\$Target.jad"
+if (-not $ArtifactName) { $ArtifactName = $Target }
+
+$jar = Join-Path $RepoRoot "dist\$ArtifactName.jar"
+$jad = Join-Path $RepoRoot "dist\$ArtifactName.jad"
 
 if (-not (Test-Path $jar)) {
-    Write-Bad "dist/$Target.jar not found. Build it first:  ./tools/build.ps1 -Target $Target"
+    Write-Bad "dist/$ArtifactName.jar not found. Build it first:  ./tools/build.ps1 -Target $Target"
     exit 1
 }
 
@@ -136,7 +145,7 @@ if (-not (Test-Path $launchJar)) {
 # immediately instead of showing MicroEmulator's launcher list.
 $cp = ($MicroEmuJars + @($launchJar)) -join ";"
 
-Write-Step "MicroEmulator [$profileLabel] :: $midletClass from dist/$Target.jar"
+Write-Step "MicroEmulator [$profileLabel] :: $midletClass from dist/$ArtifactName.jar"
 Write-Host "    staged binary: $launchJar"
 Write-Warn2 "emulator success is not hardware evidence - see docs/emulator-notes.md"
 Write-Host ""

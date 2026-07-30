@@ -11,11 +11,13 @@
 
 -microedition
 
-# Keep the build readable until we have hardware results. tools/build.ps1
-# -Release swaps these for optimisation + obfuscation.
--dontoptimize
--dontobfuscate
+# -dontoptimize / -dontobfuscate live in config/proguard-debug.pro, which
+# tools/build.ps1 includes only for non-release builds. Keeping them out of
+# this file is what makes -Release mean something: a boolean -dontobfuscate
+# here would win over anything the release path added.
 
+# Required whenever obfuscation is on: Windows and the FAT/VFAT volumes on
+# these handsets are case-insensitive, so A.class and a.class collide.
 -dontusemixedcaseclassnames
 -dontskipnonpubliclibraryclasses
 -verbose
