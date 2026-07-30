@@ -24,6 +24,36 @@ public final class AsyncMtClientTest implements Test
     {
         concurrentReverseResponses();
         saltRetry();
+        hiddenTransportPadding();
+    }
+
+    /**
+     * Padded intermediate only reveals a length modulo the AES block, so a
+     * carrier padding by a whole block is invisible to the framing layer. The
+     * reader has to try the shorter length, and the msg_key check is what
+     * decides whether the guess was right.
+     */
+    private void hiddenTransportPadding() throws Exception
+    {
+        FakeLink link = new FakeLink(true, 16);
+        MtClient client = client(link);
+        int query = 0x5a5a1234;
+        byte[] result = client.invokeWithSaltRetry(intBody(query));
+        Assert.equal("response recovered past a hidden padding block", query + 1000,
+                new TlReader(result).readInt());
+        client.close();
+
+        // Beyond the search bound the packet must still fail rather than be
+        // silently accepted at some wrong length.
+        FakeLink tooMuch = new FakeLink(true, 16 * (tg.mt.Intermediate.MAX_HIDDEN_BLOCKS + 1));
+        MtClient strict = client(tooMuch);
+        try
+        {
+            strict.invokeWithSaltRetry(intBody(query));
+            Assert.fail("padding beyond the search bound was accepted");
+        }
+        catch (IOException expected) { }
+        strict.close();
     }
 
     private void concurrentReverseResponses() throws Exception
@@ -113,6 +143,8 @@ public final class AsyncMtClientTest implements Test
     {
         final AuthKey key;
         final boolean saltFirst;
+        /** Transport padding the framing layer cannot subtract, in bytes. */
+        final int hiddenPad;
         final Vector incoming = new Vector();
         final Vector pending = new Vector();
         boolean connected;
@@ -127,6 +159,12 @@ public final class AsyncMtClientTest implements Test
 
         FakeLink(boolean saltFirst)
         {
+            this(saltFirst, 0);
+        }
+
+        FakeLink(boolean saltFirst, int hiddenPad)
+        {
+            this.hiddenPad = hiddenPad;
             this.saltFirst = saltFirst;
             byte[] raw = new byte[256];
             for (int i = 0; i < raw.length; i++) { raw[i] = (byte) (i + 1); }
@@ -202,6 +240,16 @@ public final class AsyncMtClientTest implements Test
 
         private synchronized void queue(byte[] packet)
         {
+            if (hiddenPad > 0)
+            {
+                byte[] padded = new byte[packet.length + hiddenPad];
+                System.arraycopy(packet, 0, padded, 0, packet.length);
+                for (int i = packet.length; i < padded.length; i++)
+                {
+                    padded[i] = (byte) (i * 31 + 7);
+                }
+                packet = padded;
+            }
             incoming.addElement(packet);
             notifyAll();
         }
@@ -227,6 +275,10 @@ public final class AsyncMtClientTest implements Test
         public synchronized long bytesWritten() { return tx; }
         public String description() { return "scripted"; }
         public boolean isRequestResponse() { return false; }
+        public int hiddenPaddingBlocks()
+        {
+            return hiddenPad > 0 ? tg.mt.Intermediate.MAX_HIDDEN_BLOCKS : 0;
+        }
         public void onUpdate(byte[] body) { updateCount++; }
         public void onConnectionLost(IOException error) { }
 

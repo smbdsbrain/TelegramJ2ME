@@ -26,4 +26,16 @@ public interface MtLink extends PacketFrame
      * queued response and idle receiving requires an explicit http_wait.
      */
     boolean isRequestResponse();
+
+    /**
+     * How many whole AES blocks of transport padding this carrier could be
+     * hiding behind an encrypted packet, beyond what the framing can see.
+     *
+     * Zero for every carrier that states an exact length. Padded intermediate
+     * only reveals the length modulo the block size, and MTProxy deployments
+     * have been measured padding past the documented 15 bytes, so the reader
+     * is allowed to retry a few shorter lengths - each one still has to pass
+     * the msg_key check before it is believed.
+     */
+    int hiddenPaddingBlocks();
 }

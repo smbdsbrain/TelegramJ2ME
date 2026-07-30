@@ -56,6 +56,8 @@ public final class Handshake
     private final Rng rng;
     private final int dcId;
     private final boolean testEnvironment;
+    /** Media connections identify themselves with a negated dc id. */
+    private final boolean media;
 
     private byte[] nonce;          // 16
     private byte[] serverNonce;    // 16
@@ -66,10 +68,17 @@ public final class Handshake
 
     public Handshake(MtPlain plain, Rng rng, int dcId, boolean testEnvironment)
     {
+        this(plain, rng, dcId, testEnvironment, false);
+    }
+
+    public Handshake(MtPlain plain, Rng rng, int dcId, boolean testEnvironment,
+                     boolean media)
+    {
         this.plain = plain;
         this.rng = rng;
         this.dcId = dcId;
         this.testEnvironment = testEnvironment;
+        this.media = media;
     }
 
     public Result run() throws IOException
@@ -175,8 +184,11 @@ public final class Handshake
                 if (i > 0) { sb.append(", "); }
                 sb.append(keys[i].fingerprint());
             }
-            sb.append(". Is this build pointed at the right environment? ");
-            sb.append("test and production data centres use different keys.");
+            sb.append(". This build targets the ");
+            sb.append(Dc.isTest() ? "test" : "production");
+            sb.append(" environment, and the two use different keys. Note that a ");
+            sb.append("public MTProxy reaches production data centres only, ");
+            sb.append("whatever dc id the client asks for.");
             throw new IOException(sb.toString());
         }
 
@@ -193,7 +205,7 @@ public final class Handshake
         inner.writeRaw(nonce);
         inner.writeRaw(serverNonce);
         inner.writeRaw(newNonce);
-        inner.writeInt(Dc.rawId(dcId));
+        inner.writeInt(Dc.rawId(dcId, media));
 
         byte[] encrypted = key.encrypt(inner.toByteArray(), rng);
 
@@ -206,7 +218,7 @@ public final class Handshake
         w.writeLong(key.fingerprint());
         w.writeBytes(encrypted);
         plain.send(w.toByteArray());
-        Diag.info("-> req_DH_params key=" + key.fingerprint() + " dc=" + Dc.rawId(dcId));
+        Diag.info("-> req_DH_params key=" + key.fingerprint() + " dc=" + Dc.rawId(dcId, media));
 
         TlReader r = new TlReader(plain.receive());
         int id = r.readInt();

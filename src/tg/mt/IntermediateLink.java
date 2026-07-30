@@ -11,6 +11,7 @@ public final class IntermediateLink implements MtLink
     private final Transport transport;
     private final Intermediate frame;
     private final String description;
+    private final boolean padded;
 
     public IntermediateLink(Transport transport, Rng rng, boolean padded,
                             boolean tagEmbedded, String description)
@@ -18,6 +19,7 @@ public final class IntermediateLink implements MtLink
         this.transport = transport;
         this.frame = new Intermediate(transport, rng, padded, tagEmbedded);
         this.description = description;
+        this.padded = padded;
     }
 
     public void connect(String host, int port, int timeoutMs) throws IOException
@@ -39,4 +41,9 @@ public final class IntermediateLink implements MtLink
     public long bytesWritten() { return transport.bytesWritten(); }
     public String description() { return description; }
     public boolean isRequestResponse() { return false; }
+
+    public int hiddenPaddingBlocks()
+    {
+        return padded ? Intermediate.MAX_HIDDEN_BLOCKS : 0;
+    }
 }

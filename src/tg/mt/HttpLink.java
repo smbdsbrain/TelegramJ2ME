@@ -108,4 +108,5 @@ public final class HttpLink implements MtLink
     public synchronized long bytesWritten() { return tx; }
     public String description() { return "http " + url; }
     public boolean isRequestResponse() { return true; }
+    public int hiddenPaddingBlocks() { return 0; }
 }

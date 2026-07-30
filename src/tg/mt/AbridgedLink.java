@@ -42,4 +42,5 @@ public final class AbridgedLink implements MtLink
     public long bytesWritten() { return transport.bytesWritten(); }
     public String description() { return description; }
     public boolean isRequestResponse() { return false; }
+    public int hiddenPaddingBlocks() { return 0; }
 }

@@ -26,10 +26,12 @@ public final class MidpLinkFactory implements MtLinkFactory
         String dcHost = endpoint == null ? Dc.address(dcId) : endpoint.host;
         int dcPort = endpoint == null ? Dc.PORT : endpoint.port;
         if (dcHost == null) { throw new IOException("no bootstrap address for dc" + dcId); }
+        boolean media = endpoint != null && endpoint.mediaOnly;
 
         if (mode == ConnectionConfig.DIRECT)
         {
-            return new LinkSpec(mode, new AbridgedLink(new MidpTransport()), dcHost, dcPort);
+            return new LinkSpec(mode, new AbridgedLink(new MidpTransport()),
+                    dcHost, dcPort, media);
         }
         if (mode == ConnectionConfig.DIRECT_OBFUSCATED)
         {
@@ -37,7 +39,7 @@ public final class MidpLinkFactory implements MtLinkFactory
                     ObfuscatedTransport.PROTOCOL_ABRIDGED, 0, null);
             return new LinkSpec(mode,
                     new AbridgedLink(obfs, true, "direct/obfuscated2/abridged"),
-                    dcHost, dcPort);
+                    dcHost, dcPort, media);
         }
         if (mode == ConnectionConfig.MTPROXY)
         {
@@ -51,12 +53,16 @@ public final class MidpLinkFactory implements MtLinkFactory
             int protocol = secret.padded()
                     ? ObfuscatedTransport.PROTOCOL_PADDED_INTERMEDIATE
                     : ObfuscatedTransport.PROTOCOL_INTERMEDIATE;
-            stream = new ObfuscatedTransport(stream, rng, protocol, Dc.rawId(dcId), secret);
+            // Media connections carry a negated dc id in the obfuscated2
+            // header; a proxy routes on that byte pair, so getting it wrong
+            // sends file traffic to the wrong end of the data centre.
+            stream = new ObfuscatedTransport(stream, rng, protocol,
+                    Dc.rawId(dcId, media), secret);
             return new LinkSpec(mode,
                     new IntermediateLink(stream, rng, secret.padded(), true,
                             secret.fakeTls() ? "mtproxy/faketls" :
                             (secret.padded() ? "mtproxy/padded" : "mtproxy/intermediate")),
-                    config.proxyHost, config.proxyPort);
+                    config.proxyHost, config.proxyPort, media);
         }
         if (mode == ConnectionConfig.HTTP)
         {
@@ -65,7 +71,7 @@ public final class MidpLinkFactory implements MtLinkFactory
                     // as a literal IPv4 address.  Telegram explicitly supports
                     // the named HTTP endpoint, including the _test suffix.
                     new HttpLink(new MidpHttpExecutor(), Dc.httpDomainUrl(dcId)),
-                    Dc.httpHost(dcId), 80);
+                    Dc.httpHost(dcId), 80, media);
         }
         throw new IOException("unsupported route mode " + mode);
     }

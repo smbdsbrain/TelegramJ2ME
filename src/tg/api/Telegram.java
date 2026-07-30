@@ -297,7 +297,7 @@ public final class Telegram
                     }
                 });
                 client = candidate;
-                candidate.connect(dc, spec.host, spec.port, 30000);
+                candidate.connect(dc, spec.host, spec.port, 30000, spec.media);
 
                 AuthKey stored = store.load(dc, Dc.isTest());
                 if (stored != null)
@@ -1657,7 +1657,7 @@ public final class Telegram
                 LinkSpec spec = links.create(mode, targetDc, endpoint,
                         connectionConfig, rng);
                 candidate = new MtClient(spec.link, rng);
-                candidate.connect(targetDc, spec.host, spec.port, 30000);
+                candidate.connect(targetDc, spec.host, spec.port, 30000, spec.media);
                 MtClient primary = client;
                 AuthKey persisted = store.load(targetDc, Dc.isTest());
                 AuthKey key = MediaAuthorization.select(dcId, targetDc,

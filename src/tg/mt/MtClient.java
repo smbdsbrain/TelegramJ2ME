@@ -55,6 +55,7 @@ public final class MtClient
     private AuthKey authKey;
     private Listener listener;
     private int dcId;
+    private boolean media;
     private volatile boolean connected;
     private volatile boolean running;
     private boolean initConnectionSent;
@@ -104,8 +105,15 @@ public final class MtClient
 
     public void connect(int dcId, String host, int port, int timeoutMs) throws IOException
     {
+        connect(dcId, host, port, timeoutMs, false);
+    }
+
+    public void connect(int dcId, String host, int port, int timeoutMs, boolean media)
+            throws IOException
+    {
         close();
         this.dcId = dcId;
+        this.media = media;
         link.connect(host, port, timeoutMs);
         if (ids == null) { ids = new MsgIdGen(); }
         ids.resetSession();
@@ -130,7 +138,7 @@ public final class MtClient
         requireConnected();
         MtPlain plain = new MtPlain(link, ids);
         Handshake.Result result =
-                new Handshake(plain, rng, dcId, Dc.isTest()).run();
+                new Handshake(plain, rng, dcId, Dc.isTest(), media).run();
         adopt(result.authKey, result.serverSalt);
         return authKey;
     }
@@ -469,13 +477,51 @@ public final class MtClient
                     throw new IOException("transport error "
                             + Abridged.describeTransportError(transportError));
                 }
-                Session.Incoming incoming = session.decrypt(packet, len);
+                Session.Incoming incoming = decryptPacket(packet, len);
                 processIncoming(incoming.msgId, incoming.seqNo, incoming.body);
             }
         }
         catch (Throwable t)
         {
             failConnection(asIo("reader failed", t), true);
+        }
+    }
+
+    /**
+     * Decrypt one packet, allowing for a carrier that hides whole AES blocks of
+     * transport padding behind the framing (see
+     * {@link MtLink#hiddenPaddingBlocks}).
+     *
+     * The retry is safe because it changes nothing about how a message is
+     * authenticated: every candidate still has to reproduce the 128-bit msg_key
+     * over its own plaintext, so a wrong length is rejected exactly as a forged
+     * packet would be. The search stays out of {@link Session} deliberately -
+     * that class must keep failing closed - and costs nothing unless a packet
+     * has already failed to decrypt.
+     */
+    private Session.Incoming decryptPacket(byte[] packet, int len) throws IOException
+    {
+        try
+        {
+            return session.decrypt(packet, len);
+        }
+        catch (IOException first)
+        {
+            int blocks = link.hiddenPaddingBlocks();
+            for (int i = 1; i <= blocks; i++)
+            {
+                int candidate = len - (i * 16);
+                if (candidate < 40) { break; }
+                try
+                {
+                    Session.Incoming in = session.decrypt(packet, candidate);
+                    Diag.warn("carrier hid " + (i * 16) + " padding bytes inside a "
+                              + len + "-byte encrypted frame");
+                    return in;
+                }
+                catch (IOException ignored) { }
+            }
+            throw first;
         }
     }
 
