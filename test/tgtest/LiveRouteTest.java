@@ -93,12 +93,18 @@ public final class LiveRouteTest
         try
         {
             client.connect(dc, host, port, 30000);
-            AuthKey key = store.load(dc, Dc.isTest());
+            // A stored key skips straight to encrypted frames. Forcing the
+            // handshake is the only way to exercise the unencrypted ones, and
+            // is worth an env switch rather than moving the secrets file.
+            boolean forceHandshake = System.getenv("TG_FORCE_HANDSHAKE") != null;
+            AuthKey key = forceHandshake ? null : store.load(dc, Dc.isTest());
             if (key == null)
             {
                 System.out.println("no stored key; running auth_key handshake");
                 key = client.authenticate();
-                store.save(key);
+                // A forced handshake is a throwaway probe; persisting it would
+                // discard the session the store already holds.
+                if (!forceHandshake) { store.save(key); }
             }
             else
             {

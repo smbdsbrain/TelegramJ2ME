@@ -32,6 +32,7 @@ public final class AllTests
             new InflateTest(),
             new TlParserTest(),
             new ProxySecretTest(),
+            new ServerKeysTest(),
             new ConnectionConfigTest(),
             new ObfuscatedFramingTest(),
             new TransportPhase1Test(),
