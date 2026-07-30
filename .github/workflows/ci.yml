@@ -10,6 +10,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per branch. Pushing twice in quick succession, or updating a pull
+# request, cancels the run that is already obsolete instead of paying for a
+# Windows runner to finish answering a stale question.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # The toolchain is Windows PowerShell throughout: tools/_env.ps1 resolves
