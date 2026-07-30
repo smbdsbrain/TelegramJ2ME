@@ -180,7 +180,8 @@ src/tg/            device code - CLDC 1.1 subset only
 test/tgtest/       desktop-only harness (runs the same src/)
 tools/             build, bootstrap, dev servers, TL generator
 config/            ProGuard configs, CLDC API allow-list, app.properties
-third_party/bc/    vendored BigInteger + upstream provenance
+schema/            Telegram TL schema, layer 223 + upstream provenance
+third_party/       vendored BigInteger, emoji sprite, JPEG decoder + licences
 ```
 
 ### The two build profiles
