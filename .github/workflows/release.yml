@@ -117,12 +117,18 @@ jobs:
       - name: Checksums
         shell: pwsh
         run: |
-          Get-ChildItem dist -File |
+          $lines = Get-ChildItem dist -File |
             Where-Object { $_.Extension -in '.jar', '.jad' } |
             Sort-Object Name |
-            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content dist/SHA256SUMS.txt -Encoding ASCII
-          Get-Content dist/SHA256SUMS.txt | Write-Host
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          # LF, not CRLF. Set-Content would write CRLF, and sha256sum -c then
+          # reads the trailing CR as part of the filename and fails to open
+          # every single entry - on the Linux and macOS machines where anyone
+          # is actually going to run it.
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD.Path 'dist\SHA256SUMS.txt'),
+            ($lines -join "`n") + "`n")
+          $lines | Write-Host
 
       - uses: actions/upload-artifact@v4
         with:
