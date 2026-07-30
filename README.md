@@ -58,9 +58,17 @@ Opening the release link in the phone's own browser to install over the air will
 work: GitHub requires modern TLS, which these handsets do not have.
 
 > [!IMPORTANT]
-> Nobody has run this on a physical phone yet. Installing it and reporting what
-> happens is genuinely useful — the handset model plus whatever
-> `TelegramJ2ME Probe` reports is exactly the missing information.
+> This has been run on exactly one physical handset, where sign-in, the dialog
+> list and sending a message all work. One device on one network proves nothing
+> about yours, so installing it and reporting what happens is still genuinely
+> useful — the handset model plus whatever `TelegramJ2ME Probe` reports is
+> exactly the missing information.
+>
+> One thing that session did establish: some handsets refuse `socket://` to
+> ports 80 and 443 for an unsigned MIDlet, with `Target port denied to
+> untrusted applications`, while permitting other ports. If the direct routes
+> are refused that way, an MTProxy on a high port is worth configuring in
+> Settings before the first connection attempt.
 
 ---
 
@@ -71,6 +79,7 @@ work: GitHub requires modern TLS, which these handsets do not have.
 ./tools/build.ps1 -Target probe    # -> dist/probe.jar + dist/probe.jad
 ./tools/run-emulator.ps1 -Target probe
 ./tools/test.ps1                   # desktop test suite
+./tools/smoke-emulator.ps1         # start the packaged JARs in MicroEmulator
 ./tools/render-showcase.ps1        # regenerate fictional README screenshots
 ```
 
@@ -268,8 +277,8 @@ under git — but only as bootstrap entries. The authoritative list comes from
 
 ## Status
 
-TelegramJ2ME is an emulator-tested prototype. It builds as a preverified MIDP
-JAR/JAD and currently includes:
+TelegramJ2ME is an early prototype. It builds as a preverified MIDP JAR/JAD and
+currently includes:
 
 - on-device MTProto 2.0 cryptography, TL serialization and session state;
 - authorization, dialogs, history, text messaging and read state;
@@ -277,9 +286,16 @@ JAR/JAD and currently includes:
 - reconnect handling, a persistent outbox, drafts and update state;
 - photos, emoji, reactions, profiles and adaptive light/dark/high-contrast UI.
 
-The desktop harness contains 26 automated suites for crypto, serialization,
-transport, persistence, authorization, content and UI logic. These tests and
-MicroEmulator runs do **not** establish compatibility with any physical phone.
+One physical handset has run the client end to end: the authorization handshake,
+sign-in, the dialog list and sending a message. That is a single device on a
+single network, and it establishes nothing about any other handset.
+
+The desktop harness contains 27 automated suites for crypto, serialization,
+transport, persistence, authorization, content and UI logic. Separately, an
+emulator smoke test starts each published JAR — including the obfuscated one —
+in MicroEmulator's MIDP runtime and navigates between screens, which is the only
+automated check that the artifact which actually ships still runs. None of that
+is evidence about a handset: see [docs/emulator-notes.md](docs/emulator-notes.md).
 
 ---
 
