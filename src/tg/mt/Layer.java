@@ -1,0 +1,40 @@
+package tg.mt;
+
+/**
+ * The API layer this build speaks, and the identity it presents in
+ * initConnection.
+ *
+ * <h3>Layer</h3>
+ * The layer number pins which schema the server should interpret our requests
+ * against. It must match the schema the generated TL classes came from -
+ * tools/generate-tl.py writes the value it used into
+ * {@code generated/tg/api/GeneratedLayer.java}, and this constant is checked
+ * against it at build time.
+ *
+ * Raising it is never automatic: a new layer can change constructor ids of
+ * types we already parse, so it happens together with a regeneration and a
+ * round of live testing.
+ *
+ * <h3>Device strings</h3>
+ * These appear in the user's "active sessions" list in every other Telegram
+ * client. They say what this actually is rather than impersonating an official
+ * client - the API Terms expect third-party clients to identify themselves, and
+ * a user seeing an unrecognised session should be able to tell it is their own
+ * phone.
+ */
+public final class Layer
+{
+    /**
+     * Must equal the layer of the schema in schema/api.json.
+     * Verified by tools/verify-tl-ids.py.
+     */
+    public static final int LAYER = 223;
+
+    public static final String DEVICE_MODEL = "Java ME";
+    public static final String SYSTEM_VERSION = "MIDP-2.0 CLDC-1.1";
+    public static final String APP_VERSION = "j2me-mtproto 0.1.0";
+    public static final String SYSTEM_LANG_CODE = "en";
+    public static final String LANG_CODE = "en";
+
+    private Layer() { }
+}

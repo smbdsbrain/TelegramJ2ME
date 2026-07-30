@@ -1,0 +1,41 @@
+# Copy to  secrets/telegram.yaml  and fill in.
+#
+#     Copy-Item config/telegram.yaml.example secrets/telegram.yaml
+#
+# The whole secrets/ directory is gitignored. tools/build.ps1 reads this file
+# and emits generated/tg/app/Secrets.java, which is also gitignored, so the
+# values reach the JAR without ever reaching git.
+#
+# Obtain these at https://my.telegram.org -> API development tools
+# See https://core.telegram.org/api/obtaining_api_id
+#
+# api_id / api_hash are not cryptographic secrets - every third-party client
+# necessarily ships them, and they can be read out of any JAR. They are still
+# kept out of the repository because they are tied to one Telegram account and
+# a leaked pair invites abuse that gets the account's API access revoked.
+
+api_id: 0
+api_hash: REPLACE_ME
+
+# As registered on my.telegram.org. Sent to Telegram in initConnection.
+title: "My J2ME client"
+name: my_j2me
+
+# --- optional: development-only helpers ---------------------------------
+# These never carry Telegram protocol traffic; see tools/echo-server.py and
+# tools/log-server.py. Point them at this machine's LAN address.
+dev_echo_host: 192.168.1.10
+dev_echo_port: 7777
+dev_log_host: 192.168.1.10
+dev_log_port: 7778
+
+# --- not configured here ------------------------------------------------
+# Data centre addresses are public and live in src/tg/mt/Dc.java, under git.
+# Which environment a build targets is a build flag, not a config value,
+# because an auth_key is bound to one environment and flipping it at runtime
+# with a stale key in RMS would fail confusingly:
+#
+#     ./tools/build.ps1 -Target tg -Env test          (default)
+#     ./tools/build.ps1 -Target tg -Env production
+#
+# A phone number and an auth_key must never appear in any committed file.

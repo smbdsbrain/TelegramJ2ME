@@ -1,0 +1,85 @@
+{
+  "_comment": [
+    "Pinned external toolchain artifacts. Nothing here is committed to git - bootstrap.ps1",
+    "downloads into sdk/ and third_party/ and verifies sha256.",
+    "sha256 == null means 'not yet pinned': run tools/bootstrap.ps1 -UpdateLock once,",
+    "review the printed hashes, then commit this file."
+  ],
+  "artifacts": [
+    {
+      "id": "microemu-cldc",
+      "purpose": "CLDC 1.1 / javax.microedition.io API for -bootclasspath (compile-time)",
+      "url": "https://repo1.maven.org/maven2/org/microemu/microemu-cldc/2.0.4/microemu-cldc-2.0.4.jar",
+      "dest": "sdk/microemu-cldc-2.0.4.jar",
+      "license": "LGPL-2.1 (compile-time + emulator only, not redistributed in our JAR)",
+      "sha256": "d97f5fc83dcd27bef601cdf21fdc029ffc3d8d8b00e400180c0c0ad55a5a498a"
+    },
+    {
+      "id": "microemu-midp",
+      "purpose": "MIDP 2.0 API (lcdui/midlet/rms) for -bootclasspath (compile-time)",
+      "url": "https://repo1.maven.org/maven2/org/microemu/microemu-midp/2.0.4/microemu-midp-2.0.4.jar",
+      "dest": "sdk/microemu-midp-2.0.4.jar",
+      "license": "LGPL-2.1",
+      "sha256": "f6f5bf17e9a8ac406c531dd2b684cadce649733e33546d55d4e6f5f52c1451c3"
+    },
+    {
+      "id": "microemu-javase",
+      "purpose": "MicroEmulator J2SE runtime core",
+      "url": "https://repo1.maven.org/maven2/org/microemu/microemu-javase/2.0.4/microemu-javase-2.0.4.jar",
+      "dest": "sdk/microemu-javase-2.0.4.jar",
+      "license": "LGPL-2.1",
+      "sha256": "3be800a69fa69b198d690fad774455bff310e32262e8db793795f66d940f78a9"
+    },
+    {
+      "id": "microemu-javase-swing",
+      "purpose": "MicroEmulator desktop emulator front-end",
+      "url": "https://repo1.maven.org/maven2/org/microemu/microemu-javase-swing/2.0.4/microemu-javase-swing-2.0.4.jar",
+      "dest": "sdk/microemu-javase-swing-2.0.4.jar",
+      "license": "LGPL-2.1",
+      "sha256": "4b8653aa8259d55ba13fd9da9e3a55bf2ef660edffa073ef7a6f1160ba001639"
+    },
+    {
+      "id": "microemu-injected",
+      "purpose": "MicroEmulator bytecode injection helper (required at emulator runtime)",
+      "url": "https://repo1.maven.org/maven2/org/microemu/microemu-injected/2.0.4/microemu-injected-2.0.4.jar",
+      "dest": "sdk/microemu-injected-2.0.4.jar",
+      "license": "LGPL-2.1",
+      "sha256": "58ad9746e0666828c7e80c3b4c50df725813ae9e0d123d49da48d49f0536ad74"
+    },
+    {
+      "id": "asm",
+      "purpose": "Required by MicroEmulator: its MIDletClassLoader instruments bytecode as it loads, and without ASM the MIDlet class silently fails to load and the emulator shows a blank screen. Version pinned from org.microemu:microemu:2.0.4's POM.",
+      "url": "https://repo1.maven.org/maven2/asm/asm/3.1/asm-3.1.jar",
+      "dest": "sdk/asm-3.1.jar",
+      "license": "BSD-3-Clause",
+      "sha256": "333ff5369043975b7e031b8b27206937441854738e038c1f47f98d072a20437a"
+    },
+    {
+      "id": "proguard",
+      "purpose": "CLDC preverification (-microedition), shrink, obfuscate",
+      "url": "https://github.com/Guardsquare/proguard/releases/download/v7.4.2/proguard-7.4.2.zip",
+      "dest": "sdk/proguard-7.4.2.zip",
+      "unzipTo": "sdk/proguard-7.4.2",
+      "license": "GPL-2.0-with-classpath-exception (build tool only)",
+      "sha256": "164b26a6ca655296bede9b1474ee47e24369d59860fdcebaa64d210221bce5fa"
+    },
+    {
+      "id": "bc-biginteger",
+      "purpose": "Bouncy Castle CLDC-compatible BigInteger source, ported to tg.crypto.bigint",
+      "url": "https://raw.githubusercontent.com/bcgit/bc-java/31a2228b4e4b314c4c80e72cb578915f6b919dec/core/src/main/j2me/java/math/BigInteger.java",
+      "dest": "third_party/bc/BigInteger.java.orig",
+      "license": "Bouncy Castle Licence (MIT-style)",
+      "upstreamRepo": "https://github.com/bcgit/bc-java",
+      "upstreamCommit": "31a2228b4e4b314c4c80e72cb578915f6b919dec",
+      "sha256": "5b7a6aeef84de2386c9cfdf71103780a32c6d3be9d3650a3c393eae98a663803"
+    },
+    {
+      "id": "bc-license",
+      "purpose": "Upstream licence text for the vendored BigInteger",
+      "url": "https://raw.githubusercontent.com/bcgit/bc-java/31a2228b4e4b314c4c80e72cb578915f6b919dec/LICENSE.html",
+      "dest": "third_party/bc/LICENSE.html",
+      "license": "Bouncy Castle Licence (MIT-style)",
+      "sha256": "edbbb10380b1271998b867a2e36b1cbee226e03d438726e1a91f80c5dde11849"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+[general]
+use_middle_proxy = false
+log_level = "normal"
+
+[general.modes]
+classic = true
+secure = true
+tls = true
+
+[general.links]
+show = "*"
+public_host = "127.0.0.1"
+public_port = 8443
+
+[server]
+port = 443
+
+[server.api]
+enabled = false
+
+[[server.listeners]]
+ip = "0.0.0.0"
+
+[censorship]
+tls_domain = "www.google.com"
+mask = false
+tls_emulation = false
+tls_front_dir = "/tmp/tlsfront"
+
+[access.users]
+local_test = "__SECRET__"

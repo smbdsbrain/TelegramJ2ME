@@ -1,0 +1,53 @@
+# --- downloaded SDKs / toolchain (never committed, see tools/sdk.lock.json) ---
+/sdk/*
+!/sdk/.gitkeep
+
+# --- build output ---
+/build/*
+!/build/.gitkeep
+/dist/*
+!/dist/.gitkeep
+/generated/*
+!/generated/.gitkeep
+
+# --- secrets: api_id / api_hash / phone / auth_key must never be committed ---
+/secrets/
+/config/app.properties
+/config/telegram.yaml
+*.authkey
+*.session
+*.tdata
+*.rms
+/private/
+/local/
+
+# --- generic credential / signing material ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+live-session.properties
+
+# --- device / runtime artifacts ---
+*.class
+__pycache__/
+*.py[cod]
+*.jar
+*.jad
+!config/*.jad
+/probe-reports/
+*.log
+
+# --- editors / OS ---
+.vscode/
+.idea/
+*.iml
+Thumbs.db
+desktop.ini
+*~
+*.swp

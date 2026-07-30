@@ -1,0 +1,393 @@
+# CLDC 1.1 (JSR 139) + MIDP 2.0 (JSR 118) API surface, plus the optional JSRs we
+# probe for at runtime. Consumed by tools/check-api.py.
+#
+# [allow-classes]  exact internal names. Anything a device class references and
+#                  that is not listed here (and is not one of our own classes)
+#                  fails the build.
+# [deny-members]   members that DO exist in J2SE but NOT in CLDC 1.1, on classes
+#                  that are otherwise allowed. Optional ":descriptor" suffix
+#                  pins a specific overload - that is how autoboxing is caught.
+#
+# Authority note: this file is a hand-maintained approximation of the specs. It
+# is the enforcement mechanism only in the fallback bootclasspath mode (no WTK).
+# When WTK_HOME is set, javac compiles against the real cldcapi11.jar +
+# midpapi20.jar and that is exact; this file then acts as a second opinion.
+
+[allow-classes]
+
+# ---------------------------------------------------------------- java.lang
+java/lang/Object
+java/lang/Class
+java/lang/String
+java/lang/StringBuffer
+java/lang/Boolean
+java/lang/Byte
+java/lang/Character
+java/lang/Short
+java/lang/Integer
+java/lang/Long
+java/lang/Float
+java/lang/Double
+java/lang/Number
+java/lang/Math
+java/lang/Runtime
+java/lang/System
+java/lang/Thread
+java/lang/Runnable
+java/lang/Throwable
+
+java/lang/Error
+java/lang/Exception
+java/lang/RuntimeException
+java/lang/ArithmeticException
+java/lang/ArrayIndexOutOfBoundsException
+java/lang/ArrayStoreException
+java/lang/ClassCastException
+java/lang/ClassNotFoundException
+java/lang/IllegalAccessException
+java/lang/IllegalArgumentException
+java/lang/IllegalMonitorStateException
+java/lang/IllegalStateException
+java/lang/IllegalThreadStateException
+java/lang/IndexOutOfBoundsException
+java/lang/InstantiationException
+java/lang/InterruptedException
+java/lang/NegativeArraySizeException
+java/lang/NoClassDefFoundError
+java/lang/NullPointerException
+java/lang/NumberFormatException
+java/lang/OutOfMemoryError
+java/lang/SecurityException
+java/lang/StringIndexOutOfBoundsException
+java/lang/VirtualMachineError
+
+# CLDC 1.1 weak references
+java/lang/ref/Reference
+java/lang/ref/WeakReference
+
+# ------------------------------------------------------------------ java.io
+java/io/ByteArrayInputStream
+java/io/ByteArrayOutputStream
+java/io/DataInput
+java/io/DataInputStream
+java/io/DataOutput
+java/io/DataOutputStream
+java/io/EOFException
+java/io/IOException
+java/io/InputStream
+java/io/InputStreamReader
+java/io/InterruptedIOException
+java/io/OutputStream
+java/io/OutputStreamWriter
+java/io/PrintStream
+java/io/Reader
+java/io/UTFDataFormatException
+java/io/UnsupportedEncodingException
+java/io/Writer
+
+# ---------------------------------------------------------------- java.util
+java/util/Calendar
+java/util/Date
+java/util/EmptyStackException
+java/util/Enumeration
+java/util/Hashtable
+java/util/NoSuchElementException
+java/util/Random
+java/util/Stack
+java/util/TimeZone
+java/util/Timer
+java/util/TimerTask
+java/util/Vector
+
+# ----------------------------------------------- javax.microedition.io (GCF)
+javax/microedition/io/Connection
+javax/microedition/io/ConnectionNotFoundException
+javax/microedition/io/Connector
+javax/microedition/io/ContentConnection
+javax/microedition/io/Datagram
+javax/microedition/io/DatagramConnection
+javax/microedition/io/InputConnection
+javax/microedition/io/OutputConnection
+javax/microedition/io/StreamConnection
+javax/microedition/io/StreamConnectionNotifier
+javax/microedition/io/CommConnection
+javax/microedition/io/HttpConnection
+javax/microedition/io/HttpsConnection
+javax/microedition/io/PushRegistry
+javax/microedition/io/SecureConnection
+javax/microedition/io/SecurityInfo
+javax/microedition/io/ServerSocketConnection
+javax/microedition/io/SocketConnection
+javax/microedition/io/UDPDatagramConnection
+
+# ------------------------------------------------- javax.microedition.midlet
+javax/microedition/midlet/MIDlet
+javax/microedition/midlet/MIDletStateChangeException
+
+# -------------------------------------------------- javax.microedition.lcdui
+javax/microedition/lcdui/Alert
+javax/microedition/lcdui/AlertType
+javax/microedition/lcdui/Canvas
+javax/microedition/lcdui/Choice
+javax/microedition/lcdui/ChoiceGroup
+javax/microedition/lcdui/Command
+javax/microedition/lcdui/CommandListener
+javax/microedition/lcdui/CustomItem
+javax/microedition/lcdui/DateField
+javax/microedition/lcdui/Display
+javax/microedition/lcdui/Displayable
+javax/microedition/lcdui/Font
+javax/microedition/lcdui/Form
+javax/microedition/lcdui/Gauge
+javax/microedition/lcdui/Graphics
+javax/microedition/lcdui/Image
+javax/microedition/lcdui/ImageItem
+javax/microedition/lcdui/Item
+javax/microedition/lcdui/ItemCommandListener
+javax/microedition/lcdui/ItemStateListener
+javax/microedition/lcdui/List
+javax/microedition/lcdui/Screen
+javax/microedition/lcdui/Spacer
+javax/microedition/lcdui/StringItem
+javax/microedition/lcdui/TextBox
+javax/microedition/lcdui/TextField
+javax/microedition/lcdui/Ticker
+
+javax/microedition/lcdui/game/GameCanvas
+javax/microedition/lcdui/game/Layer
+javax/microedition/lcdui/game/LayerManager
+javax/microedition/lcdui/game/Sprite
+javax/microedition/lcdui/game/TiledLayer
+
+# ---------------------------------------------------- javax.microedition.rms
+javax/microedition/rms/InvalidRecordIDException
+javax/microedition/rms/RecordComparator
+javax/microedition/rms/RecordEnumeration
+javax/microedition/rms/RecordFilter
+javax/microedition/rms/RecordListener
+javax/microedition/rms/RecordStore
+javax/microedition/rms/RecordStoreException
+javax/microedition/rms/RecordStoreFullException
+javax/microedition/rms/RecordStoreNotFoundException
+javax/microedition/rms/RecordStoreNotOpenException
+
+# ---------------------------------------------------- javax.microedition.pki
+javax/microedition/pki/Certificate
+javax/microedition/pki/CertificateException
+
+# --- optional JSRs -----------------------------------------------------------
+# Only ever reached through Class.forName() capability probing, never linked
+# statically. Listed so the probe screen itself compiles.
+javax/microedition/io/file/ConnectionClosedException
+javax/microedition/io/file/FileConnection
+javax/microedition/io/file/FileSystemRegistry
+javax/microedition/io/file/IllegalModeException
+javax/microedition/media/Control
+javax/microedition/media/Controllable
+javax/microedition/media/Manager
+javax/microedition/media/MediaException
+javax/microedition/media/Player
+javax/microedition/media/PlayerListener
+
+
+[deny-members]
+
+# Autoboxing. javac at -source 1.3 should never emit these, but a stray
+# `Integer x = 5;` in a future edit would silently produce a call that CLDC 1.1
+# cannot resolve (its Integer only has valueOf(String)).
+java/lang/Integer#valueOf:(I)Ljava/lang/Integer;
+java/lang/Long#valueOf:(J)Ljava/lang/Long;
+java/lang/Short#valueOf:(S)Ljava/lang/Short;
+java/lang/Byte#valueOf:(B)Ljava/lang/Byte;
+java/lang/Character#valueOf:(C)Ljava/lang/Character;
+java/lang/Boolean#valueOf:(Z)Ljava/lang/Boolean;
+java/lang/Double#valueOf:(D)Ljava/lang/Double;
+java/lang/Float#valueOf:(F)Ljava/lang/Float;
+
+# java.lang.System - CLDC 1.1 has only arraycopy/currentTimeMillis/exit/gc/
+# getProperty/identityHashCode/out/err.
+java/lang/System#nanoTime
+java/lang/System#getenv
+java/lang/System#getProperties
+java/lang/System#setProperty
+java/lang/System#lineSeparator
+java/lang/System#console
+java/lang/System#load
+java/lang/System#loadLibrary
+java/lang/System#setOut
+java/lang/System#setErr
+java/lang/System#in
+
+# java.lang.Math - CLDC 1.1 has abs/ceil/cos/floor/max/min/sin/sqrt/tan/
+# toDegrees/toRadians and E/PI only.
+java/lang/Math#pow
+java/lang/Math#log
+java/lang/Math#log10
+java/lang/Math#exp
+java/lang/Math#random
+java/lang/Math#round
+java/lang/Math#rint
+java/lang/Math#signum
+java/lang/Math#cbrt
+java/lang/Math#hypot
+java/lang/Math#atan
+java/lang/Math#atan2
+java/lang/Math#asin
+java/lang/Math#acos
+java/lang/Math#floorDiv
+java/lang/Math#floorMod
+java/lang/Math#addExact
+java/lang/Math#subtractExact
+java/lang/Math#multiplyExact
+java/lang/Math#toIntExact
+java/lang/Math#ulp
+java/lang/Math#copySign
+java/lang/Math#IEEEremainder
+
+# java.lang.Integer / Long - the Java 5 bit-twiddling helpers are tempting in
+# crypto code and simply are not there.
+java/lang/Integer#bitCount
+java/lang/Integer#numberOfLeadingZeros
+java/lang/Integer#numberOfTrailingZeros
+java/lang/Integer#highestOneBit
+java/lang/Integer#lowestOneBit
+java/lang/Integer#reverse
+java/lang/Integer#reverseBytes
+java/lang/Integer#rotateLeft
+java/lang/Integer#rotateRight
+java/lang/Integer#signum
+java/lang/Integer#compare
+java/lang/Integer#compareUnsigned
+java/lang/Integer#divideUnsigned
+java/lang/Integer#remainderUnsigned
+java/lang/Integer#toUnsignedLong
+java/lang/Integer#toUnsignedString
+java/lang/Integer#max
+java/lang/Integer#min
+java/lang/Integer#sum
+java/lang/Integer#decode
+java/lang/Integer#getInteger
+java/lang/Long#bitCount
+java/lang/Long#numberOfLeadingZeros
+java/lang/Long#numberOfTrailingZeros
+java/lang/Long#highestOneBit
+java/lang/Long#lowestOneBit
+java/lang/Long#reverse
+java/lang/Long#reverseBytes
+java/lang/Long#rotateLeft
+java/lang/Long#rotateRight
+java/lang/Long#signum
+java/lang/Long#compare
+java/lang/Long#compareUnsigned
+java/lang/Long#divideUnsigned
+java/lang/Long#remainderUnsigned
+java/lang/Long#toUnsignedString
+java/lang/Long#max
+java/lang/Long#min
+java/lang/Long#sum
+java/lang/Long#decode
+java/lang/Long#getLong
+
+# java.lang.String - CLDC 1.1 has no regex and no CharSequence.
+java/lang/String#split
+java/lang/String#matches
+java/lang/String#replaceAll
+java/lang/String#replaceFirst
+java/lang/String#format
+java/lang/String#isEmpty
+java/lang/String#contains
+java/lang/String#join
+java/lang/String#chars
+java/lang/String#codePointAt
+java/lang/String#contentEquals
+java/lang/String#toLowerCase:(Ljava/util/Locale;)Ljava/lang/String;
+java/lang/String#toUpperCase:(Ljava/util/Locale;)Ljava/lang/String;
+java/lang/String#replace:(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
+java/lang/String#getBytes:(Ljava/nio/charset/Charset;)[B
+java/lang/String#compareToIgnoreCase
+
+# java.lang.Character - CLDC 1.1 keeps only isDigit/isLowerCase/isUpperCase/
+# toLowerCase/toUpperCase/digit.
+java/lang/Character#isLetter
+java/lang/Character#isLetterOrDigit
+java/lang/Character#isWhitespace
+java/lang/Character#isSpaceChar
+java/lang/Character#isAlphabetic
+java/lang/Character#getNumericValue
+java/lang/Character#forDigit
+java/lang/Character#compare
+
+# java.lang.Object - CLDC 1.1 removed finalize().
+java/lang/Object#finalize
+
+# Collections API on the legacy containers: CLDC's Vector/Hashtable predate
+# java.util.Collection entirely.
+java/util/Vector#add
+java/util/Vector#get
+java/util/Vector#remove
+java/util/Vector#addAll
+java/util/Vector#removeAll
+java/util/Vector#iterator
+java/util/Vector#listIterator
+java/util/Vector#toArray
+java/util/Vector#forEach
+java/util/Vector#stream
+java/util/Vector#sort
+java/util/Vector#clear
+java/util/Vector#set
+java/util/Hashtable#entrySet
+java/util/Hashtable#keySet
+java/util/Hashtable#values
+java/util/Hashtable#containsValue
+java/util/Hashtable#putAll
+java/util/Hashtable#putIfAbsent
+java/util/Hashtable#getOrDefault
+java/util/Hashtable#forEach
+java/util/Hashtable#compute
+java/util/Hashtable#computeIfAbsent
+java/util/Hashtable#merge
+java/util/Stack#stream
+java/util/Stack#forEach
+
+# Streams/printf on PrintStream
+java/io/PrintStream#printf
+java/io/PrintStream#format
+java/io/PrintStream#append
+
+# java.lang.Thread - CLDC 1.1 has no interrupt()/daemon/ThreadGroup.
+java/lang/Thread#interrupt
+java/lang/Thread#isInterrupted
+java/lang/Thread#interrupted
+java/lang/Thread#setDaemon
+java/lang/Thread#getId
+java/lang/Thread#getState
+java/lang/Thread#getStackTrace
+java/lang/Thread#stop
+java/lang/Thread#suspend
+java/lang/Thread#resume
+
+# java.lang.Throwable - CLDC 1.1 has getMessage/printStackTrace/toString only.
+java/lang/Throwable#getStackTrace
+java/lang/Throwable#setStackTrace
+java/lang/Throwable#getCause
+java/lang/Throwable#initCause
+java/lang/Throwable#addSuppressed
+java/lang/Throwable#getSuppressed
+java/lang/Throwable#fillInStackTrace
+java/lang/Throwable#getLocalizedMessage
+
+# java.lang.Class - no reflection on CLDC.
+java/lang/Class#getMethod
+java/lang/Class#getMethods
+java/lang/Class#getDeclaredMethod
+java/lang/Class#getDeclaredMethods
+java/lang/Class#getField
+java/lang/Class#getFields
+java/lang/Class#getConstructor
+java/lang/Class#getConstructors
+java/lang/Class#getSuperclass
+java/lang/Class#getInterfaces
+java/lang/Class#getSimpleName
+java/lang/Class#getCanonicalName
+java/lang/Class#cast
+java/lang/Class#getClassLoader
