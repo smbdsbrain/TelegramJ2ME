@@ -47,7 +47,44 @@ evidence about the handset.
 
 The WTK emulator narrows the first, third and sixth of these - it is the
 reference MIDP implementation and does run OTA provisioning. A physical-device
-validation pass would still be required; none has been performed.
+session has since been performed on one handset, which confirmed the third and
+fifth rows the hard way: raw sockets to ports 80 and 443 were refused to an
+unsigned MIDlet, and the AMS ordered its Options menu by command *type*, burying
+every `Command.OK` beneath the `Command.SCREEN` entries.
+
+## Automated smoke test
+
+```powershell
+./tools/smoke-emulator.ps1                 # both shipped variants
+./tools/smoke-emulator.ps1 -ArtifactName tg-min
+```
+
+`tools/smoke-emulator.ps1` starts a **packaged** `dist/*.jar` inside
+MicroEmulator's MIDP runtime and asserts that the MIDlet reaches a screen, that
+commands really change screens, that the menu-ordering rule below holds, and
+that no thread of ours outlives `destroyApp`. It runs in CI after the build
+steps and again during a release.
+
+This is the only automated check that runs the artifact which ships. Everything
+in `./tools/test.ps1` executes `build/desktop/classes`, which ProGuard never
+touched, so a keep rule that stopped covering the code, a stripped resource or a
+broken preverification pass would otherwise reach a handset before anything
+noticed. The obfuscated variant is checked too, because it is a different
+ProGuard configuration and can break on its own.
+
+The run is offline - it never presses Connect - so no network, Telegram account
+or RMS profile is involved.
+
+### The menu-ordering rule it enforces
+
+MIDP only promises to honour a command's priority *within* one command type;
+where the types land relative to each other is the handset's business. A real
+handset was measured building its Options menu type by type with `SCREEN` ahead
+of `OK`, which put the primary action of every screen at the *bottom* of the
+menu. So every command that shares a menu must share a type, leaving priority in
+charge: primary actions are `Command.SCREEN` priority 1, diagnostics sort last,
+and only `BACK`/`EXIT`/`CANCEL` are exempt because handsets map those to a
+dedicated key.
 
 ## Running
 

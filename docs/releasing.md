@@ -65,16 +65,23 @@ handset abort the install with an error that names nothing useful.
 artifacts, but skips the publish job. Use it to download and install the exact files
 a release would contain before committing to a tag.
 
-## Before the first release of a new variant
+## Smoke testing the artifacts
 
-`run-emulator.ps1` accepts `-ArtifactName`, so the obfuscated build can be launched
-directly:
+The workflow runs [tools/smoke-emulator.ps1](../tools/smoke-emulator.ps1) against both
+published variants before it verifies the JADs. That starts each packaged JAR in
+MicroEmulator's MIDP runtime and navigates between screens, which is the check that
+static analysis cannot stand in for: obfuscation safety is argued statically (no
+`Class.forName` on project classes, resources loaded by literal path, TL dispatch is a
+`switch` on an int constructor id), but a static argument is not a run.
+
+Locally:
 
 ```powershell
+./tools/build.ps1 -Target tg -Env production
 ./tools/build.ps1 -Target tg -Env production -Release -ArtifactName tg-min
-./tools/run-emulator.ps1 -Target tg -ArtifactName tg-min
+./tools/smoke-emulator.ps1
 ```
 
-Worth doing by hand — sign in, open a dialog, send a message. Obfuscation is checked
-statically (no `Class.forName` on project classes, resources loaded by literal path,
-TL dispatch is a `switch` on an int constructor id), but static checks are not a run.
+Still worth doing by hand before a release that changes the UI — sign in, open a
+dialog, send a message — because the smoke test deliberately stays offline and never
+presses Connect.

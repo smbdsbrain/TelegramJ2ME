@@ -92,6 +92,13 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: ./tools/build.ps1 -Target tg -Env production -Release -ArtifactName "TelegramJ2ME-$env:APP_VERSION-min"
 
+      # Both published variants must still start. Obfuscation is checked
+      # statically at build time, but a static check is not a run, and this is
+      # the last point before the artifacts are public.
+      - name: Emulator smoke test
+        shell: pwsh
+        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName "TelegramJ2ME-${env:APP_VERSION}","TelegramJ2ME-${env:APP_VERSION}-min"
+
       - name: Verify JAD/JAR consistency
         shell: pwsh
         run: |

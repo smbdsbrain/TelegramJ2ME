@@ -97,6 +97,14 @@ jobs:
         shell: pwsh
         run: ./tools/build.ps1 -Target tg -Release -ArtifactName tg-min
 
+      # Everything above proves the jars build. This is the only step that
+      # proves one of them still runs: it starts the packaged MIDlet in
+      # MicroEmulator's MIDP runtime and navigates between screens. A keep rule
+      # that stopped covering the code would exit ProGuard 0 and fail here.
+      - name: Emulator smoke test
+        shell: pwsh
+        run: ./tools/smoke-emulator.ps1 -SkipBuild
+
       - name: Public audit
         shell: pwsh
         run: ./tools/audit-public.ps1
