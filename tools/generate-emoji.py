@@ -65,7 +65,11 @@ def main() -> None:
     indexed.save(out_png, optimize=True)
 
     ordered = sorted((cp, cell) for cell, cp in enumerate(cps))
-    java = ROOT / "generated" / "tg" / "ui" / "EmojiData.java"
+    # Checked in next to res/emoji.png, not written to generated/. Both are
+    # outputs of this one script and only mean anything as a pair - a table that
+    # disagrees with the sprite draws the wrong glyphs - and regenerating either
+    # needs the NotoColorEmoji font, which bootstrap.ps1 cannot supply.
+    java = ROOT / "src" / "tg" / "ui" / "EmojiData.java"
     java.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "package tg.ui;",

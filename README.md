@@ -105,10 +105,14 @@ The build detects it automatically and switches to WTK's `cldcapi11.jar` /
 
 | Artifact | Size | Contents | Use |
 |---|---|---|---|
-| `dist/probe.jar` | ~38 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
-| `dist/crypto.jar` | ~54 KB | + the crypto stack | vectors and benchmarks on the device |
+| `dist/probe.jar` | ~64 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
+| `dist/crypto.jar` | ~80 KB | + the crypto stack | vectors and benchmarks on the device |
 | `dist/tg.jar` | ~393 KB | full client | the messenger |
 | `dist/tg.jar` with `-Release` | ~285 KB | full client, optimised + obfuscated | when the handset caps install size |
+
+Every target currently packages all of `res/`, so `probe.jar` and `crypto.jar`
+each carry the ~20 KB emoji sprite they never draw. Only `tg` is published, so
+this costs nothing today, but it works against the reason `probe.jar` exists.
 
 `probe.jar` deliberately excludes crypto and Telegram code so ProGuard shrinks
 it to something small enough to sideload and reinstall quickly on a 2011 phone.

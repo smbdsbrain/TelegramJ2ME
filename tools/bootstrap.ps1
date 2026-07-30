@@ -234,7 +234,34 @@ if ((Test-Path $porter) -and (Test-Path $origBi)) {
 }
 
 # ==========================================================================
-# 6. Telegram credentials
+# 6. Generate the TL layer
+# ==========================================================================
+# tg.api.Api and tg.api.TlSchema are generated into generated/, which is
+# gitignored, so a fresh clone has no TL layer and src/ does not compile until
+# this has run. Inputs are all committed (schema/*.json, config/tl-whitelist.txt)
+# and the output is deterministic, which is why they are generated rather than
+# checked in.
+Write-Host ""
+Write-Step "TL layer (generated/tg/api)"
+$tlGen = Join-Path $PSScriptRoot "generate-tl.py"
+if (Test-Path $tlGen) {
+    $py = (Get-Command python -ErrorAction SilentlyContinue)
+    if ($py) {
+        & $py.Source $tlGen
+        if ($LASTEXITCODE -ne 0) {
+            Write-Bad "generate-tl.py failed"
+            [void]$problems.Add("tl-gen")
+        }
+    } else {
+        Write-Bad "python not found on PATH"
+        [void]$problems.Add("python")
+    }
+} else {
+    Write-Warn2 "tools/generate-tl.py not present - skipping"
+}
+
+# ==========================================================================
+# 7. Telegram credentials
 # ==========================================================================
 Write-Host ""
 Write-Step "Telegram application identity"
