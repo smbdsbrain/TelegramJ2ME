@@ -327,10 +327,53 @@ $resourceDir = Join-Path $RepoRoot "res"
 if (Test-Path $resourceDir) {
     Copy-Item -Path (Join-Path $resourceDir "*") -Destination $preverDir -Recurse -Force
 }
-$emojiLicense = Join-Path $RepoRoot "third_party\noto-emoji\OFL.txt"
-if (Test-Path $emojiLicense) {
-    Copy-Item -LiteralPath $emojiLicense `
-        -Destination (Join-Path $preverDir "emoji-OFL.txt") -Force
+# Third-party licences travel with the code they cover. Both the Bouncy Castle
+# licence and Apache 2.0 require the notice to reach whoever receives the
+# binary, and the attribution in the source headers does not survive
+# compilation - a .class file carries no comments. Shipping the JAR without
+# these texts does not comply with either licence.
+#
+# Which ones apply is a property of the target, because each
+# config/proguard-<target>.pro keeps a different entry point and ProGuard
+# shrinks to what that entry point reaches. Verified against the built JARs:
+# probe draws emoji but has no bigint and no JPEG; crypto adds bigint; only tg
+# decodes photos. The check below re-confirms it on every non-obfuscated build
+# rather than trusting this comment to stay true.
+$licences = @{
+    probe  = @("noto-emoji")
+    crypto = @("noto-emoji", "bc")
+    tg     = @("noto-emoji", "bc", "pdfjs")
+}[$Target]
+
+$licenceFiles = @{
+    "noto-emoji" = @{ Src = "third_party\noto-emoji\OFL.txt";           Dest = "emoji-OFL.txt";                Class = "EmojiText" }
+    "bc"         = @{ Src = "third_party\bc\LICENSE.html";              Dest = "bouncycastle-LICENSE.html";    Class = "BigInteger" }
+    "pdfjs"      = @{ Src = "third_party\pdfjs\LICENSE-APACHE-2.0.txt"; Dest = "pdfjs-LICENSE-APACHE-2.0.txt"; Class = "JpegDecoder" }
+}
+
+foreach ($id in $licences) {
+    $src = Join-Path $RepoRoot $licenceFiles[$id].Src
+    if (-not (Test-Path $src)) {
+        Write-Bad "missing licence text: $($licenceFiles[$id].Src)"
+        exit 1
+    }
+    Copy-Item -LiteralPath $src `
+        -Destination (Join-Path $preverDir $licenceFiles[$id].Dest) -Force
+}
+Write-Ok ("licences packaged: {0}" -f ($licences -join ", "))
+
+# Obfuscation renames classes, so this can only be checked on a readable build.
+# It catches the one failure that matters: code shipping without its licence.
+if (-not $Release) {
+    foreach ($id in $licenceFiles.Keys) {
+        $cls = $licenceFiles[$id].Class
+        $present = @(Get-ChildItem $preverDir -Recurse -Filter "$cls*.class").Count -gt 0
+        if ($present -and ($licences -notcontains $id)) {
+            Write-Bad "$cls ships in $Target but its licence ($id) does not."
+            Write-Host ("         Add '{0}' to the `$licences table for '{1}' in tools/build.ps1." -f $id, $Target) -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 # StackMap is the whole point of -microedition; verify it actually landed.

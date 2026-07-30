@@ -110,9 +110,11 @@ The build detects it automatically and switches to WTK's `cldcapi11.jar` /
 | `dist/tg.jar` | ~393 KB | full client | the messenger |
 | `dist/tg.jar` with `-Release` | ~285 KB | full client, optimised + obfuscated | when the handset caps install size |
 
-Every target currently packages all of `res/`, so `probe.jar` and `crypto.jar`
-each carry the ~20 KB emoji sprite they never draw. Only `tg` is published, so
-this costs nothing today, but it works against the reason `probe.jar` exists.
+Each JAR also carries the licence texts of the third-party code it actually
+contains — `emoji-OFL.txt` everywhere, plus the Bouncy Castle licence from
+`crypto` on (vendored `BigInteger`) and Apache 2.0 in `tg` (the pdf.js-derived
+`JpegDecoder`). Compiled classes carry no comments, so the attribution in the
+source headers would not otherwise reach anyone who installs the JAR.
 
 `probe.jar` deliberately excludes crypto and Telegram code so ProGuard shrinks
 it to something small enough to sideload and reinstall quickly on a 2011 phone.
