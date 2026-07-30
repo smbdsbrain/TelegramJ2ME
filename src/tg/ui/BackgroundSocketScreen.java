@@ -12,7 +12,7 @@ import tg.plat.MidpTransport;
 /** Holds an echo socket across pauseApp/startApp and reports whether it survived. */
 public final class BackgroundSocketScreen extends Form
 {
-    public static final Command CMD_ARM = new Command("Arm test", Command.OK, 1);
+    public static final Command CMD_ARM = new Command("Arm test", Command.SCREEN, 1);
 
     private final StringItem result;
     private MidpTransport transport;

@@ -13,7 +13,9 @@ import tg.api.AppSettings;
 /** Runtime transport and MTProxy settings persisted in RMS. */
 public final class SettingsScreen extends Form
 {
-    public static final Command CMD_SAVE = new Command("Save", Command.OK, 1);
+    // Command.SCREEN so the handset sorts it by priority alongside the other
+    // menu entries; see the note on the command block in TgMidlet.
+    public static final Command CMD_SAVE = new Command("Save", Command.SCREEN, 1);
 
     private final ChoiceGroup mode;
     private final TextField proxyLink;

@@ -10,7 +10,7 @@ import tg.plat.MidpTransport;
 /** Connect-only probe for a Telegram DC; it never sends malformed bytes. */
 public final class SocketConnectScreen extends Form
 {
-    public static final Command CMD_RUN = new Command("Connect", Command.OK, 1);
+    public static final Command CMD_RUN = new Command("Connect", Command.SCREEN, 1);
     private final String host;
     private final int port;
     private final StringItem result;

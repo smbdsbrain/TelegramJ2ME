@@ -87,54 +87,65 @@ public class TgMidlet extends MIDlet implements CommandListener
 
     private final Command cmdExit    = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack    = new Command("Back", Command.BACK, 2);
-    private final Command cmdConnect = new Command("Connect", Command.OK, 1);
-    private final Command cmdNext    = new Command("Next", Command.OK, 1);
-    private final Command cmdSignIn  = new Command("Sign in", Command.OK, 1);
+
+    // Command.SCREEN, not Command.OK, and the reason is measured rather than
+    // stylistic. MIDP leaves menu placement to the handset, and it only
+    // promises to honour priority *within* a type. The Alcatel OT-810D builds
+    // its Options menu type by type with SCREEN ahead of OK, which buried
+    // "Connect", "Next" and "Sign in" underneath "Log" - the single most
+    // important action on each screen was the last line of the menu. Declaring
+    // the primary action in the same type as everything else it shares a menu
+    // with puts priority back in charge, and priority 1 puts it first.
+    private final Command cmdConnect = new Command("Connect", Command.SCREEN, 1);
+    private final Command cmdNext    = new Command("Next", Command.SCREEN, 1);
+    private final Command cmdSignIn  = new Command("Sign in", Command.SCREEN, 1);
     private final Command cmdCheckPassword =
-            new Command("Check password", Command.OK, 1);
+            new Command("Check password", Command.SCREEN, 1);
     private final Command cmdResendCode =
             new Command("Resend code", Command.SCREEN, 2);
     private final Command cmdChangeNumber =
             new Command("Change number", Command.BACK, 2);
-    private final Command cmdOpen    = new Command("Open", Command.ITEM, 1);
+    private final Command cmdOpen    = new Command("Open", Command.SCREEN, 1);
     private final Command cmdRefresh = new Command("Refresh", Command.SCREEN, 3);
-    private final Command cmdWrite   = new Command("Write", Command.OK, 1);
-    private final Command cmdSend    = new Command("Send", Command.OK, 1);
-    private final Command cmdLog     = new Command("Log", Command.SCREEN, 8);
-    private final Command cmdDiag    = new Command("Diagnostics", Command.SCREEN, 7);
+    private final Command cmdWrite   = new Command("Write", Command.SCREEN, 1);
+    private final Command cmdSend    = new Command("Send", Command.SCREEN, 1);
+    // Diagnostics belong at the bottom of every menu they appear in.
+    private final Command cmdLog     = new Command("Log", Command.SCREEN, 20);
+    private final Command cmdDiag    = new Command("Diagnostics", Command.SCREEN, 19);
     private final Command cmdSettings = new Command("Settings", Command.SCREEN, 8);
     private final Command cmdLogOut  = new Command("Log out", Command.SCREEN, 9);
     private final Command cmdLogOutEverywhere =
             new Command("Log out everywhere", Command.SCREEN, 10);
     private final Command cmdConfirmLogOutEverywhere =
-            new Command("Log out everywhere", Command.OK, 1);
+            new Command("Log out everywhere", Command.SCREEN, 1);
     private final Command cmdOutbox  = new Command("Outbox", Command.SCREEN, 6);
-    private final Command cmdRetrySend = new Command("Retry", Command.OK, 1);
+    private final Command cmdRetrySend = new Command("Retry", Command.SCREEN, 1);
     private final Command cmdDeleteSend = new Command("Delete", Command.SCREEN, 3);
     private final Command cmdReconnect = new Command("Reconnect now", Command.SCREEN, 2);
     private final Command cmdTestDrop = new Command("Test reconnect", Command.SCREEN, 9);
     private final Command cmdReactions = new Command("Reactions", Command.SCREEN, 1);
-    private final Command cmdRetryPhoto = new Command("Retry", Command.OK, 1);
+    private final Command cmdRetryPhoto = new Command("Retry", Command.SCREEN, 1);
     private final Command cmdZoomPhoto = new Command("Zoom", Command.SCREEN, 1);
     private final Command cmdOlder = new Command("Older", Command.SCREEN, 4);
     private final Command cmdMoreDialogs = new Command("More", Command.SCREEN, 4);
     private final Command cmdFilter = new Command("Filter", Command.SCREEN, 3);
-    private final Command cmdApplyFilter = new Command("Apply", Command.OK, 1);
+    private final Command cmdApplyFilter = new Command("Apply", Command.SCREEN, 1);
     private final Command cmdClearFilter = new Command("Clear", Command.SCREEN, 2);
     private final Command cmdSaved = new Command("Saved Messages", Command.SCREEN, 2);
     private final Command cmdMyProfile = new Command("My profile", Command.SCREEN, 3);
     private final Command cmdProfile = new Command("Profile", Command.SCREEN, 3);
     private final Command cmdReply = new Command("Reply", Command.SCREEN, 1);
     private final Command cmdForward = new Command("Forward", Command.SCREEN, 2);
-    private final Command cmdForwardHere = new Command("Forward here", Command.OK, 1);
+    private final Command cmdForwardHere = new Command("Forward here", Command.SCREEN, 1);
     private final Command cmdDeleteMessage = new Command("Delete", Command.SCREEN, 3);
-    private final Command cmdDeleteLocal = new Command("Only for me", Command.OK, 1);
-    private final Command cmdDeleteRevoke = new Command("For everyone", Command.OK, 2);
-    private final Command cmdDeleteChannel = new Command("Delete from channel", Command.OK, 1);
+    private final Command cmdDeleteLocal = new Command("Only for me", Command.SCREEN, 1);
+    private final Command cmdDeleteRevoke = new Command("For everyone", Command.SCREEN, 2);
+    private final Command cmdDeleteChannel =
+            new Command("Delete from channel", Command.SCREEN, 1);
     private final Command cmdMarkAllRead = new Command("Mark all read", Command.SCREEN, 4);
-    private final Command cmdOpenAvatar = new Command("Open avatar", Command.ITEM, 1);
+    private final Command cmdOpenAvatar = new Command("Open avatar", Command.SCREEN, 1);
     private final Command cmdEditProfile = new Command("Edit profile", Command.SCREEN, 1);
-    private final Command cmdSaveProfile = new Command("Save", Command.OK, 1);
+    private final Command cmdSaveProfile = new Command("Save", Command.SCREEN, 1);
 
     private final Worker worker = new Worker();
     private final Worker avatarWorker = new Worker();
