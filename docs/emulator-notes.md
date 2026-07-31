@@ -55,9 +55,16 @@ every `Command.OK` beneath the `Command.SCREEN` entries.
 ## Automated smoke test
 
 ```powershell
-./tools/smoke-emulator.ps1                 # both shipped variants
-./tools/smoke-emulator.ps1 -ArtifactName tg-min
+.\tools\smoke-emulator.ps1                 # both shipped variants
+.\tools\smoke-emulator.ps1 -ArtifactName tg-min
 ```
+```bash
+pwsh -File tools/smoke-emulator.ps1
+```
+
+It runs headless (`-Djava.awt.headless=true`), so no display is needed - but
+`J2SEFontManager` builds AWT font metrics as soon as the device is installed, so
+a minimal Linux image still needs `fontconfig` and a font package.
 
 `tools/smoke-emulator.ps1` starts a **packaged** `dist/*.jar` inside
 MicroEmulator's MIDP runtime and asserts that the MIDlet reaches a screen, that
@@ -66,7 +73,7 @@ that no thread of ours outlives `destroyApp`. It runs in CI after the build
 steps and again during a release.
 
 This is the only automated check that runs the artifact which ships. Everything
-in `./tools/test.ps1` executes `build/desktop/classes`, which ProGuard never
+in the desktop suite executes `build/desktop/classes`, which ProGuard never
 touched, so a keep rule that stopped covering the code, a stripped resource or a
 broken preverification pass would otherwise reach a handset before anything
 noticed. The obfuscated variant is checked too, because it is a different
@@ -89,10 +96,16 @@ dedicated key.
 ## Running
 
 ```powershell
-./tools/run-emulator.ps1 -Target probe            # MicroEmulator
-./tools/run-emulator.ps1 -Target probe -UseWtk    # Sun WTK, needs WTK_HOME
-./tools/run-emulator.ps1 -Target probe -UseWtk -Ota
+.\tools\run-emulator.ps1 -Target probe            # MicroEmulator
+.\tools\run-emulator.ps1 -Target probe -UseWtk    # Sun WTK, needs WTK_HOME
+.\tools\run-emulator.ps1 -Target probe -UseWtk -Ota
 ```
+```bash
+pwsh -File tools/run-emulator.ps1 -Target probe
+```
+
+Unlike the smoke test this one opens a window, so on Linux it needs an X or
+Wayland session; `-Headless` runs `org.microemu.app.Headless` instead.
 
 `-Ota` drives WTK's `-Xjam` provisioning flow against `dist/probe.jad`, which is
 the closest desktop approximation of installing over the air.

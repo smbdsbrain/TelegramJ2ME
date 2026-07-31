@@ -15,7 +15,7 @@
 param()
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 $dockerVersion = & docker version --format '{{.Server.Version}}' 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -38,7 +38,7 @@ try {
         throw "Could not determine the public IPv4 address required by MTProxy --nat-info"
     }
 
-    & docker build -t $image -f (Join-Path $RepoRoot "tools\mtproxy\Dockerfile") $RepoRoot
+    & docker build -t $image -f (Join-RepoPath "tools" "mtproxy" "Dockerfile") $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "MTProxy Docker build failed" }
 
     & docker run --rm -d --name $container `

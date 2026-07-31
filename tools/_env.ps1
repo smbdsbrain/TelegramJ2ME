@@ -1,14 +1,23 @@
 # tools/_env.ps1
 #
 # Shared toolchain resolution. Dot-source this from every other script:
-#     . "$PSScriptRoot\_env.ps1"
+#     . (Join-Path $PSScriptRoot "_env.ps1")
 #
 # Resolves, without mutating anything:
 #   $RepoRoot, $Jdk8Home, $Jdk8Javac, $Jdk8Java, $Jdk8Jar, $Jdk8RtJar,
-#   $WtkHome (or $null), $SdkDir, $ProGuardJar, $MicroEmuJars, $BootClassPath
+#   $WtkHome (or $null), $SdkDir, $ProGuardJar, $MicroEmuJars, $BootClassPath,
+#   $OnWindows, $ExeSuffix, $PathSep
 #
 # Everything is a plain file-system lookup so the build stays reproducible and
 # IDE-free. Nothing here downloads; see bootstrap.ps1 for that.
+#
+# Cross-platform rules for anything added here or in a sibling script:
+#   - never embed a separator in a path literal ("build\device"); use
+#     Join-RepoPath or chained Join-Path, because Join-Path does not split a
+#     backslash on Linux and would create one file with a backslash in its name
+#   - join classpaths with $PathSep, never ";"
+#   - append $ExeSuffix to a JDK binary, never ".exe"
+#   - resolve Python through Get-PythonCommand, never a bare `python`
 
 Set-StrictMode -Version Latest
 
@@ -16,10 +25,53 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot        = $script:RepoRoot
 $SdkDir          = Join-Path $RepoRoot "sdk"
 
+# --------------------------------------------------------------------------
+# Platform. These scripts run on Windows PowerShell 5.1 and on PowerShell 7
+# for Linux and macOS; $IsWindows only exists on 6+, hence the probe rather
+# than a bare reference, which Set-StrictMode would otherwise make fatal.
+# --------------------------------------------------------------------------
+$OnWindows  = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
+$ExeSuffix  = if ($OnWindows) { ".exe" } else { "" }
+$PathSep    = [IO.Path]::PathSeparator
+
 function Write-Step ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Ok   ($m) { Write-Host "    OK   $m" -ForegroundColor Green }
 function Write-Warn2($m) { Write-Host "    WARN $m" -ForegroundColor Yellow }
 function Write-Bad  ($m) { Write-Host "    FAIL $m" -ForegroundColor Red }
+
+# Repo-relative path from segments. Join-Path does not split a "a\b" literal on
+# Linux, so it would silently create one file *named* "a\b" - use this instead
+# of embedding a separator in a single string.
+function Join-RepoPath {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Segments)
+    $p = $RepoRoot
+    foreach ($s in $Segments) { $p = Join-Path $p $s }
+    return $p
+}
+
+# Path shown to a human: repo-relative, forward slashes, no leading root.
+function Format-RepoRelative ($path) {
+    $full = [IO.Path]::GetFullPath($path)
+    $root = $RepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar,
+                              [IO.Path]::AltDirectorySeparatorChar)
+    if ($full.StartsWith($root)) {
+        $full = $full.Substring($root.Length).TrimStart('\', '/')
+    }
+    return $full.Replace('\', '/')
+}
+
+# Debian, Fedora and Arch all ship python3 without a bare `python`; Windows and
+# the python.org installers give `python`. Try both rather than pick one.
+function Get-PythonCommand {
+    foreach ($n in @("python3", "python")) {
+        $c = Get-Command $n -ErrorAction SilentlyContinue
+        if ($c) {
+            $v = (& $c.Source --version 2>&1 | Out-String)
+            if ($v -match 'Python 3') { return $c.Source }
+        }
+    }
+    return $null
+}
 
 # --------------------------------------------------------------------------
 # JDK 8 -- mandatory for the device profile.
@@ -30,26 +82,52 @@ function Resolve-Jdk8 {
 
     if ($env:JDK8_HOME) { [void]$candidates.Add($env:JDK8_HOME) }
 
-    $roots = @(
-        "$env:ProgramFiles\Eclipse Adoptium",
-        "$env:ProgramFiles\Java",
-        "$env:ProgramFiles\Microsoft",
-        "$env:ProgramFiles\Zulu",
-        "$env:ProgramFiles\Amazon Corretto",
-        "${env:ProgramFiles(x86)}\Eclipse Adoptium",
-        "${env:ProgramFiles(x86)}\Java",
-        "$env:LOCALAPPDATA\Programs\Eclipse Adoptium"
-    )
+    if ($OnWindows) {
+        $roots = @(
+            "$env:ProgramFiles\Eclipse Adoptium",
+            "$env:ProgramFiles\Java",
+            "$env:ProgramFiles\Microsoft",
+            "$env:ProgramFiles\Zulu",
+            "$env:ProgramFiles\Amazon Corretto",
+            "${env:ProgramFiles(x86)}\Eclipse Adoptium",
+            "${env:ProgramFiles(x86)}\Java",
+            "$env:LOCALAPPDATA\Programs\Eclipse Adoptium"
+        )
+    } else {
+        # Debian/Ubuntu and Fedora both use /usr/lib/jvm; the rest are the
+        # common manual and version-manager locations.
+        $roots = @(
+            "/usr/lib/jvm",
+            "/usr/java",
+            "/opt/java",
+            "/Library/Java/JavaVirtualMachines",
+            "$HOME/.sdkman/candidates/java",
+            "$HOME/.jdks"
+        )
+    }
     foreach ($r in $roots) {
-        if (Test-Path $r) {
+        if ($r -and (Test-Path $r)) {
             Get-ChildItem $r -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match '(^|[-_])(jdk-?8|1\.8|jdk8)' } |
+                Where-Object { $_.Name -match '(^|[-_.])(java-?8|jdk-?8|1\.8|8u|8($|[-_.]))' } |
                 ForEach-Object { [void]$candidates.Add($_.FullName) }
         }
     }
 
+    # macOS bundles land at <home>/Contents/Home; a Linux distro package does not.
+    foreach ($c in @($candidates)) {
+        $inner = Join-Path (Join-Path $c "Contents") "Home"
+        if (Test-Path $inner) { [void]$candidates.Add($inner) }
+    }
+
+    # Last resort: whatever javac is on PATH, if it happens to be 8.
+    $onPath = Get-Command "javac$ExeSuffix" -ErrorAction SilentlyContinue
+    if ($onPath) {
+        $bin = Split-Path (Split-Path $onPath.Source -Parent) -Parent
+        if ($bin) { [void]$candidates.Add($bin) }
+    }
+
     foreach ($c in $candidates) {
-        $javac = Join-Path $c "bin\javac.exe"
+        $javac = Join-Path (Join-Path $c "bin") "javac$ExeSuffix"
         if (Test-Path $javac) {
             $v = (& $javac -version 2>&1 | Out-String).Trim()
             if ($v -match 'javac 1\.8') { return $c }
@@ -60,11 +138,14 @@ function Resolve-Jdk8 {
 
 $Jdk8Home = Resolve-Jdk8
 if ($Jdk8Home) {
-    $Jdk8Javac = Join-Path $Jdk8Home "bin\javac.exe"
-    $Jdk8Java  = Join-Path $Jdk8Home "bin\java.exe"
-    $Jdk8Jar   = Join-Path $Jdk8Home "bin\jar.exe"
-    $Jdk8RtJar = Join-Path $Jdk8Home "jre\lib\rt.jar"
-    if (-not (Test-Path $Jdk8RtJar)) { $Jdk8RtJar = Join-Path $Jdk8Home "lib\rt.jar" }  # JDK-image layout
+    $Jdk8Bin   = Join-Path $Jdk8Home "bin"
+    $Jdk8Javac = Join-Path $Jdk8Bin "javac$ExeSuffix"
+    $Jdk8Java  = Join-Path $Jdk8Bin "java$ExeSuffix"
+    $Jdk8Jar   = Join-Path $Jdk8Bin "jar$ExeSuffix"
+    $Jdk8RtJar = Join-Path (Join-Path (Join-Path $Jdk8Home "jre") "lib") "rt.jar"
+    if (-not (Test-Path $Jdk8RtJar)) {
+        $Jdk8RtJar = Join-Path (Join-Path $Jdk8Home "lib") "rt.jar"  # JDK-image layout
+    }
 } else {
     $Jdk8Javac = $null; $Jdk8Java = $null; $Jdk8Jar = $null; $Jdk8RtJar = $null
 }
@@ -76,13 +157,23 @@ if ($Jdk8Home) {
 function Resolve-Wtk {
     $candidates = @()
     if ($env:WTK_HOME) { $candidates += $env:WTK_HOME }
-    $candidates += @(
-        "C:\WTK2.5.2_01", "C:\WTK2.5.2",
-        "$env:ProgramFiles\WTK2.5.2_01", "${env:ProgramFiles(x86)}\WTK2.5.2_01",
-        "$env:USERPROFILE\WTK2.5.2_01"
-    )
+    if ($OnWindows) {
+        $candidates += @(
+            "C:\WTK2.5.2_01", "C:\WTK2.5.2",
+            "$env:ProgramFiles\WTK2.5.2_01", "${env:ProgramFiles(x86)}\WTK2.5.2_01",
+            "$env:USERPROFILE\WTK2.5.2_01"
+        )
+    } else {
+        # The Linux installer (sun_java_wireless_toolkit-2.5.2_01-linux.bin) is
+        # interactive and defaults to the home directory.
+        $candidates += @(
+            "$HOME/WTK2.5.2_01", "$HOME/WTK2.5.2",
+            "/opt/WTK2.5.2_01", "/opt/WTK2.5.2",
+            "/usr/local/WTK2.5.2_01"
+        )
+    }
     foreach ($c in $candidates) {
-        if ($c -and (Test-Path (Join-Path $c "lib\cldcapi11.jar"))) { return $c }
+        if ($c -and (Test-Path (Join-Path (Join-Path $c "lib") "cldcapi11.jar"))) { return $c }
     }
     return $null
 }
@@ -110,7 +201,7 @@ $MicroEmuJars  = @($MicroEmuCldc, $MicroEmuMidp, $MicroEmuJavase, $MicroEmuSwing
                    $MicroEmuInject, $Asm)
 
 $ProGuardDir = Join-Path $SdkDir "proguard-7.4.2"
-$ProGuardJar = Join-Path $ProGuardDir "lib\proguard.jar"
+$ProGuardJar = Join-Path (Join-Path $ProGuardDir "lib") "proguard.jar"
 
 # --------------------------------------------------------------------------
 # -bootclasspath for the device profile.
@@ -124,12 +215,13 @@ $ProGuardJar = Join-Path $ProGuardDir "lib\proguard.jar"
 # --------------------------------------------------------------------------
 function Get-DeviceBootClassPath {
     if ($WtkHome) {
+        $wtkLib = Join-Path $WtkHome "lib"
         return @(
-            (Join-Path $WtkHome "lib\cldcapi11.jar"),
-            (Join-Path $WtkHome "lib\midpapi20.jar")
-        ) -join ";"
+            (Join-Path $wtkLib "cldcapi11.jar"),
+            (Join-Path $wtkLib "midpapi20.jar")
+        ) -join $PathSep
     }
-    return @($MicroEmuCldc, $MicroEmuMidp, $Jdk8RtJar) -join ";"
+    return @($MicroEmuCldc, $MicroEmuMidp, $Jdk8RtJar) -join $PathSep
 }
 
 function Get-BootClassPathMode {
@@ -184,8 +276,8 @@ function Get-TelegramSecrets {
 
     # Minimal flat "key: value" reader. The file is ours and one level deep, so
     # a real YAML parser would be a dependency bought for nothing.
-    $yaml = Join-Path $RepoRoot "secrets\telegram.yaml"
-    $props = Join-Path $RepoRoot "config\app.properties"
+    $yaml  = Join-RepoPath "secrets" "telegram.yaml"
+    $props = Join-RepoPath "config" "app.properties"
 
     $path = $null
     $separator = $null
@@ -206,7 +298,7 @@ function Get-TelegramSecrets {
             'name'     { $result.name = $value }
         }
     }
-    $result.source = $path.Replace("$RepoRoot\", "")
+    $result.source = Format-RepoRelative $path
     return $result
 }
 

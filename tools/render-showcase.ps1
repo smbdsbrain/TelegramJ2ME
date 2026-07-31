@@ -14,7 +14,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -30,16 +30,20 @@ if (-not $SkipBuild) {
     Write-Host ""
 }
 
-$classes = Join-Path $RepoRoot "build\desktop\classes"
-$tests = Join-Path $RepoRoot "build\desktop\test-classes"
+$classes = Join-RepoPath "build" "desktop" "classes"
+$tests = Join-RepoPath "build" "desktop" "test-classes"
 $resources = Join-Path $RepoRoot "res"
-$output = Join-Path $RepoRoot "docs\screenshots"
-if (-not (Test-Path (Join-Path $tests "tgtest\ShowcaseRenderer.class"))) {
+$output = Join-RepoPath "docs" "screenshots"
+if (-not (Test-Path (Join-Path (Join-Path $tests "tgtest") "ShowcaseRenderer.class"))) {
     Write-Bad "showcase renderer is not compiled"
     exit 1
 }
 
-$runtimeCp = (@($classes, $tests, $resources) + $MicroEmuJars) -join ";"
+$runtimeCp = (@($classes, $tests, $resources) + $MicroEmuJars) -join $PathSep
 Write-Step "privacy-safe showcase screenshots"
-& $Jdk8Java -cp $runtimeCp tgtest.ShowcaseRenderer $output
+# Headless because this only ever writes PNGs, and because AWT otherwise wants a
+# display. Note that font rasterisation still differs between platforms: the
+# committed screenshots were rendered on Windows, so regenerating them elsewhere
+# produces visually different images. Review before committing a cross-OS rerun.
+& $Jdk8Java "-Djava.awt.headless=true" -cp $runtimeCp tgtest.ShowcaseRenderer $output
 exit $LASTEXITCODE

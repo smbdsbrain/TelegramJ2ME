@@ -11,7 +11,7 @@
 param()
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 $dockerVersion = & docker version --format '{{.Server.Version}}' 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -31,7 +31,7 @@ $configPath = Join-Path ([IO.Path]::GetTempPath()) (
     "telegramj2me-telemt-{0}.toml" -f [Guid]::NewGuid().ToString("N"))
 
 try {
-    $template = Get-Content -Raw (Join-Path $PSScriptRoot "telemt\test-config.toml.in")
+    $template = Get-Content -Raw (Join-Path (Join-Path $PSScriptRoot "telemt") "test-config.toml.in")
     [IO.File]::WriteAllText(
         $configPath,
         $template.Replace("__SECRET__", $secretHex),

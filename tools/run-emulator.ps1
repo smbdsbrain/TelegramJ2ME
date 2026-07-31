@@ -54,12 +54,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 if (-not $ArtifactName) { $ArtifactName = $Target }
 
-$jar = Join-Path $RepoRoot "dist\$ArtifactName.jar"
-$jad = Join-Path $RepoRoot "dist\$ArtifactName.jad"
+$jar = Join-RepoPath "dist" "$ArtifactName.jar"
+$jad = Join-RepoPath "dist" "$ArtifactName.jad"
 
 if (-not (Test-Path $jar)) {
     Write-Bad "dist/$ArtifactName.jar not found. Build it first:  ./tools/build.ps1 -Target $Target"
@@ -79,12 +79,16 @@ if ($UseWtk) {
         Write-Host "  https://www.oracle.com/java/technologies/java-archive-downloads-javame-downloads.html"
         exit 1
     }
-    $emulator = Join-Path $WtkHome "bin\emulator.exe"
+    $emulator = Join-Path (Join-Path $WtkHome "bin") "emulator$ExeSuffix"
     if (-not (Test-Path $emulator)) { Write-Bad "not found: $emulator"; exit 1 }
 
     if ($Ota) {
         Write-Step "WTK emulator, OTA provisioning (-Xjam) from $jad"
-        & $emulator "-Xjam:install=file:///$($jad -replace '\\','/')"
+        # file:// plus an absolute path. On Windows that path starts with a drive
+        # letter and needs the third slash ("file:///C:/..."); on Linux it already
+        # starts with one, so [Uri] is left to produce the right form either way.
+        $jadUri = ([Uri](Resolve-Path $jad).Path).AbsoluteUri
+        & $emulator "-Xjam:install=$jadUri"
     } else {
         Write-Step "WTK emulator, direct launch of dist/$Target.jar"
         & $emulator "-Xdescriptor:$jad"
@@ -122,7 +126,7 @@ if ($EmulatorProfile -eq 'default') {
     # MicroEmulator GUI 2.0.4 processes --id after Config has already cached
     # its home path, so --id does not reliably isolate RMS. A JVM property is
     # evaluated before any MicroEmulator class loads and is therefore strict.
-    $profileHome = Join-Path $RepoRoot "local\microemulator\$EmulatorProfile"
+    $profileHome = Join-RepoPath "local" "microemulator" $EmulatorProfile
     New-Item -ItemType Directory -Force -Path $profileHome | Out-Null
     $javaProfileArgs = @("-Duser.home=$profileHome")
     $profileLabel = $EmulatorProfile
@@ -134,7 +138,7 @@ if ($EmulatorProfile -eq 'default') {
 # file handle while a rebuild and another profile use a different file.
 $jarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar).Hash.Substring(0, 12).ToLowerInvariant()
 $profileKey = if ($EmulatorProfile -eq 'default') { 'default' } else { $EmulatorProfile }
-$launchDir = Join-Path $RepoRoot "build\emulator\$profileKey"
+$launchDir = Join-RepoPath "build" "emulator" $profileKey
 New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
 $launchJar = Join-Path $launchDir "$Target-$jarHash.jar"
 if (-not (Test-Path $launchJar)) {
@@ -143,7 +147,7 @@ if (-not (Test-Path $launchJar)) {
 
 # Putting the staged JAR on the classpath and naming the MIDlet class starts it
 # immediately instead of showing MicroEmulator's launcher list.
-$cp = ($MicroEmuJars + @($launchJar)) -join ";"
+$cp = ($MicroEmuJars + @($launchJar)) -join $PathSep
 
 Write-Step "MicroEmulator [$profileLabel] :: $midletClass from dist/$ArtifactName.jar"
 Write-Host "    staged binary: $launchJar"

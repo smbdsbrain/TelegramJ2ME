@@ -12,17 +12,26 @@ on:
 
 # One run per branch. Pushing twice in quick succession, or updating a pull
 # request, cancels the run that is already obsolete instead of paying for a
-# Windows runner to finish answering a stale question.
+# runner to finish answering a stale question.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    # The toolchain is Windows PowerShell throughout: tools/_env.ps1 resolves
-    # bin\javac.exe and joins classpaths with ';'. Public repositories get
-    # Windows runner minutes for free.
-    runs-on: windows-latest
+    # The toolchain is PowerShell throughout, which is why both runners can share
+    # one set of steps: `shell: pwsh` is pwsh 7 on Ubuntu and on Windows alike.
+    #
+    # Windows is the reference host - release.yml builds there, and public
+    # repositories get Windows runner minutes for free. Linux is here so the
+    # cross-platform path cannot rot silently: tools/_env.ps1 has to keep
+    # resolving bin/javac without .exe and joining classpaths with ':'.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +52,12 @@ jobs:
         with:
           python-version: '3.x'
 
+      # MicroEmulator's J2SEFontManager builds AWT font metrics as soon as the
+      # device is installed, so the headless smoke test still needs a font.
+      - name: Fonts for the headless emulator
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fontconfig fonts-dejavu-core
+
       # sdk/ is ~35 MB of pinned downloads, dominated by the ProGuard zip. The
       # lock file carries the sha256 of every artifact, so its hash is the
       # correct cache key: change a pin and the cache misses by construction.
@@ -59,7 +74,8 @@ jobs:
       # bootstrap regenerates src/tg/crypto/bigint/BigInteger.java from the
       # vendored Bouncy Castle source, and that file is committed. If the two
       # disagree, the checked-in copy was hand-edited or the porter changed -
-      # either way the repository no longer reproduces itself.
+      # either way the repository no longer reproduces itself. Running this on
+      # both operating systems also proves the generator is OS-independent.
       - name: Checked-in generated sources are reproducible
         shell: pwsh
         run: |
@@ -104,6 +120,16 @@ jobs:
       - name: Emulator smoke test
         shell: pwsh
         run: ./tools/smoke-emulator.ps1 -SkipBuild
+
+      # The .sh wrappers are what the Linux instructions in docs/building.md
+      # tell people to run, so check they actually exec pwsh correctly rather
+      # than only ever testing the .ps1 files directly.
+      - name: Shell wrappers
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x tools/*.sh
+          ./tools/build.sh -Target probe
+          ./tools/test.sh -SkipBuild
 
       - name: Public audit
         shell: pwsh

@@ -12,16 +12,16 @@
 param()
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
-if (-not $Jdk8Jar) { throw "JDK 8 jar.exe not found; run tools/bootstrap.ps1" }
+if (-not $Jdk8Jar) { throw "JDK 8 jar tool not found; run tools/bootstrap.ps1" }
 
 & (Join-Path $PSScriptRoot "build.ps1") -Target probe
 if ($LASTEXITCODE -ne 0) { throw "probe build failed" }
 
-$baseJar = Join-Path $RepoRoot "dist\probe.jar"
-$outDir = Join-Path $RepoRoot "dist\size-ladder"
-$workDir = Join-Path $RepoRoot "build\size-ladder"
+$baseJar = Join-RepoPath "dist" "probe.jar"
+$outDir = Join-RepoPath "dist" "size-ladder"
+$workDir = Join-RepoPath "build" "size-ladder"
 
 if (Test-Path $outDir) { Remove-Item -LiteralPath $outDir -Recurse -Force }
 if (Test-Path $workDir) { Remove-Item -LiteralPath $workDir -Recurse -Force }

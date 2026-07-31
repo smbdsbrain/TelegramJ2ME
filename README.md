@@ -1,301 +1,282 @@
 # TelegramJ2ME
 
+**Telegram for Java ME feature phones.** A real MTProto 2.0 client that runs on
+the handset — no server, no proxy service, no web wrapper.
+
 [![CI](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml/badge.svg)](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/smbdsbrain/TelegramJ2ME?sort=semver)](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)
 [![License: WTFPL](https://img.shields.io/badge/license-WTFPL-blue.svg)](LICENSE)
 
-Telegram messaging on phones from the Java ME era.
+It installs as an ordinary `.jar` on a **MIDP 2.0 / CLDC 1.1** handset and signs
+in to your Telegram account. Cryptography, authorization keys, TL serialization
+and Telegram state all live on the phone. Nothing relays your messages through
+anyone else's machine.
 
-TelegramJ2ME is an experimental client that speaks **MTProto 2.0 directly on
-the handset**. It supports direct TCP, obfuscated2, classic/`dd`/`ee` MTProxy
-and MTProto over HTTP with automatic fallback. Cryptography, authorization
-keys, TL serialization and Telegram state all remain on the device—there is no
-application backend or web wrapper.
-
-The code targets the CLDC 1.1 / MIDP 2.0 API subset and uses an adaptive Canvas
-UI, including a 320×240 landscape layout.
+In practice that means a late feature phone — roughly 2008 onwards — or a
+high-end handset from a few years before that. See
+[what your phone needs](#what-your-phone-needs).
 
 <p align="center">
-  <img src="docs/screenshots/dialog-list.png" width="320" alt="TelegramJ2ME fictional dialog list">
-  <img src="docs/screenshots/weekend-chat.png" width="320" alt="TelegramJ2ME fictional group chat">
-  <img src="docs/screenshots/j2me-club-dark.png" width="320" alt="TelegramJ2ME fictional dark theme chat">
+  <img src="docs/screenshots/dialog-list.png" width="320" alt="TelegramJ2ME chat list on a 320x240 Java ME screen">
+  <img src="docs/screenshots/weekend-chat.png" width="320" alt="TelegramJ2ME group chat with emoji on a feature phone">
+  <img src="docs/screenshots/j2me-club-dark.png" width="320" alt="TelegramJ2ME dark theme conversation">
 </p>
 
 <p align="center"><sub>Real application UI at 320×240, scaled 2×. Every name and conversation is fictional.</sub></p>
 
 > [!WARNING]
-> TelegramJ2ME is an independent, early-stage project. It is not affiliated
-> with or endorsed by Telegram, and it should not yet be treated as a
+> TelegramJ2ME is an independent, early-stage project. It is not affiliated with
+> or endorsed by Telegram, and it should not yet be treated as a
 > security-audited everyday client.
 
-> [!NOTE]
-> Runtime testing has only been performed in MicroEmulator. TelegramJ2ME has
-> not yet been tested on a physical Java ME phone, so hardware compatibility,
-> performance, permissions and installation behaviour remain unverified.
+---
+
+## It runs on a real phone
+
+Not just in an emulator. A physical MIDP 2.0 handset — a 2011-era candybar with
+about 5 MB of Java heap and **no Wi-Fi at all, only GPRS** — has run the whole
+thing end to end:
+
+- the full `req_pq_multi` … `dh_gen_ok` authorization handshake, with both
+  2048-bit modular exponentiations computed on the phone's own CPU;
+- MTProto 2.0 encryption, salt adoption, gzip inflate and keepalive over 2G;
+- the auth key persisted to RMS and reused on the next start;
+- **sign-in, the dialog list, and sending a message.**
+
+The first connection is slow — a 2048-bit Diffie-Hellman on a CPU from 2011 is
+measured in seconds, not milliseconds — but it only happens once, and after that
+the client is talking to Telegram over a GPRS link like any other MTProto
+client.
+
+That is **one device on one network**, and it establishes nothing about yours.
+Installing it and reporting what happens is genuinely the most useful thing
+anyone can do for this project right now.
+
+> One finding worth knowing before you start: some handsets refuse `socket://`
+> to ports 80 and 443 for an unsigned MIDlet — `Target port denied to untrusted
+> applications` — while permitting other ports. That is a policy, not a bug. If
+> the direct routes are refused that way, configure an **MTProxy on a high port**
+> in Settings *before* the first connection attempt.
+
+---
+
+## What works
+
+**Account**
+- Sign in with a phone number and an SMS or in-app code
+- Two-step verification (cloud password)
+- Sign up for a new account
+- Resend or cancel the code · change number
+- Log out, or log out of every other session
+- View and edit your own profile
+
+**Chats**
+- Chat list with unread badges, pinned and peer icons, and avatars
+- Filter the chat list by name
+- Saved Messages
+- Open a chat by `@username`
+- View a peer's profile
+- Mark all read
+
+**Messages**
+- Read history and page back through it
+- Send text
+- Reply
+- Forward to another chat
+- Delete for yourself, for everyone, or from a channel
+- Read receipts, incoming and outgoing, channels included
+- Send and remove reactions, with the picker and the "who reacted" list
+- Live updates with gap recovery — a real update state machine, not polling
+
+**On a bad connection**
+- Persistent outbox: queued messages survive a restart and replay with their
+  original `random_id`, with retry and delete per message
+- Per-peer drafts, autosaved
+- Offline cache — the app opens to readable recent chats with no signal
+- Reconnect with bounded backoff, plus a manual "Reconnect now"
+
+**Getting through**
+- Direct TCP
+- obfuscated2
+- MTProxy — classic, `dd` and `ee`/FakeTLS secrets
+- MTProto over HTTP
+- Automatic fallback across all four, remembering what last worked
+- `tg://proxy` links pasted straight into Settings
+- Multiple data centres, with transparent migration at sign-in
+
+**Media**
+- View photos, with zoom and D-pad pan
+- Pure-Java JPEG decoder — most of these handsets cannot decode JPEG themselves
+- Blurred inline thumbnails in the chat list
+- Avatars, cached on the device
+- ~150 emoji from a sprite atlas
+- Every other media type labelled in place — `[sticker]`, `[voice]`, `[video]` —
+  so the conversation still reads correctly, though nothing but a photo can
+  actually be opened
+
+**Interface**
+- Adaptive Canvas UI that measures the viewport instead of assuming it
+- Light, dark and high-contrast themes
+- Diagnostics: per-route attempt log, byte counters, retry countdown
+- In-app log, and a crash log that survives the MIDlet dying
+- Optional remote logging over TCP
+
+**Cryptography, all on the handset**
+- MTProto 2.0: SHA-1/256/512, HMAC, PBKDF2, AES-CTR, AES-IGE, 2048-bit bigint
+- The authorization key is generated on the phone and never leaves it
+- SRP-6a for two-step verification
+
+**Two companion MIDlets**
+- **Probe** (~64 KB) — reports what your handset actually supports: platform,
+  heap, RMS, raw sockets, key codes, image decoding
+- **Crypto** — runs the cryptographic test vectors and benchmarks on the device
+
+## What is not there yet
+
+Mostly because of what the platform is: a few megabytes of heap, no codecs, no
+background execution and a CPU without a JIT.
+
+**Sending — outbound is text only**
+- Photos, files, voice, any attachment at all
+- Editing a message you already sent
+
+**Opening incoming media other than photos.** The message itself arrives
+normally, text and all, but where the attachment should be there is only a label
+— `[voice]`, `[file]`, `[video]` — and no way to download or open it:
+- Files and documents
+- Voice messages, music, video, round video, GIFs
+- Stickers, animated stickers, custom emoji
+
+Photos are the one exception: those download and open.
+
+**Not implemented**
+- Notifications of any kind, including background alerts
+- Secret chats (end-to-end)
+- Voice and video calls
+- Server-side message search
+- Folders, polls, scheduled messages, typing indicators
+- Group and channel administration
+- Contact management
+- Stories, Mini Apps, bots beyond plain messages
+- Localisation — English only
+
+**Bounded by design** — 200 chats, 120 messages of history per chat, 64 queued
+outgoing messages, 1000 characters per message. These are memory budgets, not
+placeholders.
+
+**Two security caveats, stated plainly.** The random number generator's
+**seeding has not been verified on hardware**, so keys generated on a phone
+should be treated as development keys for now
+([details](docs/architecture.md#security-posture-stated-honestly)). And **RMS
+offers no encryption**, so anyone holding your phone and the right tools can
+extract the session.
 
 ---
 
 ## Install
 
+### What your phone needs
+
+| | |
+|---|---|
+| **MIDP 2.0 and CLDC 1.1** | Both are declared in the manifest. CLDC 1.0 will not run it. |
+| **A few MB of Java heap** | The one handset that has run this had 5 MB. MTProto's 2048-bit arithmetic, a decoded photo and the caches all want room at once. |
+| **A JAR size limit above ~300 KB** | The `-min` build is 291 KB and the normal one is 409 KB. |
+| **Raw TCP (`socket://`), or HTTP** | Raw sockets are the good path. There is an MTProto-over-HTTP fallback for handsets that refuse them outright. |
+
+That rules out the early 2000s. A phone with a 64 KB JAR cap and a few hundred
+KB of heap cannot hold the crypto stack, never mind a photo — the arithmetic
+does not fit before the UI is even considered. What does work is a **late
+feature phone, roughly 2008 onwards**, or a high-end handset from a few years
+earlier: the generation with megabytes of heap, a real file manager and no
+meaningful JAR ceiling.
+
+Rather than guess from a spec site — they disagree about exactly these
+numbers — install **`TelegramJ2ME Probe`** first. It is ~64 KB, installs in
+seconds, and reports the heap, the JAR limit, whether raw sockets are permitted
+and whether the phone can decode a JPEG.
+
+### Getting the files on
+
 Prebuilt MIDlets are attached to every release:
 **[latest release](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)**.
 
-Download **both files** of one variant into the **same folder**, copy that folder to
-the phone (USB, Bluetooth or memory card), then open the `.jad` from the phone's file
-manager. If the handset refuses the `.jad`, open the `.jar` instead — most will
-install it directly.
+Download **both files** of one variant into the **same folder**, copy that
+folder to the phone (USB, Bluetooth or memory card), then open the `.jad` from
+the phone's file manager. If the handset refuses the `.jad`, open the `.jar`
+instead — most will install it directly.
 
-| Variant | When |
+### Which build?
+
+| | |
 |---|---|
-| `TelegramJ2ME-<version>.jar` + `.jad` | Start here. Crash reports name real classes, which is worth a lot while the client is this young. |
-| `TelegramJ2ME-<version>-min.jar` + `.jad` | Optimised and obfuscated, roughly 30% smaller. Use it if your phone rejects the normal build as too large. |
+| **`TelegramJ2ME-<version>.jar` + `.jad`**<br>~400 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
+| **`TelegramJ2ME-<version>-min.jar` + `.jad`**<br>~291 KB | The same client, optimised and obfuscated — about 27% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
 
-The `.jad` records the exact byte size of its `.jar`, so don't rename either file and
-don't mix files from different variants or releases — the AMS aborts the install on a
-one-byte disagreement. Checksums are published as `SHA256SUMS.txt`.
+Both are checked by an automated emulator run before release, obfuscated one
+included.
 
-Opening the release link in the phone's own browser to install over the air will not
-work: GitHub requires modern TLS, which these handsets do not have.
+**Do not rename either file, and do not mix files from different variants or
+releases.** The `.jad` records the exact byte size of its `.jar`, and the phone's
+installer aborts on a one-byte disagreement. Checksums are published as
+`SHA256SUMS.txt`.
 
-> [!IMPORTANT]
-> This has been run on exactly one physical handset, where sign-in, the dialog
-> list and sending a message all work. One device on one network proves nothing
-> about yours, so installing it and reporting what happens is still genuinely
-> useful — the handset model plus whatever `TelegramJ2ME Probe` reports is
-> exactly the missing information.
->
-> One thing that session did establish: some handsets refuse `socket://` to
-> ports 80 and 443 for an unsigned MIDlet, with `Target port denied to
-> untrusted applications`, while permitting other ports. If the direct routes
-> are refused that way, an MTProxy on a high port is worth configuring in
-> Settings before the first connection attempt.
+**Installing over the air from GitHub will not work.** GitHub requires modern
+TLS, which these handsets do not have. Copy the files across instead.
 
 ---
 
-## Quick start
+## Feedback
 
-```powershell
-./tools/bootstrap.ps1              # JDK 8 check + pinned SDK downloads
-./tools/build.ps1 -Target probe    # -> dist/probe.jar + dist/probe.jad
-./tools/run-emulator.ps1 -Target probe
-./tools/test.ps1                   # desktop test suite
-./tools/smoke-emulator.ps1         # start the packaged JARs in MicroEmulator
-./tools/render-showcase.ps1        # regenerate fictional README screenshots
-```
+This is the part the project actually needs. Every handset is different, and
+right now there is exactly one data point.
 
-### Prerequisites
+- **[Report your phone](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=device-report.yml)**
+  — even if everything worked. Install `TelegramJ2ME Probe` first (it is tiny and
+  installs in seconds) and paste what it reports: the model, the heap, whether
+  raw sockets are allowed, which route connected. That is the missing
+  information.
+- **[Report a bug](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=bug-report.yml)**
+  — the Diagnostics and Log screens in the app are there so you can copy them
+  into an issue.
+- Anything else: [open an issue](https://github.com/smbdsbrain/TelegramJ2ME/issues).
 
-| Tool | Why | How |
-|---|---|---|
-| **JDK 8** | JDK 9+ removed `-source 1.3` / `-target 1.1`, which CLDC needs | `winget install --id EclipseAdoptium.Temurin.8.JDK --exact` |
-| **Python 3** | build-side checks, TL generator, dev servers | any 3.8+ |
-| **PowerShell 7** | build scripts | ships with Windows 11 |
-
-Everything else - MicroEmulator, ProGuard, the Bouncy Castle `BigInteger`
-source - is downloaded by `bootstrap.ps1` from the pins in
-[tools/sdk.lock.json](tools/sdk.lock.json), SHA-256 verified, and never
-committed.
-
-### Optional: Sun WTK 2.5.2_01
-
-The reference MIDP/CLDC toolkit. Not required, but it upgrades two things from
-"approximated" to "exact": the compile-time API surface and the preverifier.
-
-1. [Oracle Java ME archive](https://www.oracle.com/java/technologies/java-archive-downloads-javame-downloads.html) (free Oracle account needed)
-2. install `sun_java_wireless_toolkit-2.5.2_01-win.exe`
-3. `setx WTK_HOME "C:\WTK2.5.2_01"` and re-run `bootstrap.ps1`
-
-The build detects it automatically and switches to WTK's `cldcapi11.jar` /
-`midpapi20.jar` and `preverify.exe`. See [docs/toolchain.md](docs/toolchain.md).
+Never paste your phone number, `api_id`, `api_hash` or an `auth_key` into an
+issue.
 
 ---
 
-## What builds
+## Build it yourself
 
-| Artifact | Size | Contents | Use |
-|---|---|---|---|
-| `dist/probe.jar` | ~64 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
-| `dist/crypto.jar` | ~80 KB | + the crypto stack | vectors and benchmarks on the device |
-| `dist/tg.jar` | ~393 KB | full client | the messenger |
-| `dist/tg.jar` with `-Release` | ~285 KB | full client, optimised + obfuscated | when the handset caps install size |
+Builds on **Windows, Linux and macOS**. You need JDK 8, Python 3 and
+PowerShell 7.
 
-Each JAR also carries the licence texts of the third-party code it actually
-contains — `emoji-OFL.txt` everywhere, plus the Bouncy Castle licence from
-`crypto` on (vendored `BigInteger`) and Apache 2.0 in `tg` (the pdf.js-derived
-`JpegDecoder`). Compiled classes carry no comments, so the attribution in the
-source headers would not otherwise reach anyone who installs the JAR.
-
-`probe.jar` deliberately excludes crypto and Telegram code so ProGuard shrinks
-it to something small enough to sideload and reinstall quickly on a 2011 phone.
-
+```bash
+git clone https://github.com/smbdsbrain/TelegramJ2ME.git
+cd TelegramJ2ME
+./tools/bootstrap.sh            # JDK 8 check + pinned, SHA-256-verified downloads
+./tools/build.sh -Target tg     # -> dist/tg.jar + dist/tg.jad
+./tools/test.sh                 # 27 desktop suites
+```
 ```powershell
-./tools/build.ps1 -Target probe
-./tools/build.ps1 -Target crypto
-./tools/build.ps1 -Target tg -Env production
-./tools/build.ps1 -Target tg -Env production -Release   # smaller, obfuscated
+.\tools\bootstrap.ps1
+.\tools\build.ps1 -Target tg
+.\tools\test.ps1
 ```
 
-Every build preverifies (`-microedition`), so both variants carry the CLDC
-`StackMap` the handset's verifier demands. `-Release` additionally drops
-[config/proguard-debug.pro](config/proguard-debug.pro), which is the file that
-otherwise holds `-dontoptimize` / `-dontobfuscate`.
+Full instructions, prerequisites per platform, credentials setup and live
+testing against Telegram's servers: **[docs/building.md](docs/building.md)**.
 
-`-ArtifactName` renames the pair and rewrites `MIDlet-Jar-URL` to match, which is
-how releases produce versioned filenames:
+## Docs
 
-```powershell
-./tools/build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-0.1.0
-./tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.1.0
-```
-
-### Live testing against real servers
-
-Protocol work runs against Telegram's test data centres, which need no account:
-
-```powershell
-./tools/live.ps1 handshake   # req_pq_multi .. dh_gen_ok
-./tools/live.ps1 config      # encrypted session + help.getConfig
-./tools/live.ps1 obfs-config # direct obfuscated2
-./tools/live.ps1 http-config # MTProto over HTTP
-./tools/test-local-mtproxy.ps1 # classic, dd and ee local-proxy E2E
-```
-
-Anything past authorization needs a real account; see Telegram's official
-[authorization documentation](https://core.telegram.org/api/auth):
-
-```powershell
-./tools/build.ps1 -Profile desktop -Env production
-./tools/live.ps1 login <international-number>
-./tools/live.ps1 dialogs
-./tools/live.ps1 send "hello"
-./tools/live.ps1 updates -Env production 120
-```
-
----
-
-## Layout
-
-```
-src/tg/            device code - CLDC 1.1 subset only
-    app/           MIDlet lifecycle, composition root
-    ui/            lcdui screens
-    plat/          MIDP adapters: sockets, RMS, capability probing
-    diag/          log ring, crash persistence
-    io/            Transport contract, byte helpers
-    crypto/        SHA-1/256/512, HMAC, PBKDF2, AES/CTR/IGE, RNG, bigint
-    tl/            TL serialization
-    mt/            MTProto transport, session, auth key
-    api/           Telegram API layer
-test/tgtest/       desktop-only harness (runs the same src/)
-tools/             build, bootstrap, dev servers, TL generator
-config/            ProGuard configs, CLDC API allow-list, app.properties
-schema/            Telegram TL schema, layer 223 + upstream provenance
-third_party/       vendored BigInteger, emoji sprite, JPEG decoder + licences
-```
-
-### The two build profiles
-
-Both compile the *same* `src/` tree.
-
-* **device** - `javac -source 1.3 -target 1.1` against the CLDC/MIDP
-  bootclasspath, then `check-api.py`, then ProGuard `-microedition`
-  (preverify + shrink), then JAR + JAD with an exact `MIDlet-Jar-Size`.
-* **desktop** - plain JDK 8, plus `test/`. Because everything above
-  `tg.io.Transport` is pure CLDC-subset Java, the crypto, TL and MTProto layers
-  can be driven against a real Telegram data centre from a desktop JVM, with a
-  real debugger, before any handset is involved.
-
-`tg.io.Transport` remains the byte-stream seam: `tg.plat.MidpTransport` on the
-device, `tgtest.SeTransport` on the desktop. `tg.mt.MtLink` is the packet seam
-shared by TCP framing, FakeTLS and request/response HTTP.
-
-### Why `check-api.py`
-
-Without WTK the device build has to fall back to JDK 8's `rt.jar` for
-`java.lang`/`java.io`/`java.util`, which is a huge superset of CLDC 1.1. A
-`StringBuilder`, a `System.nanoTime()` or an autoboxed `Integer` would compile
-cleanly and then fail on the phone. `tools/check-api.py` reads the constant pool
-of every compiled class and rejects anything outside
-[config/cldc11-midp20-api.txt](config/cldc11-midp20-api.txt).
-
----
-
-## Credentials
-
-`api_id` / `api_hash` come from [my.telegram.org](https://my.telegram.org)
-(see [obtaining_api_id](https://core.telegram.org/api/obtaining_api_id)).
-
-```powershell
-Copy-Item config/telegram.yaml.example secrets/telegram.yaml
-# then fill in api_id and api_hash
-```
-
-`tools/build.ps1` reads that file and emits `generated/tg/app/Secrets.java`.
-Both `secrets/` and `generated/` are gitignored, so the values reach the JAR
-without ever reaching git — `bootstrap.ps1` verifies that and fails if the
-secrets file is not ignored.
-
-`TG_API_ID` / `TG_API_HASH` environment variables take precedence over the file.
-That is how CI injects repository secrets without writing them to the runner's
-disk; see [docs/releasing.md](docs/releasing.md).
-
-Builds without credentials still succeed — `Secrets.CONFIGURED` becomes `false`
-and API-layer calls fail — so forks and pull requests need no setup.
-
-**Never** commit `api_id`, `api_hash`, a phone number, or an `auth_key`.
-
-Before publishing or contributing, run the repository audit:
-
-```powershell
-./tools/audit-public.ps1
-```
-
-It checks the complete would-be commit set, verifies that private directories
-are excluded, looks for common credential formats and confirms that exact
-values from local secret files do not appear elsewhere. Match contents are
-never printed.
-
-It also warns about commits that were pushed and later force-pushed away. A
-clean working tree does not unpublish those: GitHub keeps serving the orphaned
-commit at `/commit/<sha>` with nothing in the UI to suggest it exists, so
-rewriting history is not a way to retract a file that has already been pushed.
-
-Which data centres a build talks to is a build flag, not a config value: an
-`auth_key` is bound to one environment, so flipping it at runtime with a stale
-key in RMS would fail confusingly.
-
-```powershell
-./tools/build.ps1 -Target tg              # -Env test (default)
-./tools/build.ps1 -Target tg -Env production
-```
-
-DC addresses themselves are public and live in [src/tg/mt/Dc.java](src/tg/mt/Dc.java),
-under git — but only as bootstrap entries. The authoritative list comes from
-`help.getConfig`.
-
----
-
-## Status
-
-TelegramJ2ME is an early prototype. It builds as a preverified MIDP JAR/JAD and
-currently includes:
-
-- on-device MTProto 2.0 cryptography, TL serialization and session state;
-- authorization, dialogs, history, text messaging and read state;
-- direct, obfuscated2, MTProxy/FakeTLS and HTTP transport routes;
-- reconnect handling, a persistent outbox, drafts and update state;
-- photos, emoji, reactions, profiles and adaptive light/dark/high-contrast UI.
-
-One physical handset has run the client end to end: the authorization handshake,
-sign-in, the dialog list and sending a message. That is a single device on a
-single network, and it establishes nothing about any other handset.
-
-The desktop harness contains 27 automated suites for crypto, serialization,
-transport, persistence, authorization, content and UI logic. Separately, an
-emulator smoke test starts each published JAR — including the obfuscated one —
-in MicroEmulator's MIDP runtime and navigates between screens, which is the only
-automated check that the artifact which actually ships still runs. None of that
-is evidence about a handset: see [docs/emulator-notes.md](docs/emulator-notes.md).
+| | |
+|---|---|
+| [building.md](docs/building.md) | prerequisites, build, test, credentials, live testing |
+| [architecture.md](docs/architecture.md) | how it is put together, and an honest security posture |
+| [toolchain.md](docs/toolchain.md) | pinned versions, why JDK 8, preverification |
+| [emulator-notes.md](docs/emulator-notes.md) | what an emulator proves and what it does not |
+| [releasing.md](docs/releasing.md) | cutting a release |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | the CLDC subset rule, and what to run before a PR |
 
 ---
 
