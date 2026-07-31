@@ -2,6 +2,8 @@ package tg.diag;
 
 import javax.microedition.rms.RecordStore;
 
+import tg.tl.Utf8;
+
 /**
  * Crash persistence.
  *
@@ -57,11 +59,21 @@ public final class CrashLog
                 if (sb.length() > MAX_BYTES) { break; }
             }
 
-            byte[] data = sb.toString().getBytes();
+            // Utf8, not String.getBytes(): the latter follows
+            // microedition.encoding, which on a Samsung GT-C3592 is ISO8859-1.
+            // A crash entry naming a Cyrillic chat came back as "?????" - the
+            // characters were destroyed on the way into RMS, so no amount of
+            // careful reading afterwards could recover them.
+            byte[] data = Utf8.encode(sb.toString());
             if (data.length > MAX_BYTES)
             {
-                byte[] cut = new byte[MAX_BYTES];
-                System.arraycopy(data, 0, cut, 0, MAX_BYTES);
+                // Back off to a character boundary. Cutting mid-sequence would
+                // leave a trailing continuation byte that decodes to U+FFFD and
+                // makes the last line of a crash report look corrupt.
+                int end = MAX_BYTES;
+                while (end > 0 && (data[end] & 0xc0) == 0x80) { end--; }
+                byte[] cut = new byte[end];
+                System.arraycopy(data, 0, cut, 0, end);
                 data = cut;
             }
 
@@ -98,7 +110,9 @@ public final class CrashLog
                 try
                 {
                     byte[] b = rs.getRecord(id);
-                    if (b != null) { out[w++] = new String(b); }
+                    // Symmetric with save(); new String(byte[]) would decode
+                    // through microedition.encoding and undo the work.
+                    if (b != null) { out[w++] = Utf8.decode(b); }
                 }
                 catch (Throwable ignored) { /* deleted id */ }
             }

@@ -48,6 +48,7 @@ import tg.plat.RmsAvatarCache;
 import tg.plat.RmsConversationCache;
 import tg.plat.RmsDraftStore;
 import tg.plat.RmsOutgoingStore;
+import tg.plat.ReportUpload;
 import tg.plat.RmsUpdateStateStore;
 import tg.plat.TcpLogSink;
 import tg.ui.ChatScreen;
@@ -112,6 +113,9 @@ public class TgMidlet extends MIDlet implements CommandListener
     // Diagnostics belong at the bottom of every menu they appear in.
     private final Command cmdLog     = new Command("Log", Command.SCREEN, 20);
     private final Command cmdDiag    = new Command("Diagnostics", Command.SCREEN, 19);
+    private final Command cmdCrashLog = new Command("Crash log", Command.SCREEN, 21);
+    private final Command cmdUpload  = new Command("Upload", Command.SCREEN, 18);
+    private final Command cmdClearCrash = new Command("Clear", Command.SCREEN, 3);
     private final Command cmdSettings = new Command("Settings", Command.SCREEN, 8);
     private final Command cmdLogOut  = new Command("Log out", Command.SCREEN, 9);
     private final Command cmdLogOutEverywhere =
@@ -228,6 +232,14 @@ public class TgMidlet extends MIDlet implements CommandListener
     private String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
     private volatile int avatarGeneration;
+
+    /**
+     * Set once this handset has refused a second concurrent socket.
+     *
+     * Not persisted: it is a property of the device plus the network in front
+     * of it, and a different network may behave differently.
+     */
+    private volatile boolean avatarsUnavailable;
     private final Object readLock = new Object();
     private Peer pendingReadPeer;
     private int pendingReadMaxId;
@@ -573,6 +585,25 @@ public class TgMidlet extends MIDlet implements CommandListener
         {
             showDiagnostics();
         }
+        else if (c == cmdCrashLog)
+        {
+            showCrashLog();
+        }
+        else if (c == cmdUpload)
+        {
+            uploadDiagnostics();
+        }
+        else if (c == cmdClearCrash)
+        {
+            CrashLog.clear();
+            // Refresh in place rather than navigating: the tester has usually
+            // just uploaded the entries and wants to see the store is empty
+            // before reproducing the fault again.
+            if (d instanceof TextScreen)
+            {
+                ((TextScreen) d).setLines(crashLogLines());
+            }
+        }
         else if (c == cmdSettings)
         {
             showSettings();
@@ -634,9 +665,21 @@ public class TgMidlet extends MIDlet implements CommandListener
             form.append("MTProxy: not configured\n");
         }
         form.append("DC: " + Dc.describe());
+        if (DevSink.CONFIGURED)
+        {
+            // On the first screen, not buried in Settings. A build that can
+            // send diagnostics somewhere should say so before it is used, not
+            // only to whoever goes looking.
+            form.append("\nDiagnostics: can upload to " + DevSink.TCP_HOST
+                    + " on request. Never automatically.");
+        }
         form.addCommand(cmdConnect);
         form.addCommand(cmdSettings);
         form.addCommand(cmdDiag);
+        // Reachable before sign-in on purpose: a MIDlet that dies on the way to
+        // the dialog list leaves its evidence here, and the dialog list is
+        // then exactly the screen the tester cannot get to.
+        form.addCommand(cmdCrashLog);
         form.addCommand(cmdLog);
         form.addCommand(cmdExit);
         form.setCommandListener(this);
@@ -1119,6 +1162,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             dialogList.addCommand(cmdSaved);
             dialogList.addCommand(cmdMyProfile);
             dialogList.addCommand(cmdDiag);
+            dialogList.addCommand(cmdCrashLog);
             dialogList.addCommand(cmdSettings);
             dialogList.addCommand(cmdOutbox);
             dialogList.addCommand(cmdReconnect);
@@ -1160,6 +1204,10 @@ public class TgMidlet extends MIDlet implements CommandListener
     {
         if (dialogList == null || avatarWorker.isBusy()
                 || navigation.current() != dialogList)
+        {
+            return;
+        }
+        if (!appSettings.loadAvatars || avatarsUnavailable)
         {
             return;
         }
@@ -1241,6 +1289,18 @@ public class TgMidlet extends MIDlet implements CommandListener
 
                 public void onFailure(final Throwable error)
                 {
+                    // An avatar needs a SECOND connection to the media DC, and
+                    // some handsets cannot hold two sockets at once: the open
+                    // fails, and on the GT-C3592 the attempt also desynchronises
+                    // the connection already in use, so the messages.getHistory
+                    // running alongside it dies with "invalid FakeTLS
+                    // application record" and the chat renders empty.
+                    //
+                    // One decorative thumbnail is not worth breaking the client
+                    // for, so a socket failure retires avatar loading for the
+                    // rest of the session rather than repeating it per peer.
+                    if (isSocketUnavailable(error)) { avatarsUnavailable = true; }
+
                     display.callSerially(new Runnable()
                     {
                         public void run()
@@ -1254,6 +1314,12 @@ public class TgMidlet extends MIDlet implements CommandListener
                                 }
                                 Diag.warn("avatar " + peer.key() + ": "
                                         + shortMessage(error));
+                                if (avatarsUnavailable)
+                                {
+                                    Diag.warn("avatars disabled for this session:"
+                                            + " this handset refused a second"
+                                            + " connection");
+                                }
                                 loadVisibleAvatars();
                             }
                         }
@@ -1263,6 +1329,20 @@ public class TgMidlet extends MIDlet implements CommandListener
             if (!submitted) { avatarCache.fail(peer); }
             return;
         }
+    }
+
+    /**
+     * Does this failure mean the platform would not give us another socket?
+     *
+     * Matched on the exception class rather than the message: MIDP reports it
+     * as ConnectionNotFoundException, and the text varies by vendor.
+     */
+    private static boolean isSocketUnavailable(Throwable error)
+    {
+        if (error == null) { return false; }
+        String name = Diag.className(error);
+        return "ConnectionNotFoundException".equals(name)
+                || "SecurityException".equals(name);
     }
 
     private long cacheAccountId()
@@ -1453,17 +1533,68 @@ public class TgMidlet extends MIDlet implements CommandListener
         if (peer != null) { openDialog(peer); }
     }
 
+    /**
+     * Open a conversation.
+     *
+     * Wrapped in a Throwable guard because this is the single most
+     * memory-expensive transition in the client and the one a low-heap handset
+     * was observed to die on. Between the first paint of a ChatScreen and the
+     * history arriving, the VM has to find room for the emoji sprite sheet
+     * (decoded, not the 16 KB on disk), a full word-wrap of the transcript, an
+     * inflated TL response and the object graph parsed out of it.
+     *
+     * catch (Throwable) rather than catch (Exception) on purpose:
+     * OutOfMemoryError is an Error, and it is the one this is here for.
+     * Recovery is not guaranteed - the allocation that failed may be needed to
+     * report the failure - but CrashLog.save is written to survive that, and an
+     * entry with heapTotal/heapFree in it is the difference between "the phone
+     * showed a system error" and a diagnosis.
+     */
     private void openDialog(Peer peer)
     {
-        openPeer = peer;
-        telegram.setActivePeer(peer);
-        chatScreen = createChatScreen(peer);
-        chatScreen.setTitle(peer == null ? "Chat" : peer.title);
-        thumbnailGeneration++;
-        chatScreen.resetMessages(new Message[0]);
-        chatScreen.setStatus("loading... / " + connectionLabel);
-        pushScreen(chatScreen);
-        loadOpenHistory(peer);
+        try
+        {
+            openPeer = peer;
+            telegram.setActivePeer(peer);
+            chatScreen = createChatScreen(peer);
+            chatScreen.setTitle(peer == null ? "Chat" : peer.title);
+            thumbnailGeneration++;
+            chatScreen.resetMessages(new Message[0]);
+            chatScreen.setStatus("loading... / " + connectionLabel);
+            pushScreen(chatScreen);
+            loadOpenHistory(peer);
+        }
+        catch (Throwable t)
+        {
+            openChatFailed(t);
+        }
+    }
+
+    /**
+     * Report a failed chat open without taking the MIDlet down with it.
+     *
+     * Drops the half-built screen first: on an OutOfMemoryError the references
+     * this method is about to abandon may be the only thing standing between
+     * the collector and a second failure while writing the crash entry.
+     */
+    private void openChatFailed(Throwable t)
+    {
+        chatScreen = null;
+        openHistory = new Message[0];
+        cachedPhoto = null;
+        cachedPhotoId = 0;
+
+        Diag.error("chat open failed", t);
+        CrashLog.save("chat-open", t);
+
+        Runtime rt = Runtime.getRuntime();
+        Alert alert = new Alert("Cannot open chat",
+                shortMessage(t) + "\n\nheapFree=" + rt.freeMemory()
+                        + " of " + rt.totalMemory()
+                        + "\n\nRecorded in the crash log.",
+                null, AlertType.ERROR);
+        alert.setTimeout(Alert.FOREVER);
+        display.setCurrent(alert, dialogList == null ? display.getCurrent() : dialogList);
     }
 
     private ChatScreen createChatScreen(Peer peer)
@@ -1544,14 +1675,24 @@ public class TgMidlet extends MIDlet implements CommandListener
             public void onSuccess(Object result)
             {
                 if (!samePeer(openPeer, peer)) { return; }
-                openHistory = (Message[]) result;
-                cacheHistory(peer, openHistory);
-                applyKnownReadState(openHistory, peer);
-                chatScreen.setMessages(openHistory);
-                scheduleInlineThumbnails(peer, openHistory);
-                appendPendingForOpenPeer();
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                markRead();
+                try
+                {
+                    openHistory = (Message[]) result;
+                    cacheHistory(peer, openHistory);
+                    applyKnownReadState(openHistory, peer);
+                    // setMessages word-wraps the whole transcript and is where
+                    // the heap peaks; the guard is here rather than around the
+                    // fetch for that reason.
+                    chatScreen.setMessages(openHistory);
+                    scheduleInlineThumbnails(peer, openHistory);
+                    appendPendingForOpenPeer();
+                    chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                    markRead();
+                }
+                catch (Throwable t)
+                {
+                    openChatFailed(t);
+                }
             }
 
             public void onFailure(Throwable error)
@@ -3167,8 +3308,126 @@ public class TgMidlet extends MIDlet implements CommandListener
         screen.addCommand(cmdBack);
         screen.addCommand(cmdReconnect);
         screen.addCommand(cmdTestDrop);
+        screen.addCommand(cmdUpload);
         screen.setCommandListener(this);
         pushScreen(screen);
+    }
+
+    /**
+     * Show what the last crash recorded.
+     *
+     * This build has always written {@link CrashLog} and never read it, so the
+     * evidence has been accumulating on handsets with no way to get it out.
+     * ProbeMidlet cannot help: MIDP scopes record stores to the MIDlet suite,
+     * so probe.jar and tg.jar have separate "tgcrash" stores and each can only
+     * see its own.
+     *
+     * Every entry carries heapTotal/heapFree as of the moment it was written,
+     * which is the number that decides whether a crash was memory exhaustion.
+     */
+    private void showCrashLog()
+    {
+        String[] lines = crashLogLines();
+        TextScreen screen = new TextScreen("Crash log", lines, currentTheme());
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
+        screen.addCommand(cmdClearCrash);
+        screen.setCommandListener(this);
+        pushScreen(screen);
+    }
+
+    private String[] crashLogLines()
+    {
+        String[] entries = CrashLog.load();
+        if (entries.length == 0)
+        {
+            return new String[] { "no crashes recorded" };
+        }
+
+        int total = 0;
+        for (int i = 0; i < entries.length; i++)
+        {
+            total += countLines(entries[i]) + 1;
+        }
+        String[] lines = new String[total];
+        int w = 0;
+        for (int i = 0; i < entries.length; i++)
+        {
+            lines[w++] = "=== entry " + (i + 1) + " ===";
+            w = splitInto(entries[i], lines, w);
+        }
+        return lines;
+    }
+
+    // CLDC has no String.split() and a regex engine is not something this heap
+    // can afford; ProbeMidlet carries the same two helpers for the same reason.
+    private static int countLines(String s)
+    {
+        int n = 1;
+        for (int i = 0; i < s.length(); i++)
+        {
+            if (s.charAt(i) == '\n') { n++; }
+        }
+        return n;
+    }
+
+    private static int splitInto(String s, String[] out, int at)
+    {
+        int start = 0;
+        for (int i = 0; i < s.length() && at < out.length; i++)
+        {
+            if (s.charAt(i) == '\n')
+            {
+                out[at++] = s.substring(start, i);
+                start = i + 1;
+            }
+        }
+        if (at < out.length) { out[at++] = s.substring(start); }
+        return at;
+    }
+
+    /**
+     * Ship the diagnostic ring, connection state, crash log and heap figures to
+     * the development collector.
+     *
+     * This is the whole point of the collector for the messenger build: a
+     * handset that dies on opening a chat cannot be read over the shoulder, and
+     * retyping a crash tail off a 2011 screen is how evidence gets lost.
+     */
+    private void uploadDiagnostics()
+    {
+        String[] connection = diagnosticLines();
+        String[] ring = Diag.snapshot();
+        String[] crash = crashLogLines();
+
+        Runtime rt = Runtime.getRuntime();
+        String[] lines = new String[connection.length + ring.length + crash.length + 8];
+        int at = 0;
+        lines[at++] = "heapTotal=" + rt.totalMemory() + " heapFree=" + rt.freeMemory();
+        lines[at++] = "";
+        lines[at++] = "-- connection --";
+        System.arraycopy(connection, 0, lines, at, connection.length);
+        at += connection.length;
+        lines[at++] = "";
+        lines[at++] = "-- crash log --";
+        System.arraycopy(crash, 0, lines, at, crash.length);
+        at += crash.length;
+        lines[at++] = "";
+        lines[at++] = "-- diagnostic ring --";
+        System.arraycopy(ring, 0, lines, at, ring.length);
+        at += ring.length;
+        lines[at] = "";
+
+        final TextScreen screen = new TextScreen("Upload", new String[] { "starting..." },
+                                                 currentTheme());
+        screen.addCommand(cmdBack);
+        screen.setCommandListener(this);
+        pushScreen(screen);
+
+        ReportUpload.send("tg", "Diagnostics", lines, new ReportUpload.Progress()
+        {
+            public void lines(String[] text) { screen.setLines(text); }
+        });
     }
 
     private String[] diagnosticLines()
@@ -3274,13 +3533,23 @@ public class TgMidlet extends MIDlet implements CommandListener
         Diag.setMinimumLevel(appSettings == null ? Diag.LVL_INFO
                 : appSettings.logLevel);
         stopRemoteLog();
-        if (appSettings != null && appSettings.remoteLog)
+        if (appSettings == null || !appSettings.remoteLog) { return; }
+
+        // An untouched host setting means "wherever this build was told to
+        // report". Typing an IP and a port on a numeric keypad after every
+        // stop/start of an ephemeral-address VM is not a workflow, so the
+        // build-time sink wins unless the tester has explicitly overridden it.
+        if (appSettings.remoteLogIsDefault() && DevSink.CONFIGURED)
+        {
+            remoteLogSink = TcpLogSink.forCollector("tg");
+        }
+        else
         {
             remoteLogSink = new TcpLogSink(appSettings.remoteLogHost,
                     appSettings.remoteLogPort);
-            Diag.setSink(remoteLogSink);
-            remoteLogSink.start();
         }
+        Diag.setSink(remoteLogSink);
+        remoteLogSink.start();
     }
 
     private void stopRemoteLog()

@@ -90,6 +90,9 @@ public final class Telegram
     private boolean reconnectRunning;
     private boolean foreground = true;
     private boolean everConnected;
+
+    /** True while the session is parked so a media transfer can use the socket. */
+    private volatile boolean mediaParked;
     private String[] cachedAvailableReactions;
 
     /** Outlives individual connections; holds the server-time offset. */
@@ -1571,6 +1574,15 @@ public final class Telegram
     {
         if (client == null)
         {
+            // "not connected" is true but useless while the session is
+            // deliberately parked: the user sees an error on a chat they just
+            // opened and has no way to know a download is holding the only
+            // socket, or that waiting would fix it.
+            if (mediaParked)
+            {
+                throw new IOException("busy: downloading from another data "
+                        + "centre, the connection returns when it finishes");
+            }
             throw new IOException("not connected");
         }
         try
@@ -1622,8 +1634,10 @@ public final class Telegram
             return new PhotoInputStream((PhotoInputStream.Source) null,
                     photo, size, token);
         }
-        MtClient media = openMediaClient(photo.dcId);
-        return new PhotoInputStream(media, photo, size, token);
+        // The user tapped this one, so parking the session for it is a cost
+        // they can see and are waiting through.
+        return new PhotoInputStream(openMediaSource(photo.dcId, true),
+                photo, size, token);
     }
 
     /** Open the compact current avatar attached to a dialog peer. */
@@ -1638,13 +1652,177 @@ public final class Telegram
         {
             throw new IOException("peer avatar is not addressable");
         }
-        MtClient media = openMediaClient(peer.avatar.dcId);
-        return new PhotoInputStream(media, peer, peer.avatar, token);
+        // Background work: never worth taking the session down for.
+        return new PhotoInputStream(openMediaSource(peer.avatar.dcId, false),
+                peer, peer.avatar, token);
+    }
+
+    /**
+     * True when {@link #openMediaClient} would hand back the live session
+     * rather than a connection of its own - in which case the caller must not
+     * close it.
+     */
+    private boolean mediaReusesSession(int targetDc)
+    {
+        MtClient primary = client;
+        return primary != null && targetDc == dcId && primary.isConnected();
+    }
+
+    /**
+     * A connection to stream a file from, plus how to give it back.
+     *
+     * Three shapes, and the caller must not have to know which it got:
+     * the live session borrowed for a same-DC file, a connection of our own
+     * alongside the session, or a connection of our own with the session parked
+     * because this device allows only one socket.
+     */
+    /**
+     * @param mayPark true only for a transfer the user explicitly asked for.
+     *                Parking drops the session, stops updates, and on a first
+     *                visit to a data centre costs a full DH handshake - about
+     *                thirty seconds on a 2011 handset. That is a defensible
+     *                price for a photo somebody tapped, and not a defensible
+     *                price for a decorative thumbnail nobody asked for.
+     */
+    private PhotoInputStream.Source openMediaSource(int targetDc, boolean mayPark)
+            throws IOException
+    {
+        if (mediaReusesSession(targetDc))
+        {
+            return new MediaSource(openMediaClient(targetDc), false, false);
+        }
+
+        boolean park = connectionConfig.singleSocket && mayPark;
+        if (connectionConfig.singleSocket && !mayPark)
+        {
+            // Deliberately never attempted: on a one-socket device this would
+            // either fail on the open or, if allowed to park, take the whole
+            // client offline for a background download.
+            throw new IOException("file is on dc" + targetDc
+                    + "; single socket mode fetches those only on request");
+        }
+        if (park) { parkSessionForMedia(); }
+        try
+        {
+            return new MediaSource(openMediaClient(targetDc), true, park);
+        }
+        catch (IOException e)
+        {
+            // The session must come back even when the transfer never started,
+            // or a single failed photo would leave the client offline.
+            if (park) { resumeSessionAfterMedia(); }
+            throw e;
+        }
+        catch (RuntimeException e)
+        {
+            if (park) { resumeSessionAfterMedia(); }
+            throw e;
+        }
+    }
+
+    private final class MediaSource implements PhotoInputStream.Source
+    {
+        private MtClient media;
+        private final boolean owned;
+        private final boolean parked;
+
+        MediaSource(MtClient media, boolean owned, boolean parked)
+        {
+            this.media = media;
+            this.owned = owned;
+            this.parked = parked;
+        }
+
+        public byte[] invoke(byte[] query) throws IOException
+        {
+            if (media == null) { throw new IOException("media session closed"); }
+            return media.invokeWithSaltRetry(query);
+        }
+
+        public void close()
+        {
+            MtClient open = media;
+            media = null;
+            // Only close what we opened: a borrowed session must outlive the
+            // transfer, and closing it here would take the client offline the
+            // moment a photo finished downloading.
+            if (open != null && owned)
+            {
+                try { open.close(); } catch (Throwable ignored) { }
+            }
+            if (parked) { resumeSessionAfterMedia(); }
+        }
+    }
+
+    /**
+     * A connection able to serve upload.getFile for {@code targetDc}.
+     *
+     * Reuses the live session whenever the file lives on the data centre we are
+     * already talking to. That is the overwhelmingly common case, and opening a
+     * second connection for it was pure waste: MTProto multiplexes requests
+     * over one connection by design, and MtClient already tracks concurrent
+     * requests through its waiters table.
+     *
+     * It was also actively harmful. On a Samsung GT-C3592 the platform refuses
+     * a second concurrent socket outright - ConnectionNotFoundException on open
+     * - and the attempt desynchronised the connection already in use, so the
+     * messages.getHistory running alongside it died and the chat rendered
+     * empty. Photos and avatars could never work there at all.
+     *
+     * A different data centre still needs its own connection, and on such a
+     * handset that will still fail; there is no way around holding two at once.
+     */
+    /**
+     * Park the session so a media transfer can have the only socket.
+     *
+     * Built on the same lifecycle as {@link #pause}: clearing {@code foreground}
+     * is what stops {@code startReconnect} from racing us back onto the network
+     * while the media connection holds the one socket this device allows.
+     */
+    private void parkSessionForMedia()
+    {
+        synchronized (lifecycleLock)
+        {
+            foreground = false;
+            reconnectToken++;
+            lifecycleLock.notifyAll();
+        }
+        MtClient old = client;
+        client = null;
+        if (old != null) { old.close(); }
+        updates.offline();
+        connectionDiagnostics.closed();
+        mediaParked = true;
+        setConnectionState(PAUSED, 0, "parked for a media transfer");
+        Diag.info("session parked: file is on another dc and single-socket "
+                + "mode is on");
+    }
+
+    /** Bring the session back after a parked transfer, however it ended. */
+    private void resumeSessionAfterMedia()
+    {
+        synchronized (lifecycleLock)
+        {
+            foreground = true;
+            reconnectToken++;
+            lifecycleLock.notifyAll();
+        }
+        mediaParked = false;
+        Diag.info("media transfer finished, restoring the session");
+        if (everConnected) { startReconnect(true); }
+        else { setConnectionState(IDLE, 0, "press Connect"); }
     }
 
     private MtClient openMediaClient(int targetDc) throws IOException
     {
         if (targetDc < 1) { throw new IOException("photo has invalid dc"); }
+
+        if (mediaReusesSession(targetDc))
+        {
+            Diag.info("media over the existing dc" + targetDc + " session");
+            return client;
+        }
+
         IOException last = null;
         int[] attempts = connectionConfig.attempts();
         for (int i = 0; i < attempts.length; i++)

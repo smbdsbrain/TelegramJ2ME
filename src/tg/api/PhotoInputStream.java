@@ -61,7 +61,14 @@ public final class PhotoInputStream extends InputStream
     PhotoInputStream(MtClient client, Peer peer, AvatarRef avatar,
                      DownloadToken token)
     {
-        this.source = client == null ? null : new MtSource(client);
+        this(client == null ? null : new MtSource(client), peer, avatar, token);
+    }
+
+    /** Avatar variant over an arbitrary source; see the photo constructor. */
+    public PhotoInputStream(Source source, Peer peer, AvatarRef avatar,
+                            DownloadToken token)
+    {
+        this.source = source;
         this.photo = null;
         this.size = null;
         this.avatarPeer = peer;

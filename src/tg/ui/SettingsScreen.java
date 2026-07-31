@@ -6,6 +6,7 @@ import javax.microedition.lcdui.Command;
 import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.TextField;
 
+import tg.app.DevSink;
 import tg.mt.ConnectionConfig;
 import tg.mt.ProxySecret;
 import tg.api.AppSettings;
@@ -22,6 +23,8 @@ public final class SettingsScreen extends Form
     private final TextField host;
     private final TextField port;
     private final TextField secret;
+    private final ChoiceGroup singleSocket;
+    private final ChoiceGroup loadAvatars;
     private final ChoiceGroup mediaPreviews;
     private final ChoiceGroup theme;
     private final ChoiceGroup logLevel;
@@ -41,6 +44,12 @@ public final class SettingsScreen extends Form
         port = new TextField("Proxy port", String.valueOf(config.proxyPort),
                              6, TextField.NUMERIC);
         secret = new TextField("Proxy secret", config.proxySecret, 512, TextField.ANY);
+        singleSocket = new ChoiceGroup("Single socket mode", Choice.MULTIPLE,
+                new String[] { "This phone allows one connection" }, null);
+        singleSocket.setSelectedIndex(0, config.singleSocket);
+        loadAvatars = new ChoiceGroup("Chat avatars", Choice.EXCLUSIVE,
+                new String[] { "Load", "Off" }, null);
+        loadAvatars.setSelectedIndex(app.loadAvatars ? 0 : 1, true);
         mediaPreviews = new ChoiceGroup("Media previews", Choice.EXCLUSIVE,
                 new String[] { "Inline stripped thumbnail", "Text only" }, null);
         mediaPreviews.setSelectedIndex(app.mediaPreviews ? 0 : 1, true);
@@ -63,6 +72,14 @@ public final class SettingsScreen extends Form
         append(port);
         append(secret);
         append("Auto order: last successful, direct, obfuscated, MTProxy, HTTP.");
+        append(singleSocket);
+        append("Turn on if the phone refuses a second connection. A file on "
+             + "another data centre then pauses the session for the transfer "
+             + "instead of failing. Files on this data centre never needed it.");
+        append(loadAvatars);
+        append("An avatar needs a second connection. On a handset that cannot "
+             + "open two at once this breaks the one in use, and a chat opens "
+             + "empty. Turn Off if that happens.");
         append(mediaPreviews);
         append(theme);
         append(logLevel);
@@ -70,6 +87,32 @@ public final class SettingsScreen extends Form
         append(remoteHost);
         append(remotePort);
         append("Remote logging is development-only and may use metered data.");
+        append(diagnosticsDisclosure());
+    }
+
+    /**
+     * State plainly where diagnostics can go and what it takes to send them.
+     *
+     * A build can carry a report collector address, and a user who cannot see
+     * that has no way to know. Saying so on the screen where it can be changed
+     * is the minimum; the alternative reads as collecting logs quietly, which
+     * is not something this project should ever be able to be accused of.
+     *
+     * Every published artifact is built without a collector and prints the
+     * first message.
+     */
+    private static String diagnosticsDisclosure()
+    {
+        if (!DevSink.CONFIGURED)
+        {
+            return "Diagnostics: this build has no report collector. "
+                 + "Nothing is uploaded anywhere.";
+        }
+        return "Diagnostics: this build can upload reports to "
+             + DevSink.TCP_HOST + " as \"" + DevSink.DEVICE + "\".\n"
+             + "Only when you choose Upload, or while Remote log above is on. "
+             + "Never automatically. Reports carry diagnostics only - message "
+             + "text, contacts and keys are stripped before sending.";
     }
 
     public void apply(ConnectionConfig config, AppSettings app)
@@ -101,6 +144,8 @@ public final class SettingsScreen extends Form
         {
             throw new IllegalArgumentException("MTProxy mode needs host, port and secret");
         }
+        config.singleSocket = singleSocket.isSelected(0);
+        app.loadAvatars = loadAvatars.getSelectedIndex() == 0;
         app.mediaPreviews = mediaPreviews.getSelectedIndex() == 0;
         app.themeId = theme.getSelectedIndex();
         app.logLevel = logLevel.getSelectedIndex();
