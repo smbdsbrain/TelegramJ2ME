@@ -11,5 +11,13 @@ network.
 Regenerate the images with:
 
 ```powershell
-./tools/render-showcase.ps1
+.\tools\render-showcase.ps1
 ```
+```bash
+pwsh -File tools/render-showcase.ps1
+```
+
+Regenerate them on the platform they were last rendered on. Text is rasterised
+through AWT, which is platform-dependent, so a rerun on a different operating
+system produces visually different PNGs even with no code change. The committed
+set was rendered on Windows.

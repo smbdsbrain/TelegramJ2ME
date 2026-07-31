@@ -2,13 +2,25 @@
 
 | Component | Version | Source |
 |---|---|---|
-| JDK 8 | Temurin 8.0.492+9 | `winget install EclipseAdoptium.Temurin.8.JDK` |
-| Python | 3.8+ | system installation |
+| JDK 8 | Temurin 8.0.492+9 / OpenJDK 8u492 | `winget install EclipseAdoptium.Temurin.8.JDK` · `apt install openjdk-8-jdk` · `brew install --cask temurin@8` |
+| PowerShell | 7.x (Windows PowerShell 5.1 also works) | `winget install Microsoft.PowerShell` · [Microsoft's Linux packages](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux) · `brew install --cask powershell` |
+| Python | 3.8+ | system installation, `python3` or `python` |
 | MicroEmulator | 2.0.4 | Maven Central, pinned in `tools/sdk.lock.json` |
 | ProGuard | 7.4.2 | GitHub release, pinned |
 | Bouncy Castle `BigInteger` | `bc-java@31a2228b` | GitHub raw, pinned |
 | Sun WTK | 2.5.2_01 | optional, manual Oracle download |
 | Ant | not used | plain PowerShell instead |
+
+Windows, Linux and macOS are all supported build hosts; see
+[building.md](building.md) for the per-platform commands. Nothing in the device
+pipeline is Windows-specific — it is `javac`, ProGuard, `jar` and Python, all of
+which are JVM or interpreter code. Verified: Windows and Linux produce JARs with
+identical entry lists and class counts for all four targets, including the
+obfuscated `-Release` build.
+
+They are *not* byte-identical, because `jar` stamps each entry with a
+modification time. Determinism in this project means the same inputs produce the
+same classes, not the same archive bytes.
 
 ---
 
@@ -32,12 +44,15 @@ and it shrinks and obfuscates in the same pass. `tools/build.ps1` greps the
 output for a `StackMap` attribute and warns loudly if it is absent, because a
 silently unpreverified JAR would only fail on the handset.
 
-**Reference path - WTK `preverify.exe`.** Available once `WTK_HOME` is set.
-Building the same sources through WTK's preverifier provides a differential
-test between the reference toolchain and ProGuard.
+**Reference path - WTK `preverify`.** Available once `WTK_HOME` is set. Building
+the same sources through WTK's preverifier provides a differential test between
+the reference toolchain and ProGuard.
 
-> **Emulator-only validation.** The generated JAR has not been installed or run
-> on a physical Java ME device.
+> A JAR produced by this toolchain has since been installed and run on a
+> physical Java ME handset, where the client completed the MTProto handshake,
+> signed in, listed dialogs and sent a message over GPRS. That is one device on
+> one network; it establishes that the packaging is correct, not that it is
+> correct for every AMS.
 
 ## Bootclasspath: two modes
 
@@ -92,9 +107,18 @@ install path before a real phone does.
 Run under JDK 8: MicroEmulator 2.0.4 was built against JDK 1.6 and a current JDK
 trips over removed AWT and security APIs.
 
+The automated smoke test runs MicroEmulator headless, so it needs no display -
+but it does need fonts, because `J2SEFontManager` builds AWT font metrics as
+soon as the device is installed. On a minimal Linux image install `fontconfig`
+and at least one font package.
+
 ## Known toolchain notes
 
 * `scoop`'s `main` bucket on this host is broken (0 manifests). Irrelevant -
   the build uses `winget` and direct pinned downloads.
 * ProGuard has no `-version` flag; `bootstrap.ps1` no longer asks for one.
 * `sdk/proguard-7.4.2.zip` is 31 MB. It is gitignored; only the pin is committed.
+* `tools/render-showcase.ps1` rasterises text through AWT, which is
+  platform-dependent. The committed screenshots were rendered on Windows;
+  regenerating them on Linux produces visually different PNGs. Review before
+  committing a cross-OS rerun.

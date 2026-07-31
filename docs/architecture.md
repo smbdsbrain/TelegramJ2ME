@@ -54,9 +54,9 @@ Three MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
 
 | Target | Entry point | Size | Purpose |
 |---|---|---|---|
-| `probe` | `tg.app.ProbeMidlet` | ~36 KB | platform, heap, RMS, keys, sockets, images, pause/resume |
-| `crypto` | `tg.app.CryptoMidlet` | build output | crypto vectors, modPow and PBKDF2 benchmarks |
-| `tg` | `tg.app.TgMidlet` | ~160 KB | messenger with connection settings/diagnostics |
+| `probe` | `tg.app.ProbeMidlet` | ~64 KB | platform, heap, RMS, keys, sockets, images, pause/resume |
+| `crypto` | `tg.app.CryptoMidlet` | ~81 KB | crypto vectors, modPow and PBKDF2 benchmarks |
+| `tg` | `tg.app.TgMidlet` | ~399 KB, ~291 KB with `-Release` | messenger with connection settings/diagnostics |
 
 `config/proguard-common.pro` deliberately has **no** blanket
 `-keep class * extends MIDlet`: that would keep every entry point in every
@@ -70,10 +70,10 @@ can run at several layers, each answering a different question:
 
 | Where | Answers |
 |---|---|
-| `tools/test.ps1` desktop harness | is the algorithm right |
+| the desktop harness (`tools/test.sh` / `.ps1`) | is the algorithm right |
 | the shipped `dist/crypto.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
 | MicroEmulator | does it survive a MIDP runtime |
-| a physical device (not yet tested) | does it survive a vendor VM and AMS |
+| a physical device | does it survive a vendor VM and AMS - run once, on one handset, and it did |
 
 A failure at a later stage that passed an earlier one localises the bug to the
 toolchain rather than the mathematics - which is worth a great deal when the

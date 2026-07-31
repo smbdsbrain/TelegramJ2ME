@@ -29,11 +29,11 @@ forks work.
 
 1. Bump `$AppVersion` in [tools/build.ps1](../tools/build.ps1). It is the single
    source of truth: it becomes `MIDlet-Version` in the JAD and `BuildInfo.VERSION`
-   in the JAR.
+   in the JAR. The `.sh` wrappers hold no version of their own, deliberately.
 2. Commit it.
 3. Tag and push:
 
-   ```powershell
+   ```console
    git tag v0.2.0
    git push origin main --tags
    ```
@@ -74,13 +74,23 @@ static analysis cannot stand in for: obfuscation safety is argued statically (no
 `Class.forName` on project classes, resources loaded by literal path, TL dispatch is a
 `switch` on an int constructor id), but a static argument is not a run.
 
-Locally:
+Locally, from any of the three supported build hosts:
 
 ```powershell
-./tools/build.ps1 -Target tg -Env production
-./tools/build.ps1 -Target tg -Env production -Release -ArtifactName tg-min
-./tools/smoke-emulator.ps1
+.\tools\build.ps1 -Target tg -Env production
+.\tools\build.ps1 -Target tg -Env production -Release -ArtifactName tg-min
+.\tools\smoke-emulator.ps1
 ```
+```bash
+./tools/build.sh -Target tg -Env production
+./tools/build.sh -Target tg -Env production -Release -ArtifactName tg-min
+pwsh -File tools/smoke-emulator.ps1
+```
+
+The release workflow itself runs on `windows-latest`, which is the reference
+host. A Linux build of the same commit produces JARs with the same entry list
+and class count, but not the same bytes — `jar` records a modification time per
+entry — so release artifacts should keep coming from one platform.
 
 Still worth doing by hand before a release that changes the UI — sign in, open a
 dialog, send a message — because the smoke test deliberately stays offline and never
