@@ -48,7 +48,15 @@ measured in seconds, not milliseconds — but it only happens once, and after th
 the client is talking to Telegram over a GPRS link like any other MTProto
 client.
 
-That is **one device on one network**, and it establishes nothing about yours.
+A second handset — a Samsung GT-C3592, also GPRS-only — now runs it too, and it
+is the more interesting of the two, because it broke things the first one never
+did. Its platform cannot decode JPEG at all, and it refuses to hold two sockets
+at once, which is what a naive media download needs. Both are handled;
+[the measurements are written up in full](docs/hardware/samsung-gt-c3592.md),
+including the numbers that killed a memory theory the project had been carrying
+for months.
+
+That is **two devices on two networks**, and it establishes nothing about yours.
 Installing it and reporting what happens is genuinely the most useful thing
 anyone can do for this project right now.
 
@@ -234,7 +242,8 @@ TLS, which these handsets do not have. Copy the files across instead.
 ## Feedback
 
 This is the part the project actually needs. Every handset is different, and
-right now there is exactly one data point.
+right now there are exactly two data points — and the second one contradicted
+things the first had established, which is rather the point.
 
 - **[Report your phone](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=device-report.yml)**
   — even if everything worked. Install `TelegramJ2ME Probe` first (it is tiny and
@@ -280,6 +289,8 @@ testing against Telegram's servers: **[docs/building.md](docs/building.md)**.
 | [architecture.md](docs/architecture.md) | how it is put together, and an honest security posture |
 | [toolchain.md](docs/toolchain.md) | pinned versions, why JDK 8, preverification |
 | [emulator-notes.md](docs/emulator-notes.md) | what an emulator proves and what it does not |
+| [diagnostics.md](docs/diagnostics.md) | getting measurements and crash tails off a handset with no console |
+| [hardware/](docs/hardware/) | what has actually been measured, per device |
 | [releasing.md](docs/releasing.md) | cutting a release |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | the CLDC subset rule, and what to run before a PR |
 
