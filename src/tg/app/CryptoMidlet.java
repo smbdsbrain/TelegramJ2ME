@@ -15,6 +15,7 @@ import tg.diag.Diag;
 import tg.io.Hex;
 import tg.plat.EntropyLog;
 import tg.plat.EntropyProbe;
+import tg.plat.ReportUpload;
 import tg.ui.KeyTimingScreen;
 import tg.ui.TextScreen;
 
@@ -63,11 +64,20 @@ public class CryptoMidlet extends MIDlet implements CommandListener
     private final Command cmdBack = new Command("Back", Command.BACK, 1);
     private final Command cmdCancel = new Command("Cancel", Command.CANCEL, 1);
     private final Command cmdReport = new Command("Report", Command.SCREEN, 2);
+    private final Command cmdUpload = new Command("Upload", Command.SCREEN, 4);
+
+    /** Which MIDlet the collector files these reports under. */
+    private static final String SINK_TARGET = "crypto";
 
     private Display display;
     private List menu;
     private KeyTimingScreen keyTimingScreen;
     private volatile boolean pbkdf2Cancelled;
+
+    // What "Upload" would send. Set by every screen that shows a result, so the
+    // command does not need to know which scenario produced it.
+    private String pendingSection;
+    private String[] pendingLines;
 
     protected void startApp()
     {
@@ -123,6 +133,10 @@ public class CryptoMidlet extends MIDlet implements CommandListener
             else if (c == cmdReport && keyTimingScreen != null)
             {
                 show("Key timing", keyTimingScreen.snapshot());
+            }
+            else if (c == cmdUpload)
+            {
+                uploadPending();
             }
             else if (c == cmdExit)
             {
@@ -208,10 +222,11 @@ public class CryptoMidlet extends MIDlet implements CommandListener
     /**
      * @param vectors true to run the self-test, false to run the benchmark
      */
-    private void runAsync(String title, String[] placeholder, final boolean vectors)
+    private void runAsync(final String title, String[] placeholder, final boolean vectors)
     {
         final TextScreen screen = new TextScreen(title, placeholder);
         screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
         screen.setCommandListener(this);
         display.setCurrent(screen);
 
@@ -239,6 +254,7 @@ public class CryptoMidlet extends MIDlet implements CommandListener
                     System.arraycopy(lines, 0, withTime, 0, lines.length);
                     withTime[lines.length] =
                             "total " + (System.currentTimeMillis() - t0) + " ms";
+                    publish(title, withTime);
                     screen.setLines(withTime);
                     Diag.mem("after " + (vectors ? "vectors" : "benchmark"));
                 }
@@ -246,13 +262,15 @@ public class CryptoMidlet extends MIDlet implements CommandListener
                 {
                     Diag.error("crypto run failed", t);
                     CrashLog.save(vectors ? "selftest" : "benchmark", t);
-                    screen.setLines(new String[] {
+                    String[] failure = new String[] {
                         "FAILED",
                         Diag.className(t),
                         String.valueOf(t.getMessage()),
                         "",
                         "recorded in the crash log"
-                    });
+                    };
+                    publish(title, failure);
+                    screen.setLines(failure);
                 }
             }
         }).start();
@@ -401,9 +419,53 @@ public class CryptoMidlet extends MIDlet implements CommandListener
 
     private void show(String title, String[] lines)
     {
+        pendingSection = title;
+        pendingLines = lines;
+
         TextScreen screen = new TextScreen(title, lines);
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+    }
+
+    /**
+     * Make a result reachable by the Upload command.
+     *
+     * The vectors, benchmark and PBKDF2 runs all finish on a worker thread, so
+     * without this the command would still be offering whatever was on screen
+     * when the run started.
+     */
+    private void publish(String section, String[] lines)
+    {
+        pendingSection = section;
+        pendingLines = lines;
+    }
+
+    /**
+     * Send the result currently on screen.
+     *
+     * The number worth carrying off this handset is the 2048-bit modPow timing
+     * from "Run benchmarks": it is what an auth_key handshake costs, and it
+     * decides whether the client is usable on this hardware at all.
+     */
+    private void uploadPending()
+    {
+        if (pendingLines == null)
+        {
+            show("Upload", new String[] { "nothing to upload yet" });
+            return;
+        }
+
+        final TextScreen screen = new TextScreen("Upload", new String[] { "starting..." });
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         display.setCurrent(screen);
+
+        ReportUpload.send(SINK_TARGET, pendingSection, pendingLines,
+                new ReportUpload.Progress()
+                {
+                    public void lines(String[] text) { screen.setLines(text); }
+                });
     }
 }

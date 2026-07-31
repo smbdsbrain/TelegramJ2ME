@@ -6,6 +6,7 @@ import java.io.OutputStream;
 import javax.microedition.io.Connector;
 import javax.microedition.io.SocketConnection;
 
+import tg.app.DevSink;
 import tg.diag.DiagSink;
 import tg.tl.Utf8;
 
@@ -33,6 +34,17 @@ public final class TcpLogSink implements DiagSink, Runnable
     private final String host;
     private final int port;
 
+    /**
+     * First line written after connecting, or null for none.
+     *
+     * tools/log-server.py accepts anything and needs no greeting.
+     * tools/ingest-server.py sits on a public address and requires
+     * "&lt;token&gt; &lt;target&gt; &lt;device&gt;" before it will keep the
+     * connection, so which server is on the other end decides whether this is
+     * set - see {@link #forCollector}.
+     */
+    private final String greeting;
+
     private final String[] queue = new String[QUEUE_SIZE];
     private int head;
     private int tail;
@@ -45,8 +57,29 @@ public final class TcpLogSink implements DiagSink, Runnable
 
     public TcpLogSink(String host, int port)
     {
+        this(host, port, null);
+    }
+
+    public TcpLogSink(String host, int port, String greeting)
+    {
         this.host = host;
         this.port = port;
+        this.greeting = greeting;
+    }
+
+    /**
+     * Sink aimed at the development collector described by the build, or null
+     * when this build has no sink configured.
+     *
+     * @param target "probe", "crypto" or "tg"
+     */
+    public static TcpLogSink forCollector(String target)
+    {
+        if (!DevSink.CONFIGURED) { return null; }
+        String device = (DevSink.DEVICE == null || DevSink.DEVICE.length() == 0)
+                ? "unknown" : DevSink.DEVICE;
+        return new TcpLogSink(DevSink.TCP_HOST, DevSink.TCP_PORT,
+                DevSink.TOKEN + " " + target + " " + device);
     }
 
     /** Connects on a background thread; returns immediately. */
@@ -93,6 +126,15 @@ public final class TcpLogSink implements DiagSink, Runnable
             conn = (SocketConnection) Connector.open(
                     "socket://" + host + ":" + port, Connector.WRITE, true);
             out = conn.openOutputStream();
+
+            if (greeting != null)
+            {
+                // Before anything from the queue: the collector drops the
+                // connection if the first line does not authenticate.
+                out.write(Utf8.encode(greeting));
+                out.write('\n');
+                out.flush();
+            }
 
             while (running)
             {

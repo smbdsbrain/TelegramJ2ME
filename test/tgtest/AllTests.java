@@ -48,7 +48,8 @@ public final class AllTests
             new Phase7DesignTest(),
             new PhotoStreamTest(),
             new JpegDecoderTest(),
-            new SelfTestTest()
+            new SelfTestTest(),
+            new ReportTest()
         };
     }
 

@@ -13,7 +13,9 @@ import tg.plat.Caps;
 import tg.plat.EntropyLog;
 import tg.plat.EntropyProbe;
 import tg.plat.HeapProbe;
+import tg.plat.HttpReportSink;
 import tg.plat.ImageProbe;
+import tg.plat.ReportUpload;
 import tg.plat.RmsCheck;
 import tg.mt.Dc;
 import tg.ui.BackgroundSocketScreen;
@@ -50,25 +52,32 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         "Telegram DC socket :443",
         "Telegram DC socket :5222",
         "PNG / JPEG decode",
+        "Emoji sheet cost",
         "Background socket",
         "Diagnostic log",
-        "Crash log"
+        "Crash log",
+        "Upload all"
     };
 
-    private static final int ITEM_PLATFORM = 0;
-    private static final int ITEM_HEAP     = 1;
-    private static final int ITEM_RMS      = 2;
-    private static final int ITEM_ENTROPY  = 3;
-    private static final int ITEM_KEYS     = 4;
-    private static final int ITEM_KEYTIME  = 5;
-    private static final int ITEM_NET      = 6;
-    private static final int ITEM_TG_80    = 7;
-    private static final int ITEM_TG_443   = 8;
-    private static final int ITEM_TG_5222  = 9;
-    private static final int ITEM_IMAGE    = 10;
-    private static final int ITEM_BG       = 11;
-    private static final int ITEM_LOG      = 12;
-    private static final int ITEM_CRASH    = 13;
+    private static final int ITEM_PLATFORM   = 0;
+    private static final int ITEM_HEAP       = 1;
+    private static final int ITEM_RMS        = 2;
+    private static final int ITEM_ENTROPY    = 3;
+    private static final int ITEM_KEYS       = 4;
+    private static final int ITEM_KEYTIME    = 5;
+    private static final int ITEM_NET        = 6;
+    private static final int ITEM_TG_80      = 7;
+    private static final int ITEM_TG_443     = 8;
+    private static final int ITEM_TG_5222    = 9;
+    private static final int ITEM_IMAGE      = 10;
+    private static final int ITEM_EMOJI      = 11;
+    private static final int ITEM_BG         = 12;
+    private static final int ITEM_LOG        = 13;
+    private static final int ITEM_CRASH      = 14;
+    private static final int ITEM_UPLOAD_ALL = 15;
+
+    /** Which MIDlet the collector files these reports under. */
+    private static final String SINK_TARGET = "probe";
 
     private final Command cmdExit    = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack    = new Command("Back", Command.BACK, 1);
@@ -77,6 +86,7 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     // CryptoMidlet calls the same action.
     private final Command cmdReport  = new Command("Report", Command.SCREEN, 2);
     private final Command cmdClear   = new Command("Clear", Command.SCREEN, 3);
+    private final Command cmdUpload  = new Command("Upload", Command.SCREEN, 4);
 
     private Display display;
     private List menu;
@@ -88,6 +98,11 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     private SocketConnectScreen telegramScreen;
     private BackgroundSocketScreen backgroundScreen;
     private TextScreen logScreen;
+
+    // What "Upload" would send. Set by every screen that displays a result, so
+    // the command does not have to know which scenario produced it.
+    private String pendingSection;
+    private String[] pendingLines;
 
     // -------------------------------------------------------- MIDlet life
 
@@ -227,6 +242,12 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             return;
         }
 
+        if (c == cmdUpload)
+        {
+            uploadPending();
+            return;
+        }
+
         if (c == cmdClear)
         {
             if (d == entropyScreen && entropyScreen != null)
@@ -328,6 +349,10 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 showText("Image decode", ImageProbe.run());
                 break;
 
+            case ITEM_EMOJI:
+                showText("Emoji sheet", ImageProbe.emojiSheet());
+                break;
+
             case ITEM_BG:
                 if (backgroundScreen == null)
                 {
@@ -355,6 +380,10 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
             case ITEM_CRASH:
                 showCrashLog();
+                break;
+
+            case ITEM_UPLOAD_ALL:
+                runUploadAll();
                 break;
 
             default:
@@ -388,6 +417,7 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             "this can take a while on slow hardware."
         });
         screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
         screen.setCommandListener(this);
         display.setCurrent(screen);
 
@@ -398,17 +428,32 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 try
                 {
                     HeapProbe.Result r = HeapProbe.run(8 * 1024);
+                    publish("Heap probe", r.lines());
                     screen.setLines(r.lines());
                 }
                 catch (Throwable t)
                 {
                     Diag.error("heap probe failed", t);
-                    screen.setLines(new String[] {
+                    String[] failure = new String[] {
                         "FAILED", Diag.className(t), String.valueOf(t.getMessage())
-                    });
+                    };
+                    publish("Heap probe", failure);
+                    screen.setLines(failure);
                 }
             }
         }).start();
+    }
+
+    /**
+     * Make a result reachable by the Upload command.
+     *
+     * The async screens finish on a worker thread, so without this the command
+     * would still be offering whatever was on screen before the probe started.
+     */
+    private void publish(String section, String[] lines)
+    {
+        pendingSection = section;
+        pendingLines = lines;
     }
 
     /**
@@ -433,6 +478,7 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         });
         screen.addCommand(cmdBack);
         screen.addCommand(cmdClear);
+        screen.addCommand(cmdUpload);
         screen.setCommandListener(this);
         entropyScreen = screen;
         display.setCurrent(screen);
@@ -455,15 +501,18 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                             });
                         }
                     });
+                    publish("Entropy measure", lines);
                     screen.setLines(lines);
                 }
                 catch (Throwable t)
                 {
                     Diag.error("entropy probe failed", t);
                     CrashLog.save("entropy", t);
-                    screen.setLines(new String[] {
+                    String[] failure = new String[] {
                         "FAILED", Diag.className(t), String.valueOf(t.getMessage())
-                    });
+                    };
+                    publish("Entropy measure", failure);
+                    screen.setLines(failure);
                 }
             }
         }).start();
@@ -501,10 +550,188 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
     private void showText(String title, String[] lines)
     {
+        pendingSection = title;
+        pendingLines = lines;
+
         TextScreen screen = new TextScreen(title, lines);
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+    }
+
+    // -------------------------------------------------------------- uploads
+
+    /**
+     * Send whatever result is currently on screen.
+     *
+     * On a worker thread without exception: MIDP's HttpConnection has no
+     * timeout control, and a handset with no data session can block inside
+     * Connector.open for a long time. Doing that on the lcdui thread would
+     * freeze the display, which on some AMS implementations gets the MIDlet
+     * killed - while diagnosing a crash.
+     */
+    private void uploadPending()
+    {
+        if (pendingLines == null)
+        {
+            showText("Upload", new String[] { "nothing to upload yet" });
+            return;
+        }
+        uploadOne(pendingSection, pendingLines);
+    }
+
+    private void uploadOne(String section, String[] lines)
+    {
+        final TextScreen screen = new TextScreen("Upload", new String[] { "starting..." });
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         display.setCurrent(screen);
+
+        ReportUpload.send(SINK_TARGET, section, lines, new ReportUpload.Progress()
+        {
+            public void lines(String[] text) { screen.setLines(text); }
+        });
+    }
+
+    /**
+     * Run every non-interactive scenario and upload each result.
+     *
+     * This is the point of the build: one menu entry that leaves a full picture
+     * of an unknown handset on the collector, so nothing has to be read off the
+     * screen and retyped. The interactive scenarios - Keys, Key timing, the
+     * socket screens, Background socket - are left out because they need
+     * someone pressing buttons.
+     */
+    private void runUploadAll()
+    {
+        final HttpReportSink sink = HttpReportSink.createDefault();
+        if (sink == null)
+        {
+            showText("Upload all", ReportUpload.noSinkMessage());
+            return;
+        }
+
+        final TextScreen screen = new TextScreen("Upload all", new String[] {
+            "starting...",
+            "",
+            "runs the heap and entropy probes,",
+            "so allow a couple of minutes.",
+            "do not exit."
+        });
+        screen.addCommand(cmdBack);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                // Order matters. Platform and heap come first because they are
+                // what every other number has to be read against, and because
+                // if the handset dies partway through a sweep those are the two
+                // that must already have arrived.
+                String[] names = {
+                    "Platform", "Heap probe", "RMS", "Image decode",
+                    "Emoji sheet", "Entropy log", "Diagnostic log", "Crash log"
+                };
+
+                int sent = 0;
+                int failed = 0;
+                String lastError = null;
+
+                for (int i = 0; i < names.length; i++)
+                {
+                    screen.setLines(new String[] {
+                        "[" + (i + 1) + "/" + names.length + "] " + names[i],
+                        "",
+                        "sent " + sent + ", failed " + failed,
+                        "do not exit."
+                    });
+
+                    String[] lines;
+                    try
+                    {
+                        lines = collect(i);
+                    }
+                    catch (Throwable t)
+                    {
+                        // A scenario that blows up is itself a finding; report
+                        // it rather than abandoning the remaining ones.
+                        Diag.error("upload-all " + names[i], t);
+                        lines = new String[] {
+                            "scenario FAILED",
+                            Diag.className(t),
+                            String.valueOf(t.getMessage())
+                        };
+                    }
+
+                    if (sink.send(SINK_TARGET, names[i], lines))
+                    {
+                        sent++;
+                    }
+                    else
+                    {
+                        failed++;
+                        lastError = sink.lastError();
+                    }
+                }
+
+                String[] done = new String[failed == 0 ? 5 : 7];
+                done[0] = failed == 0 ? "done" : "done with errors";
+                done[1] = "";
+                done[2] = "sent " + sent + " of " + names.length;
+                done[3] = "collector: " + DevSink.DEVICE;
+                // The POST ceiling this handset turned out to have is a device
+                // finding in its own right - it belongs in the hardware note
+                // next to the heap and JAR-size limits, not just in a log.
+                done[4] = "post chunk: " + sink.acceptedChunkBytes() + " B"
+                        + (sink.refusedChunkBytes() > 0
+                           ? " (refused " + sink.refusedChunkBytes() + " B)" : "");
+                if (failed > 0)
+                {
+                    done[5] = "failed " + failed;
+                    done[6] = String.valueOf(lastError);
+                }
+                screen.setLines(done);
+            }
+
+            private String[] collect(int index)
+            {
+                switch (index)
+                {
+                    case 0: return Caps.report();
+                    case 1: return HeapProbe.run(8 * 1024).lines();
+                    case 2: return RmsCheck.run();
+                    case 3: return ImageProbe.run();
+                    case 4: return ImageProbe.emojiSheet();
+                    case 5: return EntropyLog.report();
+                    case 6: return Diag.snapshot();
+                    default: return crashLines();
+                }
+            }
+        }).start();
+    }
+
+    /** Crash entries flattened for a line-oriented report. */
+    private static String[] crashLines()
+    {
+        String[] entries = CrashLog.load();
+        if (entries.length == 0) { return new String[] { "no crashes recorded" }; }
+
+        int total = 0;
+        for (int i = 0; i < entries.length; i++)
+        {
+            total += countLines(entries[i]) + 1;
+        }
+        String[] lines = new String[total];
+        int w = 0;
+        for (int i = 0; i < entries.length; i++)
+        {
+            lines[w++] = "=== entry " + (i + 1) + " ===";
+            w = splitInto(entries[i], lines, w);
+        }
+        return lines;
     }
 
     // CLDC has no String.split(), and a regex engine is not something we want

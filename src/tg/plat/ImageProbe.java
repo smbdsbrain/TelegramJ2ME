@@ -1,5 +1,7 @@
 package tg.plat;
 
+import java.io.InputStream;
+
 import javax.microedition.lcdui.Image;
 
 import tg.io.Hex;
@@ -34,6 +36,96 @@ public final class ImageProbe
         out[3] = "";
         out[4] = "PNG must pass on MIDP 2.0.";
         out[5] = "JPEG PASS enables Telegram photos.";
+        return out;
+    }
+
+    /**
+     * What the emoji sprite sheet costs to hold.
+     *
+     * res/emoji.png is 256x160 and about 16 KB packed, but MIDP decodes it into
+     * a full-colour Image - roughly 160 KB of live heap at 32bpp - and
+     * EmojiText caches it in a static field forever. On the messenger build
+     * that allocation happens on the FIRST paint of the first chat screen and
+     * never on the dialog list, which is exactly the boundary a handset was
+     * observed to die at.
+     *
+     * Measured from the probe MIDlet rather than the messenger because probe
+     * carries no crypto and no Telegram code, so the number is not contaminated
+     * by whatever else the client had already allocated. res/ is packaged into
+     * every target, so the file is already in probe.jar.
+     */
+    public static String[] emojiSheet()
+    {
+        String[] out = new String[8];
+        out[0] = "emoji sprite sheet (/emoji.png)";
+
+        Runtime rt = Runtime.getRuntime();
+
+        // Two collections: on a simple collector one pass often leaves the
+        // previous screen's garbage in place and the delta comes out negative.
+        System.gc();
+        System.gc();
+
+        long totalBefore = rt.totalMemory();
+        long freeBefore = rt.freeMemory();
+        out[1] = "before: total=" + totalBefore + " free=" + freeBefore;
+
+        InputStream in = null;
+        try
+        {
+            long t0 = System.currentTimeMillis();
+            in = ImageProbe.class.getResourceAsStream("/emoji.png");
+            if (in == null)
+            {
+                out[2] = "FAIL resource /emoji.png not in this JAR";
+                out[3] = "";
+                out[4] = "";
+                out[5] = "";
+                out[6] = "";
+                out[7] = "the messenger build would fall back to text.";
+                return out;
+            }
+
+            Image sheet = Image.createImage(in);
+            long ms = System.currentTimeMillis() - t0;
+
+            long totalAfter = rt.totalMemory();
+            long freeAfter = rt.freeMemory();
+
+            out[2] = "after:  total=" + totalAfter + " free=" + freeAfter;
+            out[3] = "decoded " + sheet.getWidth() + "x" + sheet.getHeight()
+                    + " in " + ms + "ms";
+
+            // freeMemory can rise if the VM grew the heap to fit the decode, so
+            // account for that rather than reporting a nonsensical negative.
+            long cost = (freeBefore - freeAfter) + (totalAfter - totalBefore);
+            out[4] = "heapCost=" + cost + " (" + (cost / 1024) + " KB)";
+            out[5] = "heapGrew=" + (totalAfter - totalBefore);
+
+            // Hold it until after the measurement, then let go - the point is
+            // the cost of keeping it, which is what EmojiText actually does.
+            sheet = null;
+            System.gc();
+            out[6] = "released: free=" + rt.freeMemory();
+            out[7] = "compare heapCost against largestSingleAlloc.";
+        }
+        catch (Throwable t)
+        {
+            out[2] = "FAIL " + t.getClass().getName() + " " + String.valueOf(t.getMessage());
+            out[3] = "";
+            out[4] = "";
+            out[5] = "";
+            out[6] = "";
+            out[7] = "an OutOfMemoryError here explains a crash on chat open.";
+        }
+        finally
+        {
+            if (in != null)
+            {
+                try { in.close(); } catch (Throwable ignored) { }
+            }
+        }
+
         return out;
     }
 
