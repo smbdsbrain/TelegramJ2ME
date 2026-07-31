@@ -10,12 +10,15 @@ import javax.microedition.midlet.MIDlet;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
 import tg.plat.Caps;
+import tg.plat.EntropyLog;
+import tg.plat.EntropyProbe;
 import tg.plat.HeapProbe;
 import tg.plat.ImageProbe;
 import tg.plat.RmsCheck;
 import tg.mt.Dc;
 import tg.ui.BackgroundSocketScreen;
 import tg.ui.KeyScreen;
+import tg.ui.KeyTimingScreen;
 import tg.ui.NetScreen;
 import tg.ui.SocketConnectScreen;
 import tg.ui.TextScreen;
@@ -39,7 +42,9 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         "Platform & build",
         "Heap probe",
         "RMS test",
+        "Entropy measure",
         "Keys",
+        "Key timing",
         "Public TCP echo",
         "Telegram DC socket :80",
         "Telegram DC socket :443",
@@ -53,25 +58,32 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     private static final int ITEM_PLATFORM = 0;
     private static final int ITEM_HEAP     = 1;
     private static final int ITEM_RMS      = 2;
-    private static final int ITEM_KEYS     = 3;
-    private static final int ITEM_NET      = 4;
-    private static final int ITEM_TG_80    = 5;
-    private static final int ITEM_TG_443   = 6;
-    private static final int ITEM_TG_5222  = 7;
-    private static final int ITEM_IMAGE    = 8;
-    private static final int ITEM_BG       = 9;
-    private static final int ITEM_LOG      = 10;
-    private static final int ITEM_CRASH    = 11;
+    private static final int ITEM_ENTROPY  = 3;
+    private static final int ITEM_KEYS     = 4;
+    private static final int ITEM_KEYTIME  = 5;
+    private static final int ITEM_NET      = 6;
+    private static final int ITEM_TG_80    = 7;
+    private static final int ITEM_TG_443   = 8;
+    private static final int ITEM_TG_5222  = 9;
+    private static final int ITEM_IMAGE    = 10;
+    private static final int ITEM_BG       = 11;
+    private static final int ITEM_LOG      = 12;
+    private static final int ITEM_CRASH    = 13;
 
     private final Command cmdExit    = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack    = new Command("Back", Command.BACK, 1);
     private final Command cmdRefresh = new Command("Refresh", Command.SCREEN, 2);
+    // Named to match what KeyTimingScreen tells the user to press, and what
+    // CryptoMidlet calls the same action.
+    private final Command cmdReport  = new Command("Report", Command.SCREEN, 2);
     private final Command cmdClear   = new Command("Clear", Command.SCREEN, 3);
 
     private Display display;
     private List menu;
 
     private KeyScreen keyScreen;
+    private KeyTimingScreen keyTimingScreen;
+    private TextScreen entropyScreen;
     private NetScreen netScreen;
     private SocketConnectScreen telegramScreen;
     private BackgroundSocketScreen backgroundScreen;
@@ -81,6 +93,11 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
     protected void startApp()
     {
+        // First statement in the method on purpose. This value is the evidence
+        // for whether the wall clock survives a power cycle, so it has to be
+        // read before anything else has had a chance to advance it.
+        final long startupMillis = System.currentTimeMillis();
+
         if (display != null)
         {
             // Returning from pause: nothing to rebuild.
@@ -103,6 +120,18 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         // Written on every launch, read from the previous one - this is how we
         // learn whether RMS really survives MIDlet exit on this firmware.
         Diag.info("rms " + RmsCheck.checkPersistenceMarker());
+
+        // Same idea, applied to the RNG seed: record what gather() produces this
+        // launch so a later launch can prove it never repeats. Two gathers cost
+        // about 240 ms of jitter collection, so it runs off the UI thread -
+        // the timestamp it needs was already taken above.
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                Diag.info("entropy " + EntropyLog.recordLaunch("probe", startupMillis));
+            }
+        }).start();
 
         menu = new List("Probe " + BuildInfo.VERSION, List.IMPLICIT, MENU_ITEMS, null);
         menu.addCommand(cmdExit);
@@ -192,9 +221,29 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             return;
         }
 
+        if (c == cmdReport && keyTimingScreen != null)
+        {
+            showText("Key timing", keyTimingScreen.snapshot());
+            return;
+        }
+
         if (c == cmdClear)
         {
-            if (d == logScreen)
+            if (d == entropyScreen && entropyScreen != null)
+            {
+                // Starts a fresh cross-restart series. The tester needs this
+                // after a run made under the wrong conditions - a warm restart
+                // mixed into a cold-boot series poisons the comparison.
+                EntropyLog.reset();
+                entropyScreen.setLines(new String[] {
+                    "cross-restart history cleared.",
+                    "",
+                    "power the phone fully off and",
+                    "on, then run Entropy measure",
+                    "again to start a new series."
+                });
+            }
+            else if (d == logScreen)
             {
                 Diag.clear();
                 logScreen.setLines(Diag.snapshot());
@@ -229,12 +278,27 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 showText("RMS", RmsCheck.run());
                 break;
 
+            case ITEM_ENTROPY:
+                runEntropyProbe();
+                break;
+
             case ITEM_KEYS:
                 if (keyScreen == null) { keyScreen = new KeyScreen(); }
                 keyScreen.addCommand(cmdBack);
                 keyScreen.addCommand(cmdRefresh);
                 keyScreen.setCommandListener(this);
                 display.setCurrent(keyScreen);
+                break;
+
+            case ITEM_KEYTIME:
+                if (keyTimingScreen == null)
+                {
+                    keyTimingScreen = new KeyTimingScreen();
+                    keyTimingScreen.addCommand(cmdBack);
+                    keyTimingScreen.addCommand(cmdReport);
+                    keyTimingScreen.setCommandListener(this);
+                }
+                display.setCurrent(keyTimingScreen);
                 break;
 
             case ITEM_NET:
@@ -339,6 +403,64 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 catch (Throwable t)
                 {
                     Diag.error("heap probe failed", t);
+                    screen.setLines(new String[] {
+                        "FAILED", Diag.className(t), String.valueOf(t.getMessage())
+                    });
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * The entropy suite blocks for up to about 25 seconds - most of it spent
+     * deliberately busy-looping against the clock - so like the heap probe it
+     * belongs on a worker thread. The progress callback exists so the display
+     * keeps changing while it runs; a frozen screen during a long measurement
+     * is indistinguishable from a hung MIDlet, and on a handset the AMS may act
+     * on that.
+     */
+    private void runEntropyProbe()
+    {
+        final TextScreen screen = new TextScreen("Entropy", new String[] {
+            "running...",
+            "",
+            "measuring clock granularity,",
+            "jitter, hashCode and heap",
+            "readings, then comparing this",
+            "launch against earlier ones.",
+            "",
+            "up to 25 s. do not exit."
+        });
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdClear);
+        screen.setCommandListener(this);
+        entropyScreen = screen;
+        display.setCurrent(screen);
+
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                try
+                {
+                    String[] lines = EntropyProbe.run(new EntropyProbe.Progress()
+                    {
+                        public void step(String what, int done, int total)
+                        {
+                            screen.setLines(new String[] {
+                                "Entropy probe",
+                                "[" + done + "/" + total + "] " + what,
+                                "",
+                                "do not exit."
+                            });
+                        }
+                    });
+                    screen.setLines(lines);
+                }
+                catch (Throwable t)
+                {
+                    Diag.error("entropy probe failed", t);
+                    CrashLog.save("entropy", t);
                     screen.setLines(new String[] {
                         "FAILED", Diag.className(t), String.valueOf(t.getMessage())
                     });

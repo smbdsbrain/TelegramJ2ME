@@ -27,6 +27,7 @@ public final class AllTests
             new AesCtrTest(),
             new AesIgeTest(),
             new RngTest(),
+            new EntropyTest(),
             new BigIntTest(),
             new TlTest(),
             new InflateTest(),

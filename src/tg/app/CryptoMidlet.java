@@ -13,6 +13,9 @@ import tg.crypto.SelfTest;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
 import tg.io.Hex;
+import tg.plat.EntropyLog;
+import tg.plat.EntropyProbe;
+import tg.ui.KeyTimingScreen;
 import tg.ui.TextScreen;
 
 /**
@@ -44,7 +47,8 @@ public class CryptoMidlet extends MIDlet implements CommandListener
         "Run vectors",
         "Run benchmarks",
         "PBKDF2 x100000",
-        "Entropy sample",
+        "Entropy measure",
+        "Key timing",
         "Diagnostic log"
     };
 
@@ -52,18 +56,25 @@ public class CryptoMidlet extends MIDlet implements CommandListener
     private static final int ITEM_BENCH   = 1;
     private static final int ITEM_PBKDF2  = 2;
     private static final int ITEM_ENTROPY = 3;
-    private static final int ITEM_LOG     = 4;
+    private static final int ITEM_KEYTIME = 4;
+    private static final int ITEM_LOG     = 5;
 
     private final Command cmdExit = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack = new Command("Back", Command.BACK, 1);
     private final Command cmdCancel = new Command("Cancel", Command.CANCEL, 1);
+    private final Command cmdReport = new Command("Report", Command.SCREEN, 2);
 
     private Display display;
     private List menu;
+    private KeyTimingScreen keyTimingScreen;
     private volatile boolean pbkdf2Cancelled;
 
     protected void startApp()
     {
+        // First statement on purpose: this is the evidence for whether the wall
+        // clock survives a power cycle, so nothing may advance it first.
+        final long startupMillis = System.currentTimeMillis();
+
         if (display != null)
         {
             display.setCurrent(menu);
@@ -73,6 +84,17 @@ public class CryptoMidlet extends MIDlet implements CommandListener
 
         Diag.info("crypto midlet " + BuildInfo.VERSION + " build " + BuildInfo.BUILD);
         Diag.mem("startup");
+
+        // Record this launch's seed so a later launch can prove it never
+        // repeats. Off the UI thread - two gathers cost ~240 ms - using the
+        // timestamp taken on the first line of this method.
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                Diag.info("entropy " + EntropyLog.recordLaunch("crypto", startupMillis));
+            }
+        }).start();
 
         menu = new List("Crypto " + BuildInfo.VERSION, List.IMPLICIT, MENU_ITEMS, null);
         menu.addCommand(cmdExit);
@@ -97,6 +119,10 @@ public class CryptoMidlet extends MIDlet implements CommandListener
             if (c == cmdCancel)
             {
                 pbkdf2Cancelled = true;
+            }
+            else if (c == cmdReport && keyTimingScreen != null)
+            {
+                show("Key timing", keyTimingScreen.snapshot());
             }
             else if (c == cmdExit)
             {
@@ -153,6 +179,17 @@ public class CryptoMidlet extends MIDlet implements CommandListener
 
             case ITEM_ENTROPY:
                 showEntropy();
+                break;
+
+            case ITEM_KEYTIME:
+                if (keyTimingScreen == null)
+                {
+                    keyTimingScreen = new KeyTimingScreen();
+                    keyTimingScreen.addCommand(cmdBack);
+                    keyTimingScreen.addCommand(cmdReport);
+                    keyTimingScreen.setCommandListener(this);
+                }
+                display.setCurrent(keyTimingScreen);
                 break;
 
             case ITEM_PBKDF2:
@@ -293,13 +330,22 @@ public class CryptoMidlet extends MIDlet implements CommandListener
     }
 
     /**
-     * Shows what the entropy collector actually produces here. On a handset
-     * with no hardware RNG this is the evidence for - or against - the
-     * seeding strategy, so the raw samples are displayed rather than a verdict.
+     * Measures the entropy sources rather than merely sampling them.
+     *
+     * The three-gather comparison this screen used to be is kept as the first
+     * thing it prints: it is a real assertion, it costs nothing, and a failure
+     * there makes everything below it moot. What follows is
+     * {@link EntropyProbe}, which quantifies the sources instead of inviting
+     * the reader to eyeball three hex strings for "no obvious repetition" - the
+     * verdict this screen's previous version actually produced on hardware.
      */
     private void showEntropy()
     {
-        final TextScreen screen = new TextScreen("Entropy", new String[] { "sampling..." });
+        final TextScreen screen = new TextScreen("Entropy", new String[] {
+            "measuring...",
+            "",
+            "up to 25 s. do not exit."
+        });
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
         display.setCurrent(screen);
@@ -310,25 +356,44 @@ public class CryptoMidlet extends MIDlet implements CommandListener
             {
                 try
                 {
-                    String[] out = new String[9];
-                    out[0] = "three independent gather() samples;";
-                    out[1] = "they MUST differ from each other.";
-                    out[2] = "";
+                    String[] head = new String[6];
+                    head[0] = "three gather() samples;";
+                    head[1] = "they MUST differ.";
                     for (int i = 0; i < 3; i++)
                     {
-                        out[3 + i] = Hex.encode(Entropy.gather(), 0, 16);
+                        head[2 + i] = Hex.encode(Entropy.gather(), 0, 8);
                     }
-                    out[6] = "";
-                    out[7] = "jitter (120 ms) = "
-                             + Hex.encode(Entropy.collectJitter(120), 0, 16);
-                    out[8] = "estimated bits/gather = "
-                             + Entropy.estimatedBitsPerGather() + " (unmeasured)";
+                    head[5] = "estimated bits/gather = "
+                              + Entropy.estimatedBitsPerGather()
+                              + (Entropy.estimatedBitsPerGather() == 0
+                                 ? " (unmeasured)" : "");
+
+                    String[] body = EntropyProbe.run(new EntropyProbe.Progress()
+                    {
+                        public void step(String what, int done, int total)
+                        {
+                            screen.setLines(new String[] {
+                                "Entropy probe",
+                                "[" + done + "/" + total + "] " + what,
+                                "",
+                                "do not exit."
+                            });
+                        }
+                    });
+
+                    String[] out = new String[head.length + 1 + body.length];
+                    System.arraycopy(head, 0, out, 0, head.length);
+                    out[head.length] = "";
+                    System.arraycopy(body, 0, out, head.length + 1, body.length);
                     screen.setLines(out);
                 }
                 catch (Throwable t)
                 {
-                    Diag.error("entropy sample failed", t);
-                    screen.setLines(new String[] { "FAILED", Diag.className(t) });
+                    Diag.error("entropy measure failed", t);
+                    CrashLog.save("entropy", t);
+                    screen.setLines(new String[] {
+                        "FAILED", Diag.className(t), String.valueOf(t.getMessage())
+                    });
                 }
             }
         }).start();

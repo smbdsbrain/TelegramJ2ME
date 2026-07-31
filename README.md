@@ -127,8 +127,9 @@ anyone can do for this project right now.
 - SRP-6a for two-step verification
 
 **Two companion MIDlets**
-- **Probe** (~64 KB) — reports what your handset actually supports: platform,
-  heap, RMS, raw sockets, key codes, image decoding
+- **Probe** (~91 KB) — reports what your handset actually supports: platform,
+  heap, RMS, raw sockets, key codes, image decoding, and how much entropy the
+  runtime's clock and allocator actually yield
 - **Crypto** — runs the cryptographic test vectors and benchmarks on the device
 
 ## What is not there yet
@@ -164,10 +165,14 @@ Photos are the one exception: those download and open.
 outgoing messages, 1000 characters per message. These are memory budgets, not
 placeholders.
 
-**Two security caveats, stated plainly.** The random number generator's
-**seeding has not been verified on hardware**, so keys generated on a phone
-should be treated as development keys for now
-([details](docs/architecture.md#security-posture-stated-honestly)). And **RMS
+**Two security caveats, stated plainly.** The random number generator's seeding
+has now been **measured on one handset** — an Alcatel OT-810D gives about **58
+bits per entropy gather**, and seven launches produced no repeated seed, six of
+them cold boots from a clock pinned by hand to the same value. That is roughly a
+fifth of what a 2048-bit key exchange needs from a single gather, and one
+handset is one handset, so keys generated on a phone are **still development
+keys** ([the numbers](docs/hardware/alcatel-ot810d.md), [the
+posture](docs/architecture.md#security-posture-stated-honestly)). And **RMS
 offers no encryption**, so anyone holding your phone and the right tools can
 extract the session.
 
@@ -192,7 +197,7 @@ earlier: the generation with megabytes of heap, a real file manager and no
 meaningful JAR ceiling.
 
 Rather than guess from a spec site — they disagree about exactly these
-numbers — install **`TelegramJ2ME Probe`** first. It is ~64 KB, installs in
+numbers — install **`TelegramJ2ME Probe`** first. It is ~91 KB, installs in
 seconds, and reports the heap, the JAR limit, whether raw sockets are permitted
 and whether the phone can decode a JPEG.
 

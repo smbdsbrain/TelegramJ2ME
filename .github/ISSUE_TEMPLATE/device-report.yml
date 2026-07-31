@@ -14,7 +14,7 @@ body:
         did not.**
 
         If you have not already, install `TelegramJ2ME Probe` first. It is about
-        64 KB, installs in seconds, and its screens answer most of the questions
+        91 KB, installs in seconds, and its screens answer most of the questions
         below.
 
         ⚠️ **Never paste your phone number, `api_id`, `api_hash` or an
@@ -95,8 +95,14 @@ body:
     attributes:
       label: Probe output
       description: |
-        From `TelegramJ2ME Probe`: Platform & build, Heap probe, RMS test, the
-        raw TCP results, and PNG / JPEG decode. Paste whatever you have.
+        From `TelegramJ2ME Probe`: Platform & build, Heap probe, RMS test,
+        Entropy measure, the raw TCP results, and PNG / JPEG decode. Paste
+        whatever you have.
+
+        The entropy figures are worth more than most of the rest: nobody has
+        measured what a handset's clock and allocator actually yield, and the
+        cross-restart section only means anything if you ran it after powering
+        the phone fully off and on a few times.
       render: text
       placeholder: |
         microedition.platform      :
@@ -108,6 +114,12 @@ body:
         RMS                        :
         PNG fixture                :
         JPEG fixture               :
+        Entropy: clock tick        :
+        Entropy: headline H        :
+        Entropy: bits per gather() :
+        Entropy: hashCode dropped  :
+        Entropy: digest collisions :
+        Entropy: cold boots run    :
 
   - type: input
     id: route

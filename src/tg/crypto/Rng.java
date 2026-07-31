@@ -19,17 +19,21 @@ import java.util.Random;
  * from the counter never repeating and the state never being emitted.
  *
  * <h3>What is NOT yet true</h3>
- * The construction is sound; the <em>seeding</em> is not yet trustworthy. See
- * {@link Entropy} - a 2011 feature phone exposes no hardware RNG, and the
- * quality of what it does expose is an open question that has to be measured on
- * the actual handset. Per the MTProto security guidelines, an auth_key must not
- * be generated from a weak pool.
+ * The construction is sound. The <em>seeding</em> has now been measured on one
+ * handset and found sufficient to avoid repeating, but not sufficient on its
+ * own: an Alcatel One Touch 810D yields about 58 bits per
+ * {@link Entropy#gather()}, roughly a fifth of what a 2048-bit DH secret needs.
+ * See {@link Entropy} and {@code docs/hardware/alcatel-ot810d.md}. Per the
+ * MTProto security guidelines, an auth_key must not be generated from a weak
+ * pool.
  *
  * <blockquote>
- * <b>Do not generate a production auth_key with this until the entropy sources
- * on the target device have been evaluated and documented.</b> Server-provided
- * randomness (the server_nonce, new_nonce chain) must never be the sole source
- * of DH secret entropy.
+ * <b>The single {@link Entropy#gather()} in this constructor is not enough for
+ * a production auth_key.</b> Before generating one, fold in several further
+ * {@link #addEntropy(byte[])} calls and, when the flow exists, key-press
+ * timings; and on any runtime other than the one measured, evaluate the sources
+ * first. Server-provided randomness (the server_nonce, new_nonce chain) must
+ * never be the sole source of DH secret entropy.
  * </blockquote>
  *
  * {@link #forTesting(byte[])} gives a fully deterministic instance so crypto
@@ -52,8 +56,9 @@ public class Rng extends Random
     private boolean seeded;
 
     /**
-     * Seeded from whatever entropy the platform offers. Usable immediately for
-     * nonces and padding; see the class note before using it for a DH secret.
+     * Seeded from whatever entropy the platform offers - about 58 bits of it on
+     * the one handset measured. Usable immediately for nonces and padding; see
+     * the class note before using it for a DH secret.
      */
     public Rng()
     {

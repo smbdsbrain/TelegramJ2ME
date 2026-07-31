@@ -54,8 +54,8 @@ Three MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
 
 | Target | Entry point | Size | Purpose |
 |---|---|---|---|
-| `probe` | `tg.app.ProbeMidlet` | ~64 KB | platform, heap, RMS, keys, sockets, images, pause/resume |
-| `crypto` | `tg.app.CryptoMidlet` | ~81 KB | crypto vectors, modPow and PBKDF2 benchmarks |
+| `probe` | `tg.app.ProbeMidlet` | ~91 KB | platform, heap, RMS, entropy, keys, sockets, images, pause/resume |
+| `crypto` | `tg.app.CryptoMidlet` | ~103 KB | crypto vectors, modPow and PBKDF2 benchmarks, entropy |
 | `tg` | `tg.app.TgMidlet` | ~399 KB, ~291 KB with `-Release` | messenger with connection settings/diagnostics |
 
 `config/proguard-common.pro` deliberately has **no** blanket
@@ -149,11 +149,28 @@ RPC errors remain visible until the user retries or deletes them.
 * The crypto primitives match published vectors, including through the shipped
   JAR.
 * The `Rng` construction is a standard hash DRBG and is sound.
-* **The seeding is not yet trustworthy.** A Java ME runtime may have no hardware
-  RNG, and the quality of what `tg.crypto.Entropy` scrapes has not been measured
-  on a physical device. Until it has been, generated keys are development keys.
-  See the class notes and
+* **The seeding is measured, and one gather is not enough.** A Java ME runtime
+  has no hardware RNG, so `tg.crypto.Entropy` scrapes what it can. On the one
+  handset measured — an Alcatel OT-810D, 2026-07-31, full figures in
+  [docs/hardware/alcatel-ot810d.md](hardware/alcatel-ot810d.md) — that is about
+  **58 bits per `gather()`**: jitter only, at a 99% bound, after a
+  serial-correlation discount, with identity hashes and heap readings counted at
+  zero. A 2048-bit DH secret needs roughly five times that, and **seeding from
+  several gathers is still unimplemented** - `Rng()` calls `gather()` once.
+  Until it exists, and on any runtime other
+  than the one measured, generated keys are development keys. See
   [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+* **The wall clock contributes nothing across cold boots on that handset.** It
+  loses the RTC when the battery is removed. Seven launches produced no repeated
+  seed anyway — two of them started at the same millisecond and still diverged —
+  so jitter and the allocator's identity hashes carry the pool. This is a
+  separate finding from the bit count and does not fold into it.
+* **Key-press timing is a supplement, not the mechanism.** `Entropy`'s notes
+  planned the auth_key path around collecting keyboard interaction. Measured on
+  the same handset that is 3 bits per press - 86 presses for 256 bits, against
+  600 ms of busy-looping for the same from jitter. Human motor noise remains the
+  easiest source to defend, so fold it in where it is free; just do not build
+  the seeding on it.
 * Server-provided randomness must never be the sole source of DH secret entropy.
 * DH parameter validation is mandatory before an `auth_key` is accepted; it is
   not a step to skip for a green demo.
