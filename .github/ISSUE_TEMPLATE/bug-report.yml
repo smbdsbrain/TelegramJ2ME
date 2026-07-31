@@ -1,0 +1,85 @@
+name: Bug report
+description: Something behaves incorrectly in the client, the emulator or the build
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the problem is "it does not work on my phone", the
+        [device report](?template=device-report.yml) form asks better questions
+        — use that one instead.
+
+        ⚠️ **Never paste your phone number, `api_id`, `api_hash` or an
+        `auth_key` here.** This is a public issue tracker.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the release you downloaded, or the commit you built.
+      placeholder: e.g. 0.2.0, or 0.2.0+abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - On a physical handset
+        - In MicroEmulator
+        - In the Sun WTK emulator
+        - During the build or the test suite
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Handset or host
+      description: |
+        The phone model, or — for a build problem — your OS, JDK and PowerShell
+        version. `bootstrap` prints a toolchain summary with all three.
+      placeholder: e.g. Nokia C3-00 · or Ubuntu 24.04, OpenJDK 8u492, pwsh 7.6.4
+    validations:
+      required: true
+
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Which build?
+      options:
+        - Normal
+        - Minified (-min)
+        - Built from source
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Settings and set the route to MTProxy
+        2. Press Connect
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected, and what happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics and Log
+      description: |
+        Both screens are in the app's Options menu and exist for exactly this.
+        If the MIDlet died, the Crash log screen has what it left behind.
+      render: text

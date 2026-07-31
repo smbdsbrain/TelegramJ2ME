@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Telegram API documentation
+    url: https://core.telegram.org/api
+    about: Questions about MTProto or the Telegram API itself, rather than this client.
+  - name: Obtaining an api_id
+    url: https://core.telegram.org/api/obtaining_api_id
+    about: Needed to build the client yourself. Never post the values in an issue.
