@@ -273,6 +273,39 @@ key in RMS would fail confusingly.
 ./tools/build.sh -Target tg -Env production
 ```
 
+A test build also carries the **test server key modulus**, so it cannot
+complete a handshake against production. Through an MTProxy it will reach
+production anyway - the proxy decides the destination, not the build - and the
+failure surfaces as an opaque key mismatch that names no environment.
+
+Two things make that harder to hit. The build prints `env=` in its header and
+warns when a non-probe target is built for test. And a test build installs
+under the MIDlet name `TelegramJ2ME (test)`: because MIDlet suite identity is
+name plus vendor, it lands **alongside** a production install rather than
+replacing it, so it can neither overwrite the real app nor inherit its record
+stores.
+
+For a session on a real handset, always pass `-Env production`.
+
+### A default MTProxy for device builds
+
+Typing a base64 proxy secret on a numeric keypad after every reinstall is not a
+workflow. An optional `secrets/proxy.yaml` supplies one at build time:
+
+```yaml
+link: tg://proxy?server=...&port=443&secret=...
+```
+
+It is used **only when the handset has nothing stored**. Anything entered in
+Settings is persisted and keeps winning, so reinstalling cannot silently
+override a choice made on the device.
+
+Like every other value under `secrets/`, it never reaches `src/` - the build
+writes `generated/tg/app/DevProxy.java`, and both directories are gitignored and
+rejected by `tools/audit-public.ps1`, which also harvests the individual query
+parameters of a link so a leak of the bare secret is caught too. Without the
+file, `CONFIGURED` is false and the build ships no proxy.
+
 DC addresses themselves are public and live in
 [src/tg/mt/Dc.java](../src/tg/mt/Dc.java), under git — but only as bootstrap
 entries. The authoritative list comes from `help.getConfig`.

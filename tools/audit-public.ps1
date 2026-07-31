@@ -106,11 +106,29 @@ try {
                 if ($line -match "^\s*([^:=]+)\s*[:=]\s*(.*?)\s*$") {
                     $key = $Matches[1].Trim()
                     $value = $Matches[2].Trim().Trim('"').Trim("'")
-                    if ($key -match "(?i)(api.?id|api.?hash|phone|auth|password|token|secret|session)" -and
+                    # host/address/endpoint/url are here because secrets/ now also
+                    # holds a development report sink: an IP under "host:" is not a
+                    # credential, but publishing it exposes private infrastructure
+                    # just as effectively as publishing a token would.
+                    if ($key -match "(?i)(api.?id|api.?hash|phone|auth|password|token|secret|session|host|address|endpoint|url|ingest|link|server|proxy)" -and
                             $value.Length -ge 6 -and
-                            $value -notmatch "^(0|REPLACE_ME|CHANGE_ME|example)$") {
+                            $value -notmatch "^(0|REPLACE_ME|CHANGE_ME|PENDING|example|localhost|127\.0\.0\.1)$") {
                         if (-not $localValues.Contains($value)) {
                             $localValues.Add($value)
+                        }
+                        # A secret is often one field inside a larger value -
+                        # a tg://proxy link is stored whole, but what would
+                        # leak is the secret= parameter on its own. Harvest the
+                        # parts as well as the whole.
+                        if ($value -match '\?') {
+                            foreach ($pair in ($value -split '\?', 2)[1] -split '&') {
+                                $parts = $pair -split '=', 2
+                                if ($parts.Count -eq 2 -and $parts[1].Length -ge 8) {
+                                    if (-not $localValues.Contains($parts[1])) {
+                                        $localValues.Add($parts[1])
+                                    }
+                                }
+                            }
                         }
                     }
                 }

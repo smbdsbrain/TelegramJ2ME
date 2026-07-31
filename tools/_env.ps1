@@ -302,6 +302,66 @@ function Get-TelegramSecrets {
     return $result
 }
 
+# Development report sink. Absent by default, and absent is the normal case:
+# a public build has nowhere to upload to and must not carry an endpoint.
+#
+# The file is written by the infrastructure repository's Update-IngestEndpoint.ps1
+# because the collector's public address is ephemeral. It lives in secrets/ for
+# the same reason api_hash does - not because an IP is a credential, but because
+# it points at private infrastructure.
+function Get-DevSink {
+    $result = @{
+        host = ""; httpPort = 80; tcpPort = 8443
+        token = ""; device = ""; source = "none"
+    }
+
+    $path = Join-RepoPath "secrets" "dev-sink.yaml"
+    if (-not (Test-Path $path)) { return $result }
+
+    foreach ($line in (Get-Content $path)) {
+        if ($line -match '^\s*#') { continue }
+        if ($line -notmatch "^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(.*?)\s*$") { continue }
+        $key = $Matches[1]
+        $value = $Matches[2].Trim('"').Trim("'")
+        switch ($key) {
+            'host'      { $result.host = $value }
+            'http_port' { $result.httpPort = [int]($value -replace '[^0-9]', '') }
+            'tcp_port'  { $result.tcpPort = [int]($value -replace '[^0-9]', '') }
+            'token'     { $result.token = $value }
+            'device'    { $result.device = $value }
+        }
+    }
+    if ($result.host -and $result.token) {
+        $result.source = Format-RepoRelative $path
+    }
+    return $result
+}
+
+# Default MTProxy for device builds. Absent by default; a public artifact must
+# not ship a route into someone's private infrastructure, and the secret in a
+# tg://proxy link is exactly that.
+function Get-DevProxy {
+    $result = @{ link = ""; server = ""; source = "none" }
+
+    $path = Join-RepoPath "secrets" "proxy.yaml"
+    if (-not (Test-Path $path)) { return $result }
+
+    foreach ($line in (Get-Content $path)) {
+        if ($line -match '^\s*#') { continue }
+        # Not the generic key:value pattern used elsewhere - a tg:// link
+        # contains colons, so only the first one may separate key from value.
+        if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(.+?)\s*$') { continue }
+        if ($Matches[1] -eq 'link') { $result.link = $Matches[2].Trim('"').Trim("'") }
+    }
+
+    if ($result.link) {
+        $result.source = Format-RepoRelative $path
+        # Host only, for a console line that shows the route without the secret.
+        if ($result.link -match 'server=([^&]+)') { $result.server = $Matches[1] }
+    }
+    return $result
+}
+
 # Safe to print: proves the value was loaded without disclosing it.
 function Format-SecretDigest ($value) {
     if (-not $value) { return "not set" }
