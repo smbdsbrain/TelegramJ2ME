@@ -29,7 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -42,15 +42,15 @@ if (-not $SkipBuild) {
     Write-Host ""
 }
 
-$classes = Join-Path $RepoRoot "build\desktop\classes"
-$tests   = Join-Path $RepoRoot "build\desktop\test-classes"
+$classes = Join-RepoPath "build" "desktop" "classes"
+$tests   = Join-RepoPath "build" "desktop" "test-classes"
 if (-not (Test-Path $tests)) {
     Write-Bad "no compiled tests - expected $tests"
     exit 1
 }
 
 Write-Step "tgtest.AllTests"
-$runtimeCp = (@($classes, $tests) + $MicroEmuJars) -join ";"
+$runtimeCp = (@($classes, $tests) + $MicroEmuJars) -join $PathSep
 $runArgs = @("-cp", $runtimeCp, "tgtest.AllTests")
 if ($Filter) { $runArgs += $Filter }
 & $Jdk8Java @runArgs
@@ -59,19 +59,19 @@ $testExit = $LASTEXITCODE
 # The API check is cheap and catches the failure mode the desktop profile is
 # blind to by construction: a J2SE call that compiles fine here and breaks on
 # the handset.
-$deviceClasses = Join-Path $RepoRoot "build\device\classes"
+$deviceClasses = Join-RepoPath "build" "device" "classes"
 if (Test-Path $deviceClasses) {
     Write-Host ""
     Write-Step "check-api.py on the device classes"
-    $py = Get-Command python -ErrorAction SilentlyContinue
+    $py = Get-PythonCommand
     if ($py) {
-        & $py.Source (Join-Path $PSScriptRoot "check-api.py") $deviceClasses
+        & $py (Join-Path $PSScriptRoot "check-api.py") $deviceClasses
         if ($LASTEXITCODE -ne 0) { exit 1 }
     } else {
-        Write-Warn2 "python not on PATH - skipped"
+        Write-Warn2 "python 3 not on PATH - skipped"
     }
 } else {
-    Write-Warn2 "no device classes yet - run ./tools/build.ps1 -Target probe to include the API check"
+    Write-Warn2 ("no device classes yet - run {0} -Target probe to include the API check" -f $(if ($OnWindows) { ".\tools\build.ps1" } else { "./tools/build.sh" }))
 }
 
 exit $testExit

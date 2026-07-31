@@ -10,7 +10,7 @@
 param()
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 Push-Location $RepoRoot
 try {

@@ -44,7 +44,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -67,15 +67,15 @@ $mainClass = @{
     updates   = "tgtest.LiveUpdatesTest"
 }[$Scenario]
 
-$classes = Join-Path $RepoRoot "build\desktop\classes"
-$tests   = Join-Path $RepoRoot "build\desktop\test-classes"
+$classes = Join-RepoPath "build" "desktop" "classes"
+$tests   = Join-RepoPath "build" "desktop" "test-classes"
 
 Write-Host ""
 Write-Step "live :: $Scenario"
 Write-Warn2 "this talks to real Telegram servers"
 Write-Host ""
 
-$runArgs = @("-cp", "$classes;$tests", $mainClass)
+$runArgs = @("-cp", (@($classes, $tests) -join $PathSep), $mainClass)
 if ($Scenario -eq 'obfs-config')  { $runArgs += 'obfuscated' }
 if ($Scenario -eq 'http-config')  { $runArgs += 'http' }
 if ($Scenario -eq 'proxy-config') { $runArgs += 'proxy' }

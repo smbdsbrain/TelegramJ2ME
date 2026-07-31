@@ -57,7 +57,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 # Single source of truth for the released version. .github/workflows/release.yml
 # reads this line and refuses to publish if it disagrees with the git tag, so a
@@ -110,7 +110,7 @@ function Get-JavaSources ($paths) {
 # this runs before the profile split - otherwise a clean checkout doing
 # `-Profile desktop` first would fail to compile.
 function Write-GeneratedSources ($bootMode, $buildId) {
-    $genDir = Join-Path $RepoRoot "generated\tg\app"
+    $genDir = Join-RepoPath "generated" "tg" "app"
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
 
     # Deterministic on purpose: version + git hash only, never a timestamp.
@@ -179,10 +179,11 @@ public final class Secrets
 # desktop profile
 # ==========================================================================
 if ($BuildProfile -eq 'desktop') {
-    $outSrc  = Join-Path $RepoRoot "build\desktop\classes"
-    $outTest = Join-Path $RepoRoot "build\desktop\test-classes"
-    if ($Clean -and (Test-Path (Join-Path $RepoRoot "build\desktop"))) {
-        Remove-Item (Join-Path $RepoRoot "build\desktop") -Recurse -Force
+    $desktopDir = Join-RepoPath "build" "desktop"
+    $outSrc  = Join-Path $desktopDir "classes"
+    $outTest = Join-Path $desktopDir "test-classes"
+    if ($Clean -and (Test-Path $desktopDir)) {
+        Remove-Item $desktopDir -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $outSrc, $outTest | Out-Null
 
@@ -198,7 +199,7 @@ if ($BuildProfile -eq 'desktop') {
     Write-Step "desktop :: compiling src/ + generated/ (source 1.3, same as device)"
     $srcFiles = Get-JavaSources @("src", "generated")
     if ($srcFiles.Count -eq 0) { Write-Bad "no sources under src/"; exit 1 }
-    $listFile = Join-Path $RepoRoot "build\desktop\sources.txt"
+    $listFile = Join-Path $desktopDir "sources.txt"
     $srcFiles | Set-Content -Path $listFile -Encoding UTF8
     Invoke-Checked $Jdk8Javac @(
         "-source", "1.3", "-target", "1.1", "-nowarn",
@@ -210,12 +211,12 @@ if ($BuildProfile -eq 'desktop') {
     $testFiles = Get-JavaSources @("test")
     if ($testFiles.Count -gt 0) {
         Write-Step "desktop :: compiling test/ (source 1.6, desktop-only APIs allowed)"
-        $testList = Join-Path $RepoRoot "build\desktop\test-sources.txt"
+        $testList = Join-Path $desktopDir "test-sources.txt"
         $testFiles | Set-Content -Path $testList -Encoding UTF8
         # MIDP jars stay on the classpath so a test may reference a device type
         # if it ever needs to; java.net and friends come from the default JDK 8
         # bootclasspath, which is what makes SeTransport possible.
-        $testCp = (@($outSrc) + $MicroEmuJars) -join ";"
+        $testCp = (@($outSrc) + $MicroEmuJars) -join $PathSep
         Invoke-Checked $Jdk8Javac @(
             "-source", "1.6", "-target", "1.6", "-nowarn",
             "-cp", $testCp, "-encoding", "UTF-8", "-d", $outTest, "@$testList"
@@ -226,14 +227,14 @@ if ($BuildProfile -eq 'desktop') {
     }
 
     Write-Host ""
-    Write-Host "desktop build OK. Run tests with:  ./tools/test.ps1" -ForegroundColor Green
+    Write-Host ("desktop build OK. Run tests with:  {0}" -f $(if ($OnWindows) { ".\tools\test.ps1" } else { "./tools/test.sh" })) -ForegroundColor Green
     exit 0
 }
 
 # ==========================================================================
 # device profile
 # ==========================================================================
-$buildDir  = Join-Path $RepoRoot "build\device"
+$buildDir  = Join-RepoPath "build" "device"
 $classDir  = Join-Path $buildDir "classes"
 $preverDir = Join-Path $buildDir "preverified"
 $distDir   = Join-Path $RepoRoot "dist"
@@ -281,9 +282,9 @@ if (-not $SkipApiCheck) {
     if ($bootMode -eq 'wtk') {
         Write-Ok "javac already enforced the subset via the WTK bootclasspath; re-checking anyway"
     }
-    $py = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py) { Write-Bad "python not found on PATH"; exit 1 }
-    & $py.Source (Join-Path $PSScriptRoot "check-api.py") $classDir
+    $py = Get-PythonCommand
+    if (-not $py) { Write-Bad "python 3 not found on PATH (looked for python3, then python)"; exit 1 }
+    & $py (Join-Path $PSScriptRoot "check-api.py") $classDir
     if ($LASTEXITCODE -ne 0) { Write-Bad "API check failed"; exit 1 }
 }
 
@@ -294,17 +295,17 @@ if (-not (Test-Path $ProGuardJar)) { Write-Bad "proguard.jar missing - run boots
 
 $pgArgs = @(
     "-jar", $ProGuardJar,
-    "@$(Join-Path $RepoRoot 'config\proguard-common.pro')",
-    "@$(Join-Path $RepoRoot ("config\proguard-{0}.pro" -f $Target))"
+    "@$(Join-RepoPath 'config' 'proguard-common.pro')",
+    "@$(Join-RepoPath 'config' ("proguard-{0}.pro" -f $Target))"
 )
 # -dontoptimize / -dontobfuscate are boolean: once ProGuard has seen them no
 # later option can undo them. So the release path omits the file rather than
 # trying to override it.
 if (-not $Release) {
-    $pgArgs += "@$(Join-Path $RepoRoot 'config\proguard-debug.pro')"
+    $pgArgs += "@$(Join-RepoPath 'config' 'proguard-debug.pro')"
 }
 $pgArgs += @("-injars", $classDir, "-outjars", $preverDir)
-foreach ($lib in ($bootCp -split ';')) {
+foreach ($lib in ($bootCp -split [regex]::Escape($PathSep))) {
     if ($lib) { $pgArgs += @("-libraryjars", $lib) }
 }
 if ($Release) { $pgArgs += @("-optimizationpasses", "3") }
@@ -345,10 +346,12 @@ $licences = @{
     tg     = @("noto-emoji", "bc", "pdfjs")
 }[$Target]
 
+# Src is forward-slashed: Join-Path accepts that on every platform, where a
+# backslash literal would become part of the file name on Linux.
 $licenceFiles = @{
-    "noto-emoji" = @{ Src = "third_party\noto-emoji\OFL.txt";           Dest = "emoji-OFL.txt";                Class = "EmojiText" }
-    "bc"         = @{ Src = "third_party\bc\LICENSE.html";              Dest = "bouncycastle-LICENSE.html";    Class = "BigInteger" }
-    "pdfjs"      = @{ Src = "third_party\pdfjs\LICENSE-APACHE-2.0.txt"; Dest = "pdfjs-LICENSE-APACHE-2.0.txt"; Class = "JpegDecoder" }
+    "noto-emoji" = @{ Src = "third_party/noto-emoji/OFL.txt";           Dest = "emoji-OFL.txt";                Class = "EmojiText" }
+    "bc"         = @{ Src = "third_party/bc/LICENSE.html";              Dest = "bouncycastle-LICENSE.html";    Class = "BigInteger" }
+    "pdfjs"      = @{ Src = "third_party/pdfjs/LICENSE-APACHE-2.0.txt"; Dest = "pdfjs-LICENSE-APACHE-2.0.txt"; Class = "JpegDecoder" }
 }
 
 foreach ($id in $licences) {
@@ -441,4 +444,5 @@ Write-Ok "dist/$ArtifactName.jar  ($([math]::Round($jarSize / 1KB, 1)) KB)"
 Write-Ok "dist/$ArtifactName.jad  (MIDlet-Jar-Size: $jarSize)"
 
 Write-Host ""
-Write-Host "build OK. Run it with:  ./tools/run-emulator.ps1 -Target $Target" -ForegroundColor Green
+$runCmd = if ($OnWindows) { ".\tools\run-emulator.ps1" } else { "pwsh -File tools/run-emulator.ps1" }
+Write-Host "build OK. Run it with:  $runCmd -Target $Target" -ForegroundColor Green

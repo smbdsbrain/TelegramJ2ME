@@ -39,7 +39,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -52,15 +52,15 @@ if (-not $SkipBuild) {
     Write-Host ""
 }
 
-$tests = Join-Path $RepoRoot "build\desktop\test-classes"
-if (-not (Test-Path (Join-Path $tests "tgtest\EmulatorSmokeTest.class"))) {
+$tests = Join-RepoPath "build" "desktop" "test-classes"
+if (-not (Test-Path (Join-Path (Join-Path $tests "tgtest") "EmulatorSmokeTest.class"))) {
     Write-Bad "the smoke harness is not compiled"
     exit 1
 }
 
 $failed = @()
 foreach ($name in $ArtifactName) {
-    $jar = Join-Path $RepoRoot "dist\$name.jar"
+    $jar = Join-RepoPath "dist" "$name.jar"
     if (-not (Test-Path $jar)) {
         Write-Bad "dist/$name.jar not found. Build it first:  ./tools/build.ps1 -Target tg -ArtifactName $name"
         exit 1
@@ -68,9 +68,14 @@ foreach ($name in $ArtifactName) {
 
     # The packaged jar last, and build/desktop/classes absent, so tg.* comes
     # from the artifact rather than from the unshrunk build output.
-    $runtimeCp = (@($tests) + $MicroEmuJars + @($jar)) -join ";"
+    $runtimeCp = (@($tests) + $MicroEmuJars + @($jar)) -join $PathSep
     Write-Step "emulator smoke :: dist/$name.jar"
-    & $Jdk8Java -cp $runtimeCp tgtest.EmulatorSmokeTest $name
+    # MicroEmulator's J2SEFontManager builds AWT font metrics as soon as the
+    # device is installed. Headless is what a CI runner and a bare Linux box
+    # have, and without this the toolkit tries for an X display and dies.
+    # The -D must be quoted: PowerShell otherwise splits an unquoted
+    # -Dfoo.bar=baz at the first dot and java sees two broken arguments.
+    & $Jdk8Java "-Djava.awt.headless=true" -cp $runtimeCp tgtest.EmulatorSmokeTest $name
     if ($LASTEXITCODE -ne 0) { $failed += $name }
     Write-Host ""
 }

@@ -29,7 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-. "$PSScriptRoot\_env.ps1"
+. (Join-Path $PSScriptRoot "_env.ps1")
 
 $lockPath = Join-Path $PSScriptRoot "sdk.lock.json"
 $problems = New-Object System.Collections.ArrayList
@@ -56,7 +56,13 @@ if ($Jdk8Home) {
     Write-Host ""
     Write-Host "  JDK 9+ removed -source 1.3 / -target 1.1, which CLDC requires." -ForegroundColor Yellow
     Write-Host "  Install one of:" -ForegroundColor Yellow
-    Write-Host "      winget install --id EclipseAdoptium.Temurin.8.JDK --exact" -ForegroundColor Yellow
+    if ($OnWindows) {
+        Write-Host "      winget install --id EclipseAdoptium.Temurin.8.JDK --exact" -ForegroundColor Yellow
+    } else {
+        Write-Host "      sudo apt install openjdk-8-jdk          # Debian / Ubuntu" -ForegroundColor Yellow
+        Write-Host "      sudo dnf install java-1.8.0-openjdk-devel   # Fedora / RHEL" -ForegroundColor Yellow
+        Write-Host "      brew install --cask temurin@8           # macOS" -ForegroundColor Yellow
+    }
     Write-Host "      https://adoptium.net/temurin/releases/?version=8" -ForegroundColor Yellow
     Write-Host "  Or point JDK8_HOME at an existing install and re-run." -ForegroundColor Yellow
     Write-Host ""
@@ -136,7 +142,7 @@ if (Test-Path $ProGuardJar) {
     # follows is expected and is not a failure; what matters is that the jar
     # loaded and ran on this JDK.
     if ($Jdk8Java) {
-        $probeCfg = Join-Path $env:TEMP "proguard-selfcheck.pro"
+        $probeCfg = Join-Path ([IO.Path]::GetTempPath()) "proguard-selfcheck.pro"
         "-dontnote" | Set-Content $probeCfg -Encoding ASCII
         $out = (& $Jdk8Java -jar $ProGuardJar "@$probeCfg" 2>&1 | Out-String)
         Remove-Item $probeCfg -Force -ErrorAction SilentlyContinue
@@ -183,7 +189,8 @@ $requiredApi = @(
 
 if ($WtkHome) {
     Write-Ok "WTK found: $WtkHome  (reference API + preverifier will be used)"
-    foreach ($j in @("lib\cldcapi11.jar", "lib\midpapi20.jar", "bin\preverify.exe", "bin\emulator.exe")) {
+    foreach ($j in @("lib/cldcapi11.jar", "lib/midpapi20.jar",
+                     "bin/preverify$ExeSuffix", "bin/emulator$ExeSuffix")) {
         $p = Join-Path $WtkHome $j
         if (Test-Path $p) { Write-Ok "  $j" } else { Write-Warn2 "  missing: $j" }
     }
@@ -192,8 +199,14 @@ if ($WtkHome) {
     Write-Warn2 "tools/check-api.py is what enforces the CLDC subset in this mode."
     Write-Host  "         Optional, improves confidence on real hardware:" -ForegroundColor DarkGray
     Write-Host  "           1. https://www.oracle.com/java/technologies/java-archive-downloads-javame-downloads.html" -ForegroundColor DarkGray
-    Write-Host  "           2. sun_java_wireless_toolkit-2.5.2_01-win.exe (free Oracle account required)" -ForegroundColor DarkGray
-    Write-Host  "           3. setx WTK_HOME `"C:\WTK2.5.2_01`"  then re-run bootstrap" -ForegroundColor DarkGray
+    if ($OnWindows) {
+        Write-Host "           2. sun_java_wireless_toolkit-2.5.2_01-win.exe (free Oracle account required)" -ForegroundColor DarkGray
+        Write-Host "           3. setx WTK_HOME `"C:\WTK2.5.2_01`"  then re-run bootstrap" -ForegroundColor DarkGray
+    } else {
+        Write-Host "           2. sun_java_wireless_toolkit-2.5.2_01-linux.bin (free Oracle account" -ForegroundColor DarkGray
+        Write-Host "              required; it is a 32-bit installer, so it needs lib32z1 / glibc.i686)" -ForegroundColor DarkGray
+        Write-Host "           3. export WTK_HOME=`$HOME/WTK2.5.2_01  then re-run bootstrap" -ForegroundColor DarkGray
+    }
 }
 
 $haveClasses = @{}
@@ -219,14 +232,14 @@ if ($missingApi.Count -eq 0) {
 Write-Host ""
 Write-Step "Bouncy Castle BigInteger port"
 $porter = Join-Path $PSScriptRoot "port-bc-bigint.py"
-$origBi = Join-Path $RepoRoot "third_party\bc\BigInteger.java.orig"
+$origBi = Join-RepoPath "third_party" "bc" "BigInteger.java.orig"
 if ((Test-Path $porter) -and (Test-Path $origBi)) {
-    $py = (Get-Command python -ErrorAction SilentlyContinue)
+    $py = Get-PythonCommand
     if ($py) {
-        & $py.Source $porter
+        & $py $porter
         if ($LASTEXITCODE -ne 0) { Write-Bad "port-bc-bigint.py failed"; [void]$problems.Add("bc-port") }
     } else {
-        Write-Bad "python not found on PATH"
+        Write-Bad "python 3 not found on PATH"
         [void]$problems.Add("python")
     }
 } elseif (-not (Test-Path $porter)) {
@@ -245,15 +258,15 @@ Write-Host ""
 Write-Step "TL layer (generated/tg/api)"
 $tlGen = Join-Path $PSScriptRoot "generate-tl.py"
 if (Test-Path $tlGen) {
-    $py = (Get-Command python -ErrorAction SilentlyContinue)
+    $py = Get-PythonCommand
     if ($py) {
-        & $py.Source $tlGen
+        & $py $tlGen
         if ($LASTEXITCODE -ne 0) {
             Write-Bad "generate-tl.py failed"
             [void]$problems.Add("tl-gen")
         }
     } else {
-        Write-Bad "python not found on PATH"
+        Write-Bad "python 3 not found on PATH"
         [void]$problems.Add("python")
     }
 } else {
@@ -283,7 +296,11 @@ if ($secrets.apiId -gt 0 -and $secrets.apiHash) {
     }
 } else {
     Write-Warn2 "no credentials yet - everything up to auth_key generation still works."
-    Write-Host  "         Copy-Item config/telegram.yaml.example secrets/telegram.yaml" -ForegroundColor DarkGray
+    if ($OnWindows) {
+        Write-Host "         Copy-Item config/telegram.yaml.example secrets/telegram.yaml" -ForegroundColor DarkGray
+    } else {
+        Write-Host "         mkdir -p secrets && cp config/telegram.yaml.example secrets/telegram.yaml" -ForegroundColor DarkGray
+    }
     Write-Host  "         then fill in api_id / api_hash from https://my.telegram.org" -ForegroundColor DarkGray
 }
 
@@ -300,7 +317,9 @@ Write-Host ($fmt -f "WTK 2.5.2",        $(if ($WtkHome)  { $WtkHome }  else { "n
 Write-Host ($fmt -f "bootclasspath mode", (Get-BootClassPathMode))
 Write-Host ($fmt -f "ProGuard",         $(if (Test-Path $ProGuardJar) { "sdk/proguard-7.4.2" } else { "MISSING" }))
 Write-Host ($fmt -f "MicroEmulator",    $(if (Test-Path $MicroEmuSwing) { "sdk/microemu-*-2.0.4.jar" } else { "MISSING" }))
-Write-Host ($fmt -f "Python",           $(if (Get-Command python -ErrorAction SilentlyContinue) { (Get-Command python).Source } else { "MISSING" }))
+Write-Host ($fmt -f "Python",           $(if (Get-PythonCommand) { Get-PythonCommand } else { "MISSING" }))
+Write-Host ($fmt -f "host",             ("{0} / PowerShell {1}" -f `
+    $(if ($OnWindows) { "Windows" } elseif ($IsMacOS) { "macOS" } else { "Linux" }), $PSVersionTable.PSVersion))
 Write-Host "-------------------------------------------------------------" -ForegroundColor White
 
 if ($problems.Count -gt 0) {
@@ -309,5 +328,6 @@ if ($problems.Count -gt 0) {
     exit 1
 }
 Write-Host ""
-Write-Host "bootstrap OK. Next:  ./tools/build.ps1 -Target probe" -ForegroundColor Green
+$buildCmd = if ($OnWindows) { ".\tools\build.ps1" } else { "./tools/build.sh" }
+Write-Host "bootstrap OK. Next:  $buildCmd -Target probe" -ForegroundColor Green
 exit 0
