@@ -88,7 +88,11 @@ and compares against that.
 
 ## Memory discipline
 
-The heap is unmeasured, so every subsystem is written as if it were small.
+Every subsystem is written as if the heap were small, because for a long time
+nobody knew. It is measured now — about 5 MB on both handsets tested — but the
+budgets below are still compile-time constants chosen against the first of them,
+which means they are sized by luck rather than by measurement. Fixing that is
+[issue #3](https://github.com/smbdsbrain/TelegramJ2ME/issues/3).
 
 * `Diag` holds a fixed 100-line ring; lines are truncated, hex dumps capped.
 * `Sha1`/`Sha256` allocate their block and schedule buffers once per instance;
