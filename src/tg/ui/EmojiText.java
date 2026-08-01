@@ -7,7 +7,23 @@ import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
 
-/** Mixed device-font, sprite-emoji and semantic ASCII renderer. */
+/**
+ * Mixed device-font, sprite-emoji and semantic ASCII renderer.
+ *
+ * <h3>Everything here is measured incrementally, one token at a time</h3>
+ * It used to be possible to ask only "how wide is this whole prefix", and word
+ * wrapping did exactly that once per character: {@code ChatScreen.lineEnd}
+ * measured {@code [start, next)} for every boundary, and each of those calls
+ * re-tokenised the prefix from {@code start}. Wrapping a k-character line
+ * therefore cost O(k&sup2;) tokenisations and O(k&sup2;) throwaway objects, and a
+ * transcript went through it twice. {@link #fitEnd} replaces that with a single
+ * accumulating walk.
+ *
+ * The accumulation assumes a token's width does not depend on what precedes it,
+ * which is true of the bitmap fonts MIDP actually ships - there is no kerning to
+ * make {@code stringWidth} differ from the sum of its parts. {@code ui/emoji-wrap}
+ * pins that assumption rather than leaving it as folklore.
+ */
 public final class EmojiText
 {
     public static final int GLYPH = 16;
@@ -29,45 +45,106 @@ public final class EmojiText
         int at = start;
         while (at < end)
         {
-            Token token = token(text, at, end);
-            width += token.sprite ? GLYPH : font.stringWidth(token.text);
-            at = token.end;
+            int next = tokenEnd(text, at, end);
+            width += tokenWidth(text, at, end, font);
+            at = next;
         }
         return width;
     }
 
+    /**
+     * Where a run starting at {@code start} stops fitting in {@code width}.
+     *
+     * Everything in {@code [start, result)} fits; the token beginning at
+     * {@code result} does not, unless {@code result == end}. The caller decides
+     * what to do about a first token that is already too wide - this reports
+     * {@code start} rather than forcing a zero-length line.
+     */
+    public static int fitEnd(String text, int start, int end, int width, Font font)
+    {
+        if (text == null) { return start; }
+        if (end > text.length()) { end = text.length(); }
+        int used = 0;
+        int at = start;
+        while (at < end)
+        {
+            int next = tokenEnd(text, at, end);
+            used += tokenWidth(text, at, end, font);
+            if (used > width) { return at; }
+            at = next;
+        }
+        return end;
+    }
+
+    /**
+     * Draw mixed text, batching each run of device-font characters into one
+     * {@code drawString}.
+     *
+     * The run matters: a per-character draw is one native call per character,
+     * and a transcript repaint is fifteen lines of them.
+     *
+     * The x advance comes from {@link #substringWidth} rather than from the
+     * graphics context, so what is drawn advances by exactly what the wrap
+     * budgeted for it. That also means an emoji whose sprite sheet failed to
+     * load still occupies the space reserved for it instead of pulling the rest
+     * of the line left.
+     */
     public static void drawString(Graphics g, String text, int x, int y, Font font)
     {
         if (text == null) { return; }
         Image sprites = sprites();
+        int n = text.length();
         int at = 0;
-        while (at < text.length())
+        int runStart = -1;
+        while (at < n)
         {
-            Token token = token(text, at, text.length());
-            if (token.sprite && sprites != null)
+            int next = tokenEnd(text, at, n);
+            int cp = codePoint(text, at);
+            int cell = find(cp);
+            if (cell >= 0)
             {
-                int cell = token.cell;
-                int sx = (cell & 15) * GLYPH;
-                int sy = (cell >> 4) * GLYPH;
-                g.drawRegion(sprites, sx, sy, GLYPH, GLYPH, 0,
-                        x, y, Graphics.TOP | Graphics.LEFT);
+                x = flush(g, text, runStart, at, x, y, font);
+                runStart = -1;
+                if (sprites != null)
+                {
+                    g.drawRegion(sprites, (cell & 15) * GLYPH, (cell >> 4) * GLYPH,
+                            GLYPH, GLYPH, 0, x, y, Graphics.TOP | Graphics.LEFT);
+                }
                 x += GLYPH;
             }
-            else
+            else if (isEmoji(cp))
             {
+                x = flush(g, text, runStart, at, x, y, font);
+                runStart = -1;
+                String replacement = fallback(cp);
                 g.setFont(font);
-                g.drawString(token.text, x, y, Graphics.TOP | Graphics.LEFT);
-                x += font.stringWidth(token.text);
+                g.drawString(replacement, x, y, Graphics.TOP | Graphics.LEFT);
+                x += font.stringWidth(replacement);
             }
-            at = token.end;
+            else if (runStart < 0)
+            {
+                runStart = at;
+            }
+            at = next;
         }
+        flush(g, text, runStart, n, x, y, font);
+    }
+
+    private static int flush(Graphics g, String text, int runStart, int runEnd,
+                             int x, int y, Font font)
+    {
+        if (runStart < 0 || runEnd <= runStart) { return x; }
+        g.setFont(font);
+        g.drawString(text.substring(runStart, runEnd), x, y,
+                Graphics.TOP | Graphics.LEFT);
+        return x + substringWidth(text, runStart, runEnd - runStart, font);
     }
 
     /** Boundary after one renderer token; never splits a surrogate/ZWJ sequence. */
     public static int nextBoundary(String text, int at)
     {
         if (text == null || at >= text.length()) { return at; }
-        return token(text, at, text.length()).end;
+        return tokenEnd(text, at, text.length());
     }
 
     public static boolean hasSprite(int codePoint)
@@ -80,9 +157,40 @@ public final class EmojiText
         return isEmoji(codePoint) ? fallback(codePoint) : null;
     }
 
-    private static Token token(String text, int at, int end)
+    /**
+     * Index one past one renderer token.
+     *
+     * Allocation-free on purpose. This is called once per character of every
+     * line the client wraps, and it used to hand back an object each time.
+     */
+    private static int tokenEnd(String text, int at, int end)
     {
         int cp = codePoint(text, at);
+        int next = baseEnd(text, at, end, cp);
+        // A compact client renders a ZWJ sequence as its first useful base, so
+        // the whole sequence is one token. Plain text keeps its own boundary -
+        // a stray ZWJ between two letters must not glue them together.
+        return (find(cp) >= 0 || isEmoji(cp)) ? zwjEnd(text, next, end) : next;
+    }
+
+    /** Width of the single token at {@code at}. */
+    private static int tokenWidth(String text, int at, int end, Font font)
+    {
+        int cp = codePoint(text, at);
+        if (find(cp) >= 0) { return GLYPH; }
+        if (isEmoji(cp)) { return font.stringWidth(fallback(cp)); }
+        int plainEnd = baseEnd(text, at, end, cp);
+        // charWidth for the ordinary single-character case. Every other path
+        // has to cut a String out of the line, and at one per character that is
+        // the largest single source of garbage in laying a transcript out.
+        return plainEnd == at + 1
+                ? font.charWidth(text.charAt(at))
+                : font.stringWidth(text.substring(at, plainEnd));
+    }
+
+    /** Base character plus its variation selector and skin-tone modifier. */
+    private static int baseEnd(String text, int at, int end, int cp)
+    {
         int next = at + (cp > 0xffff ? 2 : 1);
         if (next < end && text.charAt(next) == '\ufe0f') { next++; }
         if (next < end)
@@ -93,7 +201,11 @@ public final class EmojiText
                 next += modifier > 0xffff ? 2 : 1;
             }
         }
-        // A compact client renders a ZWJ sequence as its first useful base.
+        return next;
+    }
+
+    private static int zwjEnd(String text, int next, int end)
+    {
         int sequenceEnd = next;
         while (sequenceEnd < end && text.charAt(sequenceEnd) == '\u200d')
         {
@@ -106,25 +218,7 @@ public final class EmojiText
                 sequenceEnd++;
             }
         }
-        int cell = find(cp);
-        Token out = new Token();
-        out.end = sequenceEnd;
-        if (cell >= 0)
-        {
-            out.sprite = true;
-            out.cell = cell;
-            out.text = "";
-        }
-        else if (isEmoji(cp))
-        {
-            out.text = fallback(cp);
-        }
-        else
-        {
-            out.text = text.substring(at, next);
-            out.end = next;
-        }
-        return out;
+        return sequenceEnd;
     }
 
     private static int codePoint(String text, int at)
@@ -217,13 +311,5 @@ public final class EmojiText
             if (in != null) { try { in.close(); } catch (IOException ignored) { } }
         }
         return sheet;
-    }
-
-    private static final class Token
-    {
-        int end;
-        int cell;
-        boolean sprite;
-        String text;
     }
 }

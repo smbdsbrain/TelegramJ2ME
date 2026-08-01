@@ -305,6 +305,30 @@ public final class Requests
         return w.toByteArray();
     }
 
+    /**
+     * The page immediately newer than {@code offsetId}.
+     *
+     * A negative {@code add_offset} walks back up the result the server would
+     * have returned, which is the only way to ask for newer messages without
+     * knowing their ids. Needed because a reader who has scrolled far enough
+     * back has pushed the newest messages out of the retained window, and
+     * scrolling forward again has to be able to fetch them a second time.
+     */
+    public static byte[] getHistoryAfter(Peer peer, int offsetId, int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_GET_HISTORY);
+        writeInputPeer(w, peer);
+        w.writeInt(offsetId);
+        w.writeInt(0);                      // offset_date
+        w.writeInt(-limit);                 // add_offset
+        w.writeInt(limit);
+        w.writeInt(0);                      // max_id
+        w.writeInt(0);                      // min_id
+        w.writeLong(0);                     // hash
+        return w.toByteArray();
+    }
+
     /** Load a bounded window centred around one known message id. */
     public static byte[] getHistoryAround(Peer peer, int messageId, int limit)
     {

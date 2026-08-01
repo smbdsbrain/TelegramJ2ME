@@ -21,6 +21,19 @@ import tg.mem.MemoryBudget;
  * history.
  *
  * Word wrapping is done once when the message list is set, not on every paint.
+ *
+ * <h3>Only part of the transcript is laid out</h3>
+ * The screen holds every retained {@link Message} - a reply needs to be able to
+ * quote a message that is nowhere near the viewport - but wraps only the ones
+ * within {@link MemoryBudget#layoutWindowScreens()} screens either side of it.
+ * Everything laid out costs five parallel arrays keyed by display line plus a
+ * String per line, so before this the cost was proportional to how far back the
+ * user had ever read. Now it is proportional to the screen.
+ *
+ * The window is rebuilt when the viewport comes within one screen of an edge of
+ * it, which leaves two screens of scrolling before the next rebuild can be
+ * provoked. That gap is deliberate: it is what stops a reader moving back and
+ * forth across a boundary from reflowing on every keypress.
  */
 public class ChatScreen extends Canvas
 {
@@ -28,6 +41,18 @@ public class ChatScreen extends Canvas
     {
         void onMessageActivated(int messageId);
     }
+
+    /**
+     * Told whenever the viewport moves, so somebody else can decide whether
+     * more history is needed. Deliberately carries nothing: the listener asks
+     * the screen what it wants to know, exactly as
+     * {@link DialogListScreen.ViewportListener} does for avatars.
+     */
+    public interface ViewportListener
+    {
+        void onChatViewportChanged();
+    }
+
     private final Font font;
     private final Font metaFont;
     private final int lineHeight;
@@ -54,6 +79,23 @@ public class ChatScreen extends Canvas
     private boolean mediaPreviews = true;
     private int focusedMessageId;
     private ActivationListener activationListener;
+    private ViewportListener viewportListener;
+
+    /**
+     * Inclusive bounds of the laid-out slice of {@link #currentMessages}, which
+     * is newest-first: {@code windowFirst} is the newest message wrapped and
+     * {@code windowLast} the oldest. An empty transcript leaves the window
+     * empty rather than degenerate, hence the -1.
+     */
+    private int windowFirst;
+    private int windowLast = -1;
+
+    /** Message the window is built around - the one at the top of the viewport. */
+    private int anchorMessageId;
+
+    private int layoutCount;
+
+    private final int windowScreens;
 
     public ChatScreen()
     {
@@ -62,15 +104,19 @@ public class ChatScreen extends Canvas
 
     public ChatScreen(Theme theme)
     {
-        this(theme, MemoryBudget.thumbnailCacheEntries());
+        this(theme, MemoryBudget.thumbnailCacheEntries(),
+                MemoryBudget.layoutWindowScreens());
     }
 
     /**
      * @param thumbnailCapacity decoded inline thumbnails to retain; floored at
      *                          two, because a single slot is evicted by the
      *                          next message that scrolls into view
+     * @param windowScreens     screens of wrapped transcript kept either side
+     *                          of the viewport; floored at one, which is the
+     *                          least that can fill the screen at all
      */
-    public ChatScreen(Theme theme, int thumbnailCapacity)
+    public ChatScreen(Theme theme, int thumbnailCapacity, int windowScreens)
     {
         font = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
         metaFont = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
@@ -80,10 +126,24 @@ public class ChatScreen extends Canvas
         this.thumbnailCapacity = thumbnailCapacity;
         this.thumbnailIds = new int[thumbnailCapacity];
         this.thumbnails = new Image[thumbnailCapacity];
+        this.windowScreens = windowScreens < 1 ? 1 : windowScreens;
     }
 
     /** Decoded thumbnails this screen will hold. */
     public int thumbnailCapacity() { return thumbnailCapacity; }
+
+    /** Screens of wrapped transcript this screen keeps either side of the viewport. */
+    public int windowScreens() { return windowScreens; }
+
+    /**
+     * How many times the transcript has been wrapped.
+     *
+     * Reported rather than inferred because the number is the only way to see
+     * whether the window is doing its job: a reader moving back and forth
+     * across an eviction boundary should reflow once, not once per keypress,
+     * and nothing else on the screen shows the difference.
+     */
+    public int layoutCount() { return layoutCount; }
 
     public void setTheme(Theme value)
     {
@@ -113,6 +173,7 @@ public class ChatScreen extends Canvas
         if (mediaPreviews == value) { return; }
         mediaPreviews = value;
         layoutMessages(currentMessages, true);
+        viewportChanged();
     }
 
     public void setActivationListener(ActivationListener value)
@@ -120,24 +181,121 @@ public class ChatScreen extends Canvas
         activationListener = value;
     }
 
+    public void setViewportListener(ViewportListener value)
+    {
+        viewportListener = value;
+    }
+
     public int focusedMessageId() { return focusedMessageId; }
+
+    /** Display lines currently laid out. Bounded by the window, not the history. */
     public int transcriptLineCount() { return lines.length; }
-    public boolean isAtEnd() { return scroll.top() >= maxTop(); }
+
+    /** Retained messages, laid out or not. */
+    public int messageCount() { return currentMessages.length; }
+
+    /**
+     * At the newest message, rather than merely at the bottom of the window.
+     * New content only follows the viewport when both are true.
+     */
+    public boolean isAtEnd()
+    {
+        return windowFirst == 0 && scroll.top() >= maxTop();
+    }
+
+    /** Id of the message at the top of the viewport, or 0 when there is none. */
+    public int topVisibleMessageId()
+    {
+        int top = scroll.top();
+        for (int i = top; i < lineMessageIds.length; i++)
+        {
+            if (lineMessageIds[i] != 0) { return lineMessageIds[i]; }
+        }
+        for (int i = Math.min(top, lineMessageIds.length) - 1; i >= 0; i--)
+        {
+            if (lineMessageIds[i] != 0) { return lineMessageIds[i]; }
+        }
+        return 0;
+    }
+
+    /**
+     * Retained messages older than the top of the viewport.
+     *
+     * This is what decides when another page is worth asking for, and it counts
+     * messages rather than lines on purpose: lines beyond the window have not
+     * been wrapped and their count is not known without doing the work.
+     */
+    public int messagesOlderThanViewport()
+    {
+        if (currentMessages.length == 0) { return 0; }
+        int at = messageIndex(topVisibleMessageId());
+        if (at < 0) { return currentMessages.length; }
+        return currentMessages.length - 1 - at;
+    }
+
+    /**
+     * Retained messages newer than the top of the viewport.
+     *
+     * The mirror of {@link #messagesOlderThanViewport}, and it exists for the
+     * same reason: a reader who has gone far enough back has pushed the newest
+     * messages out of the retained set, and coming forward again has to be able
+     * to notice that before running out of transcript.
+     */
+    public int messagesNewerThanViewport()
+    {
+        if (currentMessages.length == 0) { return 0; }
+        int at = messageIndex(topVisibleMessageId());
+        return at < 0 ? currentMessages.length : at;
+    }
+
+    /**
+     * Messages on or near the screen, newest first.
+     *
+     * The band is one screen either side of the viewport rather than exactly
+     * what is visible, so that whatever is decoded for them - inline thumbnails
+     * - is ready by the time it scrolls in.
+     */
+    public Message[] visibleMessages()
+    {
+        int visible = visibleLines();
+        int from = scroll.top() - visible;
+        int to = scroll.top() + visible * 2;
+        if (from < 0) { from = 0; }
+        if (to > lineMessageIds.length) { to = lineMessageIds.length; }
+
+        Message[] found = new Message[to - from < 0 ? 0 : to - from];
+        int count = 0;
+        int previousId = 0;
+        for (int i = from; i < to; i++)
+        {
+            int id = lineMessageIds[i];
+            if (id == 0 || id == previousId) { continue; }
+            previousId = id;
+            int at = messageIndex(id);
+            if (at >= 0) { found[count++] = currentMessages[at]; }
+        }
+        Message[] out = new Message[count];
+        System.arraycopy(found, 0, out, 0, count);
+        return out;
+    }
 
     public void focusMessage(int messageId)
     {
-        if (!containsMessage(messageId)) { return; }
+        if (messageIndex(messageId) < 0) { return; }
         focusedMessageId = messageId;
+        ensureLaidOut(messageId);
         for (int i = 0; i < lineMessageIds.length; i++)
         {
             if (lineMessageIds[i] == messageId)
             {
                 int targetTop = i - visibleLines() / 2;
                 scroll.userScroll(targetTop - scroll.top(), maxTop());
+                settleFollowState();
                 break;
             }
         }
         repaint();
+        viewportChanged();
     }
 
     /**
@@ -149,18 +307,22 @@ public class ChatScreen extends Canvas
     public void setMessages(Message[] messages)
     {
         layoutMessages(messages, true);
+        viewportChanged();
     }
 
     /** Clear or replace the transcript when navigating to a different peer. */
     public void resetMessages(Message[] messages)
     {
         clearThumbnails();
+        anchorMessageId = 0;
         layoutMessages(messages, false);
+        viewportChanged();
     }
 
     private void layoutMessages(Message[] messages, boolean preserveScroll)
     {
         if (messages == null) { messages = new Message[0]; }
+        layoutCount++;
         currentMessages = messages;
         int[] oldMessageIds = lineMessageIds;
         int[] oldMessageOffsets = lineMessageOffsets;
@@ -168,9 +330,12 @@ public class ChatScreen extends Canvas
         int width = metrics.contentWidth;
         lastLayoutWidth = width;
         lastThumbnailHeight = metrics.thumbnailHeight;
+        chooseWindow(messages, width);
 
         // Two passes: count, then fill. Growing a Vector of Strings and copying
-        // it out would double the peak allocation for no benefit.
+        // it out would double the peak allocation for no benefit. Both are now
+        // bounded to the window, so what used to be the whole transcript twice
+        // is a few screens twice.
         int count = 0;
         for (int pass = 0; pass < 2; pass++)
         {
@@ -184,7 +349,7 @@ public class ChatScreen extends Canvas
                 lineMessageOffsets = new int[count];
                 count = 0;
             }
-            for (int i = messages.length - 1; i >= 0; i--)
+            for (int i = windowLast; i >= windowFirst; i--)
             {
                 Message m = messages[i];
                 if (m == null)
@@ -205,16 +370,7 @@ public class ChatScreen extends Canvas
                     count++;
                     previousDay = day;
                 }
-                String who = m.senderName();
-                if (m.outgoing && m.read)
-                {
-                    who += " [read]";
-                }
-                String time = DateTime.time(m.date);
-                if (time.length() > 0)
-                {
-                    who = who.length() == 0 ? time : (who + "  " + time);
-                }
+                String who = senderLine(m);
                 if (who.length() > 0)
                 {
                     if (pass == 1)
@@ -260,12 +416,8 @@ public class ChatScreen extends Canvas
                 {
                     count = wrap(m.media.label, width, pass, count,
                             m.outgoing, m.id, 1000);
-                    if (mediaPreviews && m.media.kind == Media.PHOTO
-                            && m.media.photo != null
-                            && m.media.photo.stripped() != null)
                     {
-                        int rows = (metrics.thumbnailHeight + lineHeight - 1)
-                                / lineHeight;
+                        int rows = thumbnailRows(m);
                         for (int row = 0; row < rows; row++)
                         {
                             if (pass == 1)
@@ -288,7 +440,7 @@ public class ChatScreen extends Canvas
                 }
             }
         }
-        if (!containsMessage(focusedMessageId) && messages.length > 0)
+        if (messageIndex(focusedMessageId) < 0 && messages.length > 0)
         {
             for (int i = 0; i < messages.length; i++)
             {
@@ -308,12 +460,145 @@ public class ChatScreen extends Canvas
         {
             scroll.reset(maxTop());
         }
+        settleFollowState();
+        anchorMessageId = topVisibleMessageId();
         repaint();
+    }
+
+    /**
+     * Re-decide whether new content should pull the viewport with it.
+     *
+     * "At the end" has to mean the end of the conversation rather than the
+     * bottom of the window, or paging down in the middle of the history would
+     * arm the follow flag and the next rebuild would yank the reader to the
+     * newest message. When the window does reach the newest, asking
+     * {@code userScroll} for a zero move re-evaluates the flag honestly instead
+     * of latching it off.
+     */
+    private void settleFollowState()
+    {
+        if (windowFirst > 0) { scroll.stopFollowingEnd(); }
+        else { scroll.userScroll(0, maxTop()); }
+    }
+
+    /**
+     * Decide which slice of the transcript to wrap.
+     *
+     * Walks outward from the anchor, wrapping each message only far enough to
+     * count its lines, and stops on each side once a screen budget is covered.
+     * The cost is therefore set by the window, never by how much history is
+     * retained - which is the entire point.
+     */
+    private void chooseWindow(Message[] messages, int width)
+    {
+        if (messages.length == 0)
+        {
+            windowFirst = 0;
+            windowLast = -1;
+            return;
+        }
+        int anchor = anchorIndex(messages);
+        int budget = windowScreens * Math.max(1, visibleLines());
+
+        int first = anchor;
+        for (int newer = 0; first > 0 && newer < budget; )
+        {
+            first--;
+            newer += messageLines(messages[first], width);
+        }
+        int last = anchor;
+        for (int older = 0; last + 1 < messages.length && older < budget; )
+        {
+            last++;
+            older += messageLines(messages[last], width);
+        }
+        windowFirst = first;
+        windowLast = last;
+    }
+
+    /**
+     * Index of the message the window should be built around.
+     *
+     * Falling back to the newest when the anchor is gone is a safety net rather
+     * than a normal path: the retained set is trimmed around the same anchor, so
+     * the message being read is the one thing eviction is not allowed to take.
+     */
+    private int anchorIndex(Message[] messages)
+    {
+        if (scroll.followsEnd() || anchorMessageId == 0) { return 0; }
+        for (int i = 0; i < messages.length; i++)
+        {
+            if (messages[i] != null && messages[i].id == anchorMessageId)
+            {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Display lines one message occupies, excluding any date separator.
+     *
+     * Used only to size the window; the array is sized by the exact counting
+     * pass, so a separator this does not know about cannot make the layout
+     * disagree with itself.
+     */
+    private int messageLines(Message m, int width)
+    {
+        if (m == null) { return 0; }
+        int count = 0;
+        if (senderLine(m).length() > 0) { count++; }
+        String reply = replyLine(m, currentMessages);
+        if (reply.length() > 0) { count += countWrapped(reply, width); }
+        if (m.forwarded != null && m.forwarded.label.length() > 0)
+        {
+            count += countWrapped(m.forwarded.label, width);
+        }
+        if (m.text != null && m.text.length() > 0)
+        {
+            count += countWrapped(m.text, width);
+        }
+        if (m.media != null)
+        {
+            if (m.media.label != null && m.media.label.length() > 0)
+            {
+                count += countWrapped(m.media.label, width);
+            }
+            count += thumbnailRows(m);
+        }
+        String reactions = reactionLine(m.reactions);
+        if (reactions.length() > 0) { count += countWrapped(reactions, width); }
+        return count == 0 ? 1 : count;
+    }
+
+    private int thumbnailRows(Message m)
+    {
+        if (!mediaPreviews || m.media == null || m.media.kind != Media.PHOTO
+                || m.media.photo == null || m.media.photo.stripped() == null)
+        {
+            return 0;
+        }
+        return (metrics.thumbnailHeight + lineHeight - 1) / lineHeight;
+    }
+
+    private String senderLine(Message m)
+    {
+        String who = m.senderName();
+        if (m.outgoing && m.read) { who += " [read]"; }
+        String time = DateTime.time(m.date);
+        if (time.length() > 0)
+        {
+            who = who.length() == 0 ? time : (who + "  " + time);
+        }
+        return who;
     }
 
     /** Append a message we just sent, before the server echoes it back. */
     public void appendLocal(String text)
     {
+        // The appended lines belong after the newest message, so the window has
+        // to be there. Somebody who just sent something wants to see it.
+        if (windowFirst > 0) { jumpToNewest(); }
         updateMetrics();
         int width = metrics.contentWidth;
 
@@ -351,7 +636,16 @@ public class ChatScreen extends Canvas
 
     public void scrollToEnd()
     {
+        jumpToNewest();
+        viewportChanged();
+    }
+
+    /** Put the window back on the newest message and follow it again. */
+    private void jumpToNewest()
+    {
+        anchorMessageId = 0;
         scroll.reset(maxTop());
+        layoutMessages(currentMessages, true);
         repaint();
     }
 
@@ -430,6 +724,7 @@ public class ChatScreen extends Canvas
         {
             layoutMessages(currentMessages, true);
         }
+        viewportChanged();
     }
 
     protected void keyPressed(int keyCode)
@@ -474,50 +769,81 @@ public class ChatScreen extends Canvas
     private void scroll(int delta)
     {
         scroll.userScroll(delta, maxTop());
+        settleFollowState();
+        reflowIfNearWindowEdge();
         repaint();
+        viewportChanged();
     }
 
+    /**
+     * Rebuild the window when the viewport gets within a screen of an edge of
+     * it and there is retained history on the far side.
+     *
+     * The margin is one screen and the window is {@link #windowScreens} screens
+     * deep either side, so a rebuild leaves the viewport at least two screens
+     * from both edges. Moving back and forth across an eviction boundary
+     * therefore cannot provoke a second rebuild without real scrolling in
+     * between - which is what keeps eviction from turning into a fetch storm.
+     */
+    private boolean reflowIfNearWindowEdge()
+    {
+        if (currentMessages.length == 0) { return false; }
+        int margin = visibleLines();
+        boolean nearOldest = scroll.top() <= margin
+                && windowLast < currentMessages.length - 1;
+        boolean nearNewest = scroll.top() >= maxTop() - margin && windowFirst > 0;
+        if (!nearOldest && !nearNewest) { return false; }
+
+        int anchor = topVisibleMessageId();
+        if (anchor == 0) { return false; }
+        anchorMessageId = anchor;
+        layoutMessages(currentMessages, true);
+        return true;
+    }
+
+    /** Bring one message into the laid-out window if it is not already there. */
+    private void ensureLaidOut(int messageId)
+    {
+        if (messageId == 0 || lineIndex(messageId) >= 0) { return; }
+        if (messageIndex(messageId) < 0) { return; }
+        anchorMessageId = messageId;
+        // Jumping to a named message is leaving the end, and the window has to
+        // be allowed to build somewhere other than the newest to get there.
+        // settleFollowState turns following back on if the jump lands at the
+        // end anyway.
+        scroll.stopFollowingEnd();
+        layoutMessages(currentMessages, true);
+    }
+
+    /**
+     * Move focus one message.
+     *
+     * Walks the retained messages rather than the laid-out lines, so reaching
+     * the edge of the window steps into the next message instead of stopping at
+     * a boundary the reader cannot see.
+     */
     private void focus(int direction)
     {
-        if (lineMessageIds.length == 0) { return; }
-        int at = focusLine();
-        if (at < 0) { at = direction < 0 ? lineMessageIds.length : -1; }
-        int current = focusedMessageId;
-        int i = at + direction;
-        while (i >= 0 && i < lineMessageIds.length)
+        if (currentMessages.length == 0) { return; }
+        // Display order is oldest-first and currentMessages is newest-first, so
+        // moving down the screen means moving back through the array.
+        int step = -direction;
+        int at = messageIndex(focusedMessageId);
+        int i = at < 0 ? (step > 0 ? 0 : currentMessages.length - 1) : at + step;
+        while (i >= 0 && i < currentMessages.length)
         {
-            int id = lineMessageIds[i];
-            if (id != 0 && id != current)
+            Message candidate = currentMessages[i];
+            if (candidate != null && candidate.id != 0
+                    && candidate.id != focusedMessageId)
             {
-                focusedMessageId = id;
-                int top = scroll.top();
-                int visible = visibleLines();
-                int first = i;
-                while (first > 0 && lineMessageIds[first - 1] == id)
-                {
-                    first--;
-                }
-                int last = i;
-                while (last + 1 < lineMessageIds.length
-                        && lineMessageIds[last + 1] == id)
-                {
-                    last++;
-                }
-                if (first < top)
-                {
-                    scroll.userScroll(first - top, maxTop());
-                }
-                else if (last >= top + visible)
-                {
-                    int messageLines = last - first + 1;
-                    int target = messageLines <= visible
-                            ? last - visible + 1 : first;
-                    scroll.userScroll(target - top, maxTop());
-                }
+                focusedMessageId = candidate.id;
+                ensureLaidOut(focusedMessageId);
+                scrollFocusedIntoView();
                 repaint();
+                viewportChanged();
                 return;
             }
-            i += direction;
+            i += step;
         }
         // There is no next message, but the focused message may have more
         // lines below the viewport (caption/media/thumbnail/reactions).
@@ -525,26 +851,70 @@ public class ChatScreen extends Canvas
         {
             scroll.userScroll(maxTop() - scroll.top(), maxTop());
             repaint();
+            viewportChanged();
         }
     }
 
-    private int focusLine()
+    /** Minimal scroll that puts the focused message on screen. */
+    private void scrollFocusedIntoView()
     {
+        int i = lineIndex(focusedMessageId);
+        if (i < 0) { return; }
+        int top = scroll.top();
+        int visible = visibleLines();
+        int first = i;
+        while (first > 0 && lineMessageIds[first - 1] == focusedMessageId)
+        {
+            first--;
+        }
+        int last = i;
+        while (last + 1 < lineMessageIds.length
+                && lineMessageIds[last + 1] == focusedMessageId)
+        {
+            last++;
+        }
+        if (first < top)
+        {
+            scroll.userScroll(first - top, maxTop());
+        }
+        else if (last >= top + visible)
+        {
+            int messageLines = last - first + 1;
+            int target = messageLines <= visible ? last - visible + 1 : first;
+            scroll.userScroll(target - top, maxTop());
+        }
+        settleFollowState();
+    }
+
+    /** First laid-out line of a message, or -1 when it is outside the window. */
+    private int lineIndex(int id)
+    {
+        if (id == 0) { return -1; }
         for (int i = 0; i < lineMessageIds.length; i++)
         {
-            if (lineMessageIds[i] == focusedMessageId) { return i; }
+            if (lineMessageIds[i] == id) { return i; }
         }
         return -1;
     }
 
-    private boolean containsMessage(int id)
+    /** Index in the retained transcript, laid out or not, or -1. */
+    private int messageIndex(int id)
     {
-        if (id == 0) { return false; }
-        for (int i = 0; i < lineMessageIds.length; i++)
+        if (id == 0) { return -1; }
+        for (int i = 0; i < currentMessages.length; i++)
         {
-            if (lineMessageIds[i] == id) { return true; }
+            if (currentMessages[i] != null && currentMessages[i].id == id)
+            {
+                return i;
+            }
         }
-        return false;
+        return -1;
+    }
+
+    private void viewportChanged()
+    {
+        ViewportListener listener = viewportListener;
+        if (listener != null) { listener.onChatViewportChanged(); }
     }
 
     private int visibleLines()
@@ -610,34 +980,37 @@ public class ChatScreen extends Canvas
         return at;
     }
 
-    /** Index one past the last character that fits on a line starting at {@code start}. */
+    /**
+     * Index one past the last character that fits on a line starting at
+     * {@code start}.
+     *
+     * Three passes over the line at most, each linear: find the hard break,
+     * measure forward until the width runs out, then look back for a space to
+     * break at. It used to be one pass that re-measured the whole prefix per
+     * character, which is the same answer at O(k&sup2;) - see {@link EmojiText}.
+     */
     private int lineEnd(String text, int start, int width)
     {
         int n = text.length();
-        int lastSpace = -1;
-        int i = start;
-        while (i < n)
+        int hardBreak = text.indexOf('\n', start);
+        int limit = hardBreak >= 0 ? hardBreak : n;
+        if (limit <= start) { return limit; }
+
+        int fit = EmojiText.fitEnd(text, start, limit, width, font);
+        if (fit >= limit) { return limit; }
+
+        // Break at the last space if there was one, otherwise mid-word: a URL
+        // with no spaces in it must not vanish off the right edge. The space
+        // that itself overflowed still counts - the line ends before it either
+        // way - but one at the very start does not, or the line would be empty.
+        for (int i = fit; i > start; i--)
         {
-            char c = text.charAt(i);
-            if (c == '\n')
-            {
-                return i;
-            }
-            if (c == ' ')
-            {
-                lastSpace = i;
-            }
-            int next = EmojiText.nextBoundary(text, i);
-            if (EmojiText.substringWidth(text, start, next - start, font)
-                    > width)
-            {
-                // Break at the last space if there was one, otherwise mid-word.
-                return (lastSpace > start) ? lastSpace
-                        : (i > start ? i : next);
-            }
-            i = next;
+            if (text.charAt(i) == ' ') { return i; }
         }
-        return n;
+        // Nothing fits and nothing to break on - emit one token so wrapping
+        // always makes progress.
+        return fit > start ? fit
+                : Math.min(limit, EmojiText.nextBoundary(text, start));
     }
 
     private static int skipSpace(String text, int at)

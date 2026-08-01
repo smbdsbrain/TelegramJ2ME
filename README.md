@@ -87,7 +87,7 @@ anyone can do for this project right now.
 - Mark all read
 
 **Messages**
-- Read history and page back through it
+- Read history and scroll back through it, loading older pages as you go
 - Send text
 - Reply
 - Forward to another chat
@@ -171,8 +171,11 @@ Photos are the one exception: those download and open.
 
 **Bounded by measurement** — the client measures its own heap on first launch and
 sizes every buffer, cache and page limit from the answer. On the ~5 MB handsets
-tested that is 200 chats, 120 messages of history per chat and a 1 MB packet
-ceiling. Driven under a constrained heap it stays usable down to about **2 MB of
+tested that is 200 chats, a sliding window of 120 messages per open conversation
+and a 1 MB packet ceiling. Conversations scroll as far back as they go: pages
+load as the top of the loaded history approaches, blocks that fall outside the
+window are released, and what stays wrapped is three screens either side of the
+viewport rather than everything ever read. Driven under a constrained heap it stays usable down to about **2 MB of
 free heap**, and turning off avatars and inline thumbnails buys roughly another
 480 KB — at ~1.7 MB free that is the difference between a photo that opens and
 one the client refuses. A smaller phone gets proportionally smaller numbers, down to floors it

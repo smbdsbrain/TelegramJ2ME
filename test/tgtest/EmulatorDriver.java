@@ -16,6 +16,7 @@ import tg.diag.Diag;
 import tg.mem.MemoryBudget;
 import tg.mem.MemoryPressure;
 import tg.plat.RmsAuthKeyStore;
+import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
 
 /**
@@ -36,6 +37,9 @@ import tg.ui.DialogListScreen;
  *   route  &lt;mode&gt;        set the connection mode and connect
  *   login  &lt;phone&gt; &lt;codeFile&gt;   connect, request a code, wait for the file
  *   session              use a stored session: dialogs, open the first chat
+ *   photos &lt;title&gt;       open a picture-heavy chat and decode its photos
+ *   minheap &lt;title&gt; &lt;on|off&gt;    one verdict line: what works at this heap
+ *   scroll &lt;title&gt; [pages]      read a chat backwards, then forwards again
  * </pre>
  *
  * The code file exists because the sign-in code arrives on the user's phone and
@@ -91,6 +95,10 @@ public final class EmulatorDriver
             else if ("minheap".equals(scenario))
             {
                 exit = minheap(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
+            }
+            else if ("scroll".equals(scenario))
+            {
+                exit = scroll(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
             }
             else
             {
@@ -589,6 +597,164 @@ public final class EmulatorDriver
         }
         System.out.println("photos opened: " + opened);
         return opened > 0;
+    }
+
+    /**
+     * Read a conversation backwards and watch what it costs.
+     *
+     * This is the scenario issue #4 exists for, and the three numbers that
+     * matter are all invisible from the screen:
+     *
+     *   - the laid-out line count, which is what makes the memory bounded. It
+     *     has to stop growing, not merely grow slowly;
+     *   - the number of {@code messages.getHistory/older} requests, which has to
+     *     track pages scrolled rather than keys pressed;
+     *   - the number of transcript reflows, which is the same claim from the
+     *     other side: a reader crossing an eviction boundary should reflow once.
+     *
+     * The descent afterwards is not decoration. Oscillating across a boundary is
+     * where a naive window turns into a fetch storm, and it is the one failure
+     * mode a person clicking Older could never have produced.
+     */
+    private static boolean scroll(EmulatorHarness app, String chatTitle,
+                                  String pagesArg) throws Exception
+    {
+        if (chatTitle == null || chatTitle.length() == 0)
+        {
+            System.out.println("usage: scroll <chat title> [pages]");
+            return false;
+        }
+        int pages = 40;
+        try { if (pagesArg != null) { pages = Integer.parseInt(pagesArg.trim()); } }
+        catch (Throwable ignored) { }
+
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run the login scenario first");
+            return false;
+        }
+        Thread.sleep(6000);          // let messages.getDialogs finish
+        dialogList = app.current();
+
+        if (!openChatNamed(app, chatTitle)) { return false; }
+        Thread.sleep(8000);          // the first page, wrapped
+
+        ChatScreen chat = chatScreen(app);
+        if (chat == null)
+        {
+            System.out.println("the chat screen did not survive opening");
+            return false;
+        }
+
+        int openLines = chat.transcriptLineCount();
+        int openLayouts = chat.layoutCount();
+        System.out.println("opened: lines=" + openLines
+                + " messages=" + chat.messageCount()
+                + " window=" + chat.windowScreens() + " screens"
+                + " layouts=" + openLayouts);
+
+        int maxLines = openLines;
+        int reached = 0;
+        for (int i = 0; i < pages; i++)
+        {
+            ChatScreen live = chatScreen(app);
+            if (live == null)
+            {
+                System.out.println("lost the chat screen on page up " + i);
+                break;
+            }
+            chat = live;
+            app.key(Canvas.KEY_NUM4);
+            // Long enough for a page to land on a real connection. Too short
+            // and this measures the driver rather than the client.
+            Thread.sleep(1200);
+            int lines = chat.transcriptLineCount();
+            if (lines > maxLines) { maxLines = lines; }
+            reached = i + 1;
+            if ((i + 1) % 5 == 0)
+            {
+                System.out.println("  up " + (i + 1) + ": lines=" + lines
+                        + " messages=" + chat.messageCount()
+                        + " older=" + chat.messagesOlderThanViewport()
+                        + " layouts=" + chat.layoutCount()
+                        + " fetches=" + count("messages.getHistory/older")
+                        + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB");
+            }
+        }
+
+        int upFetches = count("messages.getHistory/older started");
+        int upLayouts = chat.layoutCount();
+        System.out.println("turning round after " + reached + " pages up");
+
+        // Down again, further than we came up. The retention window is smaller
+        // than the distance covered, so getting back to the present means
+        // fetching messages that were already loaded once and then evicted -
+        // and that is exactly the path a person takes after reading history.
+        int downPages = reached + 20;
+        for (int i = 0; i < downPages; i++)
+        {
+            ChatScreen live = chatScreen(app);
+            if (live == null) { break; }
+            chat = live;
+            app.key(Canvas.KEY_NUM6);
+            Thread.sleep(1200);
+            int lines = chat.transcriptLineCount();
+            if (lines > maxLines) { maxLines = lines; }
+            if ((i + 1) % 10 == 0)
+            {
+                System.out.println("  down " + (i + 1) + ": lines=" + lines
+                        + " newer=" + chat.messagesNewerThanViewport()
+                        + " atEnd=" + chat.isAtEnd()
+                        + " forward=" + count("messages.getHistory/newer started")
+                        + " layouts=" + chat.layoutCount());
+            }
+        }
+
+        boolean alive = chatScreen(app) != null;
+        boolean returned = alive && chat.isAtEnd();
+        int forwardFetches = count("messages.getHistory/newer started");
+        int downFetches = count("messages.getHistory/older started") - upFetches;
+        System.out.println("VERDICT"
+                + " pages=" + reached
+                + " openLines=" + openLines
+                + " maxLines=" + maxLines
+                + " messages=" + chat.messageCount()
+                + " upFetches=" + upFetches
+                + " downFetches=" + downFetches
+                + " forwardFetches=" + forwardFetches
+                + " upLayouts=" + (upLayouts - openLayouts)
+                + " downLayouts=" + (chat.layoutCount() - upLayouts)
+                + " returnedToEnd=" + returned
+                + " busy=" + count("worker busy")
+                + " sheds=" + MemoryPressure.shedEvents()
+                + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB"
+                + " oom=" + count("OutOfMemory")
+                + " alive=" + alive);
+
+        // The bound is what is being claimed, so it is what is checked. Two
+        // windows of slack: a rebuild can legitimately land on a run of
+        // picture messages that wrap taller than the ones it replaced.
+        boolean bounded = maxLines <= openLines * 3 + 40;
+        if (!bounded)
+        {
+            System.out.println("FAIL: the laid-out transcript grew from "
+                    + openLines + " to " + maxLines);
+        }
+        if (!alive) { System.out.println("FAIL: the chat screen did not survive"); }
+        if (!returned)
+        {
+            System.out.println("FAIL: scrolling forward did not get back to the"
+                    + " newest message - evicted blocks are not coming back");
+        }
+        return alive && bounded && returned && count("OutOfMemory") == 0;
+    }
+
+    /** The live chat screen, or null if something else is showing. */
+    private static ChatScreen chatScreen(EmulatorHarness app) throws Exception
+    {
+        Displayable now = app.current();
+        return now instanceof ChatScreen ? (ChatScreen) now : null;
     }
 
     /** Walk the dialog list with the keypad until the wanted chat is selected. */

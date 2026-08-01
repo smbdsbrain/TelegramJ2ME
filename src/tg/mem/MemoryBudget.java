@@ -127,6 +127,10 @@ public final class MemoryBudget
     private static final int MIN_HISTORY         = 20;
     private static final int REF_HISTORY_PAGE    = 30;
     private static final int MIN_HISTORY_PAGE    = 10;
+    private static final int REF_WINDOW_SCREENS  = 3;
+    private static final int MIN_WINDOW_SCREENS  = 1;
+    private static final int REF_PREFETCH_MARGIN = 15;
+    private static final int MIN_PREFETCH_MARGIN = 5;
     private static final int REF_PEERS           = 500;
     private static final int MIN_PEERS           = 64;
     private static final int REF_AVATARS         = 16;
@@ -277,6 +281,40 @@ public final class MemoryBudget
     /** Messages fetched per request. */
     public static int historyPageSize() { return scale(REF_HISTORY_PAGE, MIN_HISTORY_PAGE); }
 
+    /**
+     * Screens of wrapped transcript kept laid out either side of the viewport.
+     *
+     * This is the budget that makes chat memory proportional to the screen
+     * rather than to how far back the user has read. A conversation screen holds
+     * five parallel arrays keyed by display line plus one String per line, and
+     * before windowing every message ever loaded was in them.
+     *
+     * Three rather than one because it is also the hysteresis: the window is
+     * rebuilt when the viewport comes within a screen of an edge, so at three
+     * screens either side a rebuild leaves two screens of scrolling before the
+     * next one can be provoked. One screen either side would reflow on almost
+     * every keypress.
+     */
+    public static int layoutWindowScreens()
+    {
+        return scale(REF_WINDOW_SCREENS, MIN_WINDOW_SCREENS);
+    }
+
+    /**
+     * Messages of loaded history above the viewport before an older page is
+     * requested.
+     *
+     * A latency budget rather than a memory one, and it lives here because no
+     * size literal in this client lives anywhere else. Half a page at the
+     * reference: on GPRS a {@code messages.getHistory} round trip is measured in
+     * seconds, and the margin has to be wide enough that the request finishes
+     * before the reader arrives rather than while they watch.
+     */
+    public static int historyPrefetchMargin()
+    {
+        return scale(REF_PREFETCH_MARGIN, MIN_PREFETCH_MARGIN);
+    }
+
     /** Resolved users and chats kept for title and avatar lookup. */
     public static int peerCacheEntries() { return scale(REF_PEERS, MIN_PEERS); }
 
@@ -327,7 +365,7 @@ public final class MemoryBudget
     /** Diagnostic lines. Contains no user data, so it is safe to upload. */
     public static String[] lines()
     {
-        String[] out = new String[8];
+        String[] out = new String[9];
         out[0] = "heapCeiling = " + ceiling
                  + (ceiling > 0 ? " (" + (ceiling / 1024) + " KB)" : " (unmeasured)");
         out[1] = "heapBlock = " + largestBlock;
@@ -342,6 +380,8 @@ public final class MemoryBudget
                  + " avatars = " + avatarCacheEntries()
                  + " thumbs = " + thumbnailCacheEntries()
                  + " screens = " + screenStackDepth();
+        out[8] = "chatWindow = " + layoutWindowScreens() + " screens"
+                 + " prefetch = " + historyPrefetchMargin() + " messages";
         return out;
     }
 

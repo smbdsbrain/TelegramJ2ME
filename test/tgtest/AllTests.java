@@ -41,6 +41,7 @@ public final class AllTests
             new Phase2PersistenceTest(),
             new UpdateSyncTest(),
             new ChatScrollStateTest(),
+            new ChatWindowTest(),
             new ChatScreenPhase4Test(),
             new Phase4ContentTest(),
             new Phase5AuthTest(),
