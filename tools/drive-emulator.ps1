@@ -61,6 +61,12 @@
 .PARAMETER ChatTitle
     photos, minheap and scroll. Substring of the conversation title to open.
 
+.PARAMETER SingleSocket
+    scroll only. Turn "Single socket mode" on in Settings before connecting.
+    That mode refuses a second concurrent connection outright, so it is where a
+    path that quietly assumed it could open one fails - and the mode least
+    likely to be exercised by hand.
+
 .PARAMETER Pages
     scroll only. Screens to page up before turning round. Each one is a real
     keypress with a settle delay, so this is also roughly the run time in
@@ -107,6 +113,7 @@ param(
     [string]$SendText = '',
     [string]$ChatTitle = '',
     [int]$Pages = 40,
+    [switch]$SingleSocket,
     [ValidateSet('on', 'off')][string]$Pictures = 'on',
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$EmulatorProfile = 'driver',
@@ -160,7 +167,8 @@ switch ($Scenario) {
     'session' { $driverArgs += @($Mode, $SendText) }
     'photos'  { $driverArgs += $ChatTitle }
     'minheap' { $driverArgs += @($ChatTitle, $Pictures) }
-    'scroll'  { $driverArgs += @($ChatTitle, "$Pages") }
+    'scroll'  { $driverArgs += @($ChatTitle, "$Pages",
+                                 $(if ($SingleSocket) { 'single' } else { 'multi' })) }
 }
 
 Write-Step "emulator driver [$profileLabel] :: $Scenario ($Env)"

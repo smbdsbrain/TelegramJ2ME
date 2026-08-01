@@ -224,6 +224,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private long cachedPhotoId;
     private Image cachedPhoto;
     private int thumbnailGeneration;
+
+    /** A batch of inline previews is decoding; another would only fight it. */
+    private volatile boolean thumbnailsRunning;
     private OutgoingMessage[] outboxItems = new OutgoingMessage[0];
 
     private String phoneNumber;
@@ -1844,7 +1847,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
         screen.setViewportListener(new ChatScreen.ViewportListener()
         {
-            public void onChatViewportChanged() { maybeLoadHistory(); }
+            public void onChatViewportChanged()
+            {
+                maybeLoadHistory();
+                scheduleVisibleThumbnails();
+            }
         });
         return screen;
     }
@@ -2274,6 +2281,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * were the only ones anybody could see; once history scrolls, it means
      * reading back through a picture-heavy channel shows no pictures at all.
      */
+    /**
+     * Decode previews for whatever is on screen now, unless a batch is already
+     * doing that.
+     *
+     * Scrolling has to be a trigger. Every other caller is a history landing,
+     * and while the newest page was the only page anybody could see that was
+     * the same thing; once a reader can scroll to messages that arrived pages
+     * ago, those messages never get their previews decoded at all. Measured
+     * before this existed: nine photos on screen, none of them decoded.
+     *
+     * Guarded by a running flag rather than by the generation counter, because
+     * restarting on every keypress would cancel each batch a keypress after
+     * starting it and nothing would ever finish.
+     */
+    private void scheduleVisibleThumbnails()
+    {
+        if (thumbnailsRunning || openPeer == null) { return; }
+        scheduleInlineThumbnails(openPeer);
+    }
+
     private void scheduleInlineThumbnails(final Peer peer)
     {
         final int generation = ++thumbnailGeneration;
@@ -2298,9 +2325,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         if (count == 0) { return; }
         final int candidateCount = count;
+        thumbnailsRunning = true;
         new Thread(new Runnable()
         {
             public void run()
+            {
+                try { decode(); }
+                finally { thumbnailsRunning = false; }
+            }
+
+            private void decode()
             {
                 for (int i = 0; i < candidateCount; i++)
                 {
@@ -2308,6 +2342,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                             || !samePeer(openPeer, peer)
                             || !appSettings.mediaPreviews)
                     {
+                        // Worth a line. Silent cancellation is what a stuck
+                        // inline preview looks like from the outside, and there
+                        // was previously no way to tell it apart from a decode
+                        // that failed or a message that carried no thumbnail.
+                        Diag.info("thumbnails cancelled after " + i + " of "
+                                + candidateCount);
                         return;
                     }
                     final Message message = candidates[i];
@@ -2328,6 +2368,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                         && appSettings.mediaPreviews)
                                 {
                                     chatScreen.setThumbnail(message.id, thumbnail);
+                                    Diag.info("thumbnail ok " + message.id);
+                                }
+                                else
+                                {
+                                    Diag.info("thumbnail dropped " + message.id);
                                 }
                             }
                         });

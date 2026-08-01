@@ -98,7 +98,8 @@ public final class EmulatorDriver
             }
             else if ("scroll".equals(scenario))
             {
-                exit = scroll(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
+                exit = scroll(app, arg(args, 1), arg(args, 2), arg(args, 3))
+                        ? 0 : 1;
             }
             else
             {
@@ -617,17 +618,20 @@ public final class EmulatorDriver
      * mode a person clicking Older could never have produced.
      */
     private static boolean scroll(EmulatorHarness app, String chatTitle,
-                                  String pagesArg) throws Exception
+                                  String pagesArg, String singleSocket)
+            throws Exception
     {
         if (chatTitle == null || chatTitle.length() == 0)
         {
-            System.out.println("usage: scroll <chat title> [pages]");
+            System.out.println("usage: scroll <chat title> [pages] [single]");
             return false;
         }
         int pages = 40;
         try { if (pagesArg != null) { pages = Integer.parseInt(pagesArg.trim()); } }
         catch (Throwable ignored) { }
 
+        boolean single = "single".equalsIgnoreCase(singleSocket);
+        if (!setSingleSocket(app, single)) { return false; }
         if (!connect(app)) { return false; }
         if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
         {
@@ -679,6 +683,8 @@ public final class EmulatorDriver
                         + " older=" + chat.messagesOlderThanViewport()
                         + " layouts=" + chat.layoutCount()
                         + " fetches=" + count("messages.getHistory/older")
+                        + " thumbs=" + thumbnailsHeld(chat)
+                        + "/" + thumbnailCandidates(chat)
                         + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB");
             }
         }
@@ -714,8 +720,13 @@ public final class EmulatorDriver
         boolean alive = chatScreen(app) != null;
         boolean returned = alive && chat.isAtEnd();
         int forwardFetches = count("messages.getHistory/newer started");
-        int downFetches = count("messages.getHistory/older started") - upFetches;
+        // Clamped because Diag is a bounded ring: on a long run the lines
+        // counted at the turn-round can age out of it, and a negative delta
+        // reads as a defect when it is only the log forgetting.
+        int downFetches = Math.max(0,
+                count("messages.getHistory/older started") - upFetches);
         System.out.println("VERDICT"
+                + " single=" + single
                 + " pages=" + reached
                 + " openLines=" + openLines
                 + " maxLines=" + maxLines
@@ -726,6 +737,10 @@ public final class EmulatorDriver
                 + " upLayouts=" + (upLayouts - openLayouts)
                 + " downLayouts=" + (chat.layoutCount() - upLayouts)
                 + " returnedToEnd=" + returned
+                + " thumbs=" + thumbnailsHeld(chat) + "/" + thumbnailCandidates(chat)
+                + " thumbOk=" + count("thumbnail ok")
+                + " thumbDropped=" + count("thumbnail dropped")
+                + " thumbCancelled=" + count("thumbnails cancelled")
                 + " busy=" + count("worker busy")
                 + " sheds=" + MemoryPressure.shedEvents()
                 + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB"
@@ -755,6 +770,87 @@ public final class EmulatorDriver
     {
         Displayable now = app.current();
         return now instanceof ChatScreen ? (ChatScreen) now : null;
+    }
+
+    /**
+     * Turn single socket mode on or off before connecting.
+     *
+     * The mode that matters most and is exercised least: it refuses a second
+     * concurrent connection outright, so any path that quietly assumed it could
+     * open one fails there and only there. Set explicitly on every run, because
+     * it persists in RMS and an unset run inherits the previous one's choice.
+     */
+    private static boolean setSingleSocket(EmulatorHarness app, boolean on)
+            throws Exception
+    {
+        Displayable start = app.current();
+        if (!app.press("Settings")) { System.out.println("no Settings"); return false; }
+        Displayable settings = app.awaitChange(start, 5000);
+        if (!(settings instanceof Form))
+        {
+            System.out.println("Settings is not a Form: "
+                    + EmulatorHarness.describe(settings));
+            return false;
+        }
+        Form form = (Form) settings;
+        boolean found = false;
+        for (int i = 0; i < form.size(); i++)
+        {
+            Item item = form.get(i);
+            if (item instanceof ChoiceGroup
+                    && "Single socket mode".equals(item.getLabel()))
+            {
+                ((ChoiceGroup) item).setSelectedIndex(0, on);
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            System.out.println("no Single socket mode choice on Settings");
+            return false;
+        }
+        System.out.println("single socket: " + (on ? "on" : "off"));
+        if (!app.press("Save")) { return false; }
+        app.awaitChange(settings, 5000);
+        for (int i = 0; i < 4 && app.press("Back"); i++)
+        {
+            app.awaitChange(app.current(), 2000);
+        }
+        return true;
+    }
+
+    /** Inline previews actually decoded and held for what is on screen. */
+    private static int thumbnailsHeld(ChatScreen chat)
+    {
+        if (chat == null) { return 0; }
+        tg.api.Message[] visible = chat.visibleMessages();
+        int held = 0;
+        for (int i = 0; i < visible.length; i++)
+        {
+            tg.api.Message m = visible[i];
+            if (m != null && chat.hasThumbnail(m.id)) { held++; }
+        }
+        return held;
+    }
+
+    /** Messages on screen that carry a stripped thumbnail worth decoding. */
+    private static int thumbnailCandidates(ChatScreen chat)
+    {
+        if (chat == null) { return 0; }
+        tg.api.Message[] visible = chat.visibleMessages();
+        int candidates = 0;
+        for (int i = 0; i < visible.length; i++)
+        {
+            tg.api.Message m = visible[i];
+            if (m != null && m.media != null
+                    && m.media.kind == tg.api.Media.PHOTO
+                    && m.media.photo != null
+                    && m.media.photo.stripped() != null)
+            {
+                candidates++;
+            }
+        }
+        return candidates;
     }
 
     /** Walk the dialog list with the keypad until the wanted chat is selected. */
