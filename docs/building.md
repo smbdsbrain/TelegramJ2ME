@@ -337,6 +337,14 @@ It is used **only when the handset has nothing stored**. Anything entered in
 Settings is persisted and keeps winning, so reinstalling cannot silently
 override a choice made on the device.
 
+A build's own proxy goes to the **front** of the Auto chain, not in place of it:
+Auto still falls back to direct, obfuscated and HTTP behind it. That matters on
+the first launch, which is the one launch with nothing stored to fall back on -
+a proxy that happens to be down must cost one failed attempt, not the whole
+connection. Whichever route completes the connection preflight is the one
+persisted, so the order corrects itself after a single launch in either
+direction.
+
 Like every other value under `secrets/`, it never reaches `src/` - the build
 writes `generated/tg/app/DevProxy.java`, and both directories are gitignored and
 rejected by `tools/audit-public.ps1`, which also harvests the individual query
