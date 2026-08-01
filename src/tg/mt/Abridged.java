@@ -4,6 +4,7 @@ import java.io.IOException;
 
 import tg.diag.Diag;
 import tg.io.Transport;
+import tg.mem.MemoryBudget;
 
 /**
  * MTProto abridged transport framing.
@@ -24,19 +25,21 @@ import tg.io.Transport;
  * <h3>Bounds</h3>
  * The length prefix is the first thing a hostile or broken peer controls, and a
  * 24-bit word count can claim 64 MB. On a 5 MiB heap that allocation is fatal,
- * so it is rejected against {@link #MAX_PACKET} before any array is created.
+ * so it is rejected against {@link tg.mem.MemoryBudget#packetBytes} before any
+ * array is created.
+ *
+ * Note what that limit does and does not do. The receive buffer is allocated at
+ * the <i>declared</i> length, so lowering the limit frees nothing - it only
+ * decides whether to throw first. That is why its floor comes from what the
+ * protocol actually sends rather than from a share of the heap: a limit below
+ * the largest legitimate packet turns a survivable allocation into a guaranteed
+ * disconnect.
  *
  * The receive buffer is reused across packets. Nothing here is thread safe;
  * MTProto connections are single-reader, single-writer by design.
  */
 public final class Abridged implements PacketFrame
 {
-    /**
-     * Largest packet we will accept. Comfortably above the ~1 MB upload/download
-     * part limit and far below anything that would threaten the heap.
-     */
-    public static final int MAX_PACKET = 1024 * 1024;
-
     private static final int TAG = 0xef;
     private static final int LONG_LENGTH_MARKER = 0x7f;
 
@@ -75,9 +78,10 @@ public final class Abridged implements PacketFrame
             // Would be silently truncated by the word-count encoding.
             throw new IOException("abridged payload must be a multiple of 4, got " + len);
         }
-        if (len > MAX_PACKET)
+        if (len > MemoryBudget.packetBytes())
         {
-            throw new IOException("packet of " + len + " bytes exceeds MAX_PACKET");
+            throw new IOException("packet of " + len + " bytes exceeds the "
+                                  + MemoryBudget.packetBytes() + " byte limit");
         }
 
         if (!tagSent)
@@ -139,10 +143,10 @@ public final class Abridged implements PacketFrame
         }
 
         int len = words << 2;
-        if (len <= 0 || len > MAX_PACKET)
+        if (len <= 0 || len > MemoryBudget.packetBytes())
         {
             throw new IOException("declared packet length " + len
-                                  + " is outside 1.." + MAX_PACKET);
+                                  + " is outside 1.." + MemoryBudget.packetBytes());
         }
 
         if (rxBuffer.length < len)

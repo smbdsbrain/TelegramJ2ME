@@ -121,6 +121,22 @@ jobs:
         shell: pwsh
         run: ./tools/smoke-emulator.ps1 -SkipBuild
 
+      # The same jar under a bounded host heap. MicroEmulator has no heap option
+      # of its own but runs the MIDlet on the host JVM, so this is what the
+      # client's own heap probe measures and what its budgets are derived from.
+      #
+      # Deliberately not smaller. -Xmx bounds the whole host process - AWT font
+      # metrics and MicroEmulator's objects included - and below about 4 MB the
+      # harness itself stops fitting, which says nothing about the client. The
+      # budget floors are covered by tgtest.MemoryBudgetTest instead.
+      - name: Emulator smoke test under a bounded heap
+        shell: pwsh
+        run: |
+          foreach ($mx in @('-Xmx16m', '-Xmx12m')) {
+            ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName tg -JavaArgs $mx
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
       # The .sh wrappers are what the Linux instructions in docs/building.md
       # tell people to run, so check they actually exec pwsh correctly rather
       # than only ever testing the .ps1 files directly.

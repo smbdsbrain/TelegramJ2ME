@@ -32,6 +32,20 @@ public final class HeapProbe
     {
         public long startTotal;
         public long startFree;
+
+        /**
+         * Largest totalMemory() seen while filling.
+         *
+         * startTotal is only what the VM had committed before the probe began,
+         * which understates a heap that grows on demand and overstates nothing;
+         * totalAllocated is what the probe could hold on top of whatever was
+         * already resident, which understates capacity whenever something else
+         * is holding memory. This is the honest capacity figure: the VM grew to
+         * it because the probe made it, and it is unaffected by what was
+         * resident first. Not in lines() - that format is quoted in
+         * docs/hardware and asserted in tgtest.ReportTest.
+         */
+        public long peakTotal;
         public long lowestFree;
         public long totalAllocated;
         public int  chunkSize;
@@ -60,14 +74,34 @@ public final class HeapProbe
 
     /**
      * Fill the heap with {@code chunkSize} blocks until it refuses, then let go
-     * of everything.
+     * of everything, measuring the largest single block to the byte.
      *
      * @param chunkSize bytes per allocation; 8-32 KB keeps the granularity
      *                  useful without a huge Vector
      */
     public static Result run(int chunkSize)
     {
+        return run(chunkSize, 1);
+    }
+
+    /**
+     * As {@link #run(int)}, but stop the largest-block search once the interval
+     * is smaller than {@code blockGranularity}.
+     *
+     * The exact search is a binary search over 0..8 MB with a full
+     * {@code System.gc()} on every step - twenty-three collects, which on a
+     * 208 MHz VM is seconds of near-total stall. That is fine in ProbeMidlet,
+     * which exists to take its time, and unacceptable in the messenger, which
+     * runs this once on first launch and then wants to connect. At 64 KB
+     * granularity the search is seven collects instead of twenty-three, and
+     * nothing downstream needs the largest block to the byte.
+     *
+     * @param blockGranularity resolution in bytes; 1 measures exactly
+     */
+    public static Result run(int chunkSize, int blockGranularity)
+    {
         if (chunkSize < 1024) { chunkSize = 1024; }
+        if (blockGranularity < 1) { blockGranularity = 1; }
 
         Result r = new Result();
         r.chunkSize = chunkSize;
@@ -77,6 +111,7 @@ public final class HeapProbe
         r.startTotal = rt.totalMemory();
         r.startFree = rt.freeMemory();
         r.lowestFree = r.startFree;
+        r.peakTotal = r.startTotal;
 
         byte[] reserve = new byte[RESERVE_BYTES];
         Vector held = new Vector(64);
@@ -95,6 +130,8 @@ public final class HeapProbe
 
                 long free = rt.freeMemory();
                 if (free < r.lowestFree) { r.lowestFree = free; }
+                long total = rt.totalMemory();
+                if (total > r.peakTotal) { r.peakTotal = total; }
             }
             r.note = "stopped at the " + (MAX_TOTAL_BYTES / 1024) + " KB self-imposed ceiling, heap not exhausted";
         }
@@ -117,7 +154,7 @@ public final class HeapProbe
         reserve = null;
         System.gc();
 
-        r.largestSingle = largestSingleAllocation();
+        r.largestSingle = largestSingleAllocation(blockGranularity);
         System.gc();
 
         Diag.info("heap probe: allocated " + (r.totalAllocated / 1024)
@@ -129,13 +166,17 @@ public final class HeapProbe
      * Biggest contiguous byte[] the VM will hand out right now, by binary
      * search. Fragmentation makes this smaller than the total free heap, and it
      * is the number that actually constrains a single network receive buffer.
+     *
+     * The result is always a size that was actually allocated, so a coarse
+     * granularity under-reports rather than over-reports - the safe direction
+     * for anything sizing a buffer from it.
      */
-    private static int largestSingleAllocation()
+    private static int largestSingleAllocation(int granularity)
     {
         int lo = 0;
         int hi = MAX_TOTAL_BYTES;
 
-        while (lo < hi)
+        while (hi - lo >= granularity && lo < hi)
         {
             int mid = lo + (hi - lo + 1) / 2;
             byte[] probe = null;

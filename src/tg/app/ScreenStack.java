@@ -2,13 +2,39 @@ package tg.app;
 
 import javax.microedition.lcdui.Displayable;
 
-/** Bounded navigation history with a root that is never discarded. */
+import tg.mem.MemoryBudget;
+
+/**
+ * Bounded navigation history with a root that is never discarded.
+ *
+ * Every retained screen is live: a ChatScreen holds its wrapped transcript and
+ * its decoded thumbnails for as long as it is on the stack. The depth is
+ * therefore a memory budget, sized from the measured heap.
+ */
 public final class ScreenStack
 {
-    public static final int CAPACITY = 16;
-
-    private final Displayable[] screens = new Displayable[CAPACITY];
+    private final int capacity;
+    private final Displayable[] screens;
     private int size;
+
+    public ScreenStack()
+    {
+        this(MemoryBudget.screenStackDepth());
+    }
+
+    /**
+     * @param capacity screens to retain; floored at four, which is root ->
+     *                 dialog list -> chat -> photo, the deepest path the client
+     *                 has. Below that, Back starts losing the way home.
+     */
+    public ScreenStack(int capacity)
+    {
+        if (capacity < 4) { capacity = 4; }
+        this.capacity = capacity;
+        this.screens = new Displayable[capacity];
+    }
+
+    public int capacity() { return capacity; }
 
     public void resetRoot(Displayable screen)
     {
@@ -21,10 +47,10 @@ public final class ScreenStack
     {
         if (screen == null) { return; }
         if (size > 0 && screens[size - 1] == screen) { return; }
-        if (size == CAPACITY)
+        if (size == capacity)
         {
-            System.arraycopy(screens, 2, screens, 1, CAPACITY - 2);
-            screens[CAPACITY - 1] = null;
+            System.arraycopy(screens, 2, screens, 1, capacity - 2);
+            screens[capacity - 1] = null;
             size--;
         }
         screens[size++] = screen;

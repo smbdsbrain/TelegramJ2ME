@@ -9,6 +9,7 @@ import tg.api.Media;
 import tg.api.Message;
 import tg.api.Peer;
 import tg.api.ReactionSummary;
+import tg.mem.MemoryBudget;
 
 /**
  * One conversation: messages, newest at the bottom.
@@ -27,8 +28,6 @@ public class ChatScreen extends Canvas
     {
         void onMessageActivated(int messageId);
     }
-    private static final int THUMB_CACHE = 12;
-
     private final Font font;
     private final Font metaFont;
     private final int lineHeight;
@@ -45,8 +44,9 @@ public class ChatScreen extends Canvas
     private int[] lineMessageOffsets = new int[0];
     private Message[] currentMessages = new Message[0];
     private Peer peer;
-    private final int[] thumbnailIds = new int[THUMB_CACHE];
-    private final Image[] thumbnails = new Image[THUMB_CACHE];
+    private final int thumbnailCapacity;
+    private final int[] thumbnailIds;
+    private final Image[] thumbnails;
     private int thumbnailCount;
 
     private final ChatScrollState scroll = new ChatScrollState();
@@ -62,11 +62,28 @@ public class ChatScreen extends Canvas
 
     public ChatScreen(Theme theme)
     {
+        this(theme, MemoryBudget.thumbnailCacheEntries());
+    }
+
+    /**
+     * @param thumbnailCapacity decoded inline thumbnails to retain; floored at
+     *                          two, because a single slot is evicted by the
+     *                          next message that scrolls into view
+     */
+    public ChatScreen(Theme theme, int thumbnailCapacity)
+    {
         font = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
         metaFont = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
         lineHeight = Math.max(font.getHeight(), EmojiText.GLYPH);
         this.theme = theme == null ? Theme.byId(Theme.LIGHT) : theme;
+        if (thumbnailCapacity < 2) { thumbnailCapacity = 2; }
+        this.thumbnailCapacity = thumbnailCapacity;
+        this.thumbnailIds = new int[thumbnailCapacity];
+        this.thumbnails = new Image[thumbnailCapacity];
     }
+
+    /** Decoded thumbnails this screen will hold. */
+    public int thumbnailCapacity() { return thumbnailCapacity; }
 
     public void setTheme(Theme value)
     {
@@ -700,7 +717,7 @@ public class ChatScreen extends Canvas
                 return;
             }
         }
-        if (thumbnailCount < THUMB_CACHE)
+        if (thumbnailCount < thumbnailCapacity)
         {
             thumbnailIds[thumbnailCount] = messageId;
             thumbnails[thumbnailCount] = image;
@@ -709,11 +726,11 @@ public class ChatScreen extends Canvas
         else
         {
             System.arraycopy(thumbnailIds, 1, thumbnailIds, 0,
-                    THUMB_CACHE - 1);
+                    thumbnailCapacity - 1);
             System.arraycopy(thumbnails, 1, thumbnails, 0,
-                    THUMB_CACHE - 1);
-            thumbnailIds[THUMB_CACHE - 1] = messageId;
-            thumbnails[THUMB_CACHE - 1] = image;
+                    thumbnailCapacity - 1);
+            thumbnailIds[thumbnailCapacity - 1] = messageId;
+            thumbnails[thumbnailCapacity - 1] = image;
         }
         repaint();
     }
@@ -727,7 +744,12 @@ public class ChatScreen extends Canvas
         return null;
     }
 
-    private synchronized void clearThumbnails()
+    /**
+     * Drop every decoded thumbnail. Public because the memory-pressure ladder
+     * calls it from a worker thread, and this is the cheapest useful thing the
+     * client can give back - roughly 190 KB when the cache is full.
+     */
+    public synchronized void clearThumbnails()
     {
         for (int i = 0; i < thumbnailCount; i++)
         {

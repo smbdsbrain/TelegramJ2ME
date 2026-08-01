@@ -2,6 +2,8 @@ package tg.io;
 
 import java.io.IOException;
 
+import tg.mem.MemoryBudget;
+
 /**
  * DEFLATE (RFC 1951) and gzip (RFC 1952) decompression.
  *
@@ -19,7 +21,9 @@ import java.io.IOException;
  * The compressed data comes from the network and its expansion ratio is
  * unbounded in principle - a few KB can inflate to hundreds of MB. On a 5 MiB
  * heap that is fatal, so the caller supplies a hard output limit and the
- * decompressor stops rather than allocating past it.
+ * decompressor stops rather than allocating past it. The convenience overloads
+ * take that limit from {@link tg.mem.MemoryBudget}, which sizes it from the
+ * heap this handset actually reported.
  *
  * The implementation is the straightforward one: stored, fixed-Huffman and
  * dynamic-Huffman blocks, with canonical Huffman decoding via per-length count
@@ -27,9 +31,6 @@ import java.io.IOException;
  */
 public final class Inflate
 {
-    /** Default ceiling on output. Well above any TL response we expect. */
-    public static final int DEFAULT_MAX_OUTPUT = 2 * 1024 * 1024;
-
     private static final int[] LENGTH_BASE = {
         3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
         35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
@@ -141,9 +142,10 @@ public final class Inflate
         return inflateRaw(data, p, deflateLen, maxOutput, hint);
     }
 
+    /** Inflate with the ceiling this device's measured heap allows. */
     public static byte[] gunzip(byte[] data) throws IOException
     {
-        return gunzip(data, 0, data.length, DEFAULT_MAX_OUTPUT);
+        return gunzip(data, 0, data.length, MemoryBudget.inflateOutputBytes());
     }
 
     /** Raw DEFLATE, no gzip or zlib wrapper. */
@@ -158,7 +160,7 @@ public final class Inflate
 
     public static byte[] inflateRaw(byte[] data) throws IOException
     {
-        return inflateRaw(data, 0, data.length, DEFAULT_MAX_OUTPUT, 1024);
+        return inflateRaw(data, 0, data.length, MemoryBudget.inflateOutputBytes(), 1024);
     }
 
     // ------------------------------------------------------------ internal

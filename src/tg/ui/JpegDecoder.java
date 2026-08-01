@@ -6,7 +6,7 @@ import java.io.InputStream;
 import javax.microedition.lcdui.Image;
 
 import tg.api.DownloadToken;
-import tg.api.PhotoRef;
+import tg.mem.MemoryBudget;
 
 /**
  * Bounded pure-Java JPEG decoder for the image formats produced by Telegram.
@@ -20,8 +20,6 @@ import tg.api.PhotoRef;
  */
 public final class JpegDecoder
 {
-    public static final int MAX_PIXELS = 307200;
-
     public static final class Decoded
     {
         public final int width;
@@ -91,19 +89,23 @@ public final class JpegDecoder
             throws IOException
     {
         if (in == null) { throw new IOException("null JPEG stream"); }
-        byte[] out = new byte[Math.min(PhotoRef.MAX_COMPRESSED_BYTES, 32768)];
+        // Read once: the loop must not change its mind about the ceiling
+        // halfway through if the measurement lands on another thread.
+        final int limit = MemoryBudget.photoCompressedBytes();
+        byte[] out = new byte[Math.min(limit, 32768)];
         int used = 0;
         while (true)
         {
             checkCancelled(token);
             if (used == out.length)
             {
-                if (used >= PhotoRef.MAX_COMPRESSED_BYTES)
+                if (used >= limit)
                 {
                     if (in.read() < 0) { break; }
-                    throw new IOException("JPEG exceeds compressed limit");
+                    throw new IOException("JPEG exceeds the " + limit
+                                          + " byte compressed limit");
                 }
-                int next = Math.min(PhotoRef.MAX_COMPRESSED_BYTES, used << 1);
+                int next = Math.min(limit, used << 1);
                 byte[] grown = new byte[next];
                 System.arraycopy(out, 0, grown, 0, used);
                 out = grown;
@@ -597,7 +599,7 @@ public final class JpegDecoder
                 int allocatedColumns = f.mcusPerColumn * c.v;
                 c.strideBlocks = allocatedLines + 1;
                 long words = 64L * allocatedColumns * c.strideBlocks;
-                if (words <= 0 || words > (long) MAX_PIXELS * 2L)
+                if (words <= 0 || words > (long) MemoryBudget.photoPixels() * 2L)
                 {
                     fail("JPEG coefficient allocation exceeds limit");
                 }
@@ -968,9 +970,11 @@ public final class JpegDecoder
     private static int checkedPixels(int width, int height) throws IOException
     {
         long pixels = (long) width * (long) height;
-        if (width < 1 || height < 1 || pixels > MAX_PIXELS)
+        int limit = MemoryBudget.photoPixels();
+        if (width < 1 || height < 1 || pixels > limit)
         {
-            throw new IOException("JPEG dimensions exceed 307200 pixels");
+            throw new IOException("JPEG dimensions " + width + "x" + height
+                                  + " exceed the " + limit + " pixel limit");
         }
         return (int) pixels;
     }

@@ -133,10 +133,10 @@ byte-identical on every platform. CI enforces that: after bootstrap,
 
 | Artifact | Size | Contents | Use |
 |---|---|---|---|
-| `dist/probe.jar` | ~64 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
-| `dist/crypto.jar` | ~81 KB | + the crypto stack | vectors and benchmarks on the device |
-| `dist/tg.jar` | ~399 KB | full client | the messenger |
-| `dist/tg.jar` with `-Release` | ~291 KB | full client, optimised + obfuscated | when the handset caps install size |
+| `dist/probe.jar` | ~110 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
+| `dist/crypto.jar` | ~118 KB | + the crypto stack | vectors and benchmarks on the device |
+| `dist/tg.jar` | ~428 KB | full client | the messenger |
+| `dist/tg.jar` with `-Release` | ~312 KB | full client, optimised + obfuscated | when the handset caps install size |
 
 ```bash
 ./tools/build.sh -Target probe
@@ -197,12 +197,13 @@ of every compiled class and rejects anything outside
 ## Test
 
 ```bash
-./tools/test.sh                # all 27 suites
+./tools/test.sh                # all 31 suites
 ./tools/test.sh -Filter bigint # substring match on the suite name
 ```
 
-27 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
-serialization, transport, persistence, authorization, content and UI logic.
+31 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
+serialization, transport, persistence, authorization, content, UI logic and the
+memory budgets.
 There is no JUnit and no reflection — the registry is explicit so the same cases
 can later be linked into an on-device self-test MIDlet unchanged.
 
@@ -215,6 +216,17 @@ MIDP runtime and navigates between screens. It is the only automated check that
 the artifact which actually ships still runs. It is headless, so it needs no
 display, but on a minimal Linux box it does need fonts installed
 (`fontconfig` + e.g. `fonts-dejavu-core`) or AWT font metrics will fail.
+
+`-JavaArgs` passes JVM options through, which is how the memory budgets get
+exercised against a real artifact:
+
+```bash
+pwsh -File tools/smoke-emulator.ps1 -SkipBuild -ArtifactName tg -JavaArgs -Xmx12m
+```
+
+MicroEmulator runs the MIDlet on the host JVM, so a bounded host heap is what the
+client's own probe measures. Read the result with the caveats in
+[emulator-notes.md](emulator-notes.md#bounding-the-heap-with--xmx).
 
 See [emulator-notes.md](emulator-notes.md) for what an emulator pass does and
 does not prove.

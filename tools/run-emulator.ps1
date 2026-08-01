@@ -36,11 +36,26 @@
     build made with build.ps1 -ArtifactName - in particular the obfuscated
     release variant, which is the one worth smoke-testing before publishing.
 
+.PARAMETER JavaArgs
+    MicroEmulator only: extra JVM options, placed before -cp.
+
+    Exists for -Xmx. MicroEmulator has no heap option of its own, but it runs
+    the MIDlet on the host JVM, so a bounded host heap is what the MIDlet's
+    Runtime.totalMemory()/freeMemory() report and what its OutOfMemoryError
+    behaviour follows. That is enough to watch the heap probe measure a
+    constrained ceiling and the budgets shrink with it.
+
+    It is a coarse ceiling and not a handset. -Xmx bounds the whole host
+    process, MicroEmulator's Swing UI and AWT font metrics included, so it
+    cannot reach the low-megabyte range where the real budget floors live -
+    those are covered only by the desktop suite. See docs/emulator-notes.md.
+
 .EXAMPLE
     ./tools/run-emulator.ps1 -Target probe
     ./tools/run-emulator.ps1 -Target probe -UseWtk
     ./tools/run-emulator.ps1 -Target tg -EmulatorProfile 2fa
     ./tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.1.0-min
+    ./tools/run-emulator.ps1 -Target tg -EmulatorProfile small -JavaArgs -Xmx32m
 #>
 [CmdletBinding()]
 param(
@@ -50,7 +65,8 @@ param(
     [switch]$Headless,
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$EmulatorProfile = 'default',
-    [string]$ArtifactName = ""
+    [string]$ArtifactName = "",
+    [string[]]$JavaArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +88,12 @@ if (-not (Test-Path $jar)) {
 if ($UseWtk) {
     if ($EmulatorProfile -ne 'default') {
         Write-Bad "-EmulatorProfile is supported by MicroEmulator only."
+        exit 1
+    }
+    if ($JavaArgs.Count -gt 0) {
+        # WTK's emulator is a native launcher with its own VM; a host -Xmx
+        # would be silently ignored rather than bounding the MIDlet.
+        Write-Bad "-JavaArgs is supported by MicroEmulator only."
         exit 1
     }
     if (-not $WtkHome) {
@@ -157,5 +179,6 @@ Write-Host ""
 # Errors from MicroEmulator's class loader go to stderr and nowhere else. A
 # missing dependency there shows up in the emulator as a blank white screen with
 # no other symptom, so stderr must not be swallowed.
-& $java @javaProfileArgs -cp $cp $mainClass $midletClass
+if ($JavaArgs.Count -gt 0) { Write-Host "    jvm: $($JavaArgs -join ' ')" }
+& $java @javaProfileArgs @JavaArgs -cp $cp $mainClass $midletClass
 exit $LASTEXITCODE

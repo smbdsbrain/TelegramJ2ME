@@ -13,6 +13,7 @@ import tg.api.PhotoSizeRef;
 import tg.api.ReactionSummary;
 import tg.api.ReactionCatalog;
 import tg.api.Requests;
+import tg.mem.MemoryBudget;
 import tg.mt.DcEndpoint;
 import tg.mt.AuthKey;
 import tg.tl.TlObj;
@@ -44,8 +45,22 @@ public final class Phase4ContentTest implements Test
         photo.sizes = new PhotoSizeRef[] { tiny, huge, screen };
         Assert.isTrue("screen size selected", photo.choose(320, 240) == screen);
 
-        screen.size = PhotoRef.MAX_COMPRESSED_BYTES + 1;
+        screen.size = MemoryBudget.photoCompressedBytes() + 1;
         Assert.isTrue("bounded fallback", photo.choose(320, 240) == tiny);
+
+        // A smaller measured heap must change which size the server is asked
+        // for, not merely fail later during the decode. 100 KB is comfortably
+        // inside the reference budget and outside the one a 512 KB heap allows.
+        screen.size = 100000;
+        Assert.isTrue("the reference heap still takes the covering size",
+                photo.choose(320, 240) == screen);
+        MemoryBudget.init(512 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
+        try
+        {
+            Assert.isTrue("a small heap falls back to a smaller size",
+                    photo.choose(320, 240) == tiny);
+        }
+        finally { MemoryBudget.reset(); }
     }
 
     private void mediaClassification()

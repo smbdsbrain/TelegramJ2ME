@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.Vector;
 
 import tg.diag.Diag;
+import tg.mem.MemoryBudget;
 import tg.mt.Dc;
 import tg.tl.TlObj;
 import tg.tl.TlParser;
@@ -24,7 +25,6 @@ public final class UpdateSync
     public static final String DEGRADED = "degraded";
 
     private static final int MAX_QUEUE = 64;
-    private static final int MAX_QUEUE_BYTES = 256 * 1024;
 
     public interface Invoker
     {
@@ -283,7 +283,7 @@ public final class UpdateSync
         {
             if (!running || !activated) { return; }
             if (queue.size() >= MAX_QUEUE
-                    || queueBytes + envelope.body.length > MAX_QUEUE_BYTES)
+                    || queueBytes + envelope.body.length > MemoryBudget.updateQueueBytes())
             {
                 queue.removeAllElements();
                 queueBytes = 0;

@@ -9,6 +9,7 @@ import tg.crypto.Rng;
 import tg.crypto.Sha256;
 import tg.io.ObfuscatedTransport;
 import tg.io.Transport;
+import tg.mem.MemoryBudget;
 import tg.mt.Abridged;
 import tg.mt.Intermediate;
 import tg.mt.MsgIdGen;
@@ -114,15 +115,20 @@ public final class ObfuscatedFramingTest implements Test
                 Rng.forTesting(Assert.ascii("rx-encrypted")), true, true);
         Assert.equal("recover encrypted length", encrypted.length, encryptedFrame.receive());
 
+        // The ceiling is now derived from the measured heap, so shrink it for
+        // this case rather than allocating a megabyte on the desktop JVM to
+        // prove that a megabyte is refused.
+        MemoryBudget.init(64 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
         try
         {
+            int over = MemoryBudget.packetBytes() + 4;
             new Intermediate(new MemoryTransport(new byte[0]),
                     Rng.forTesting(Assert.ascii("large")), false, true)
-                    .send(new byte[Intermediate.MAX_PACKET + 4], 0,
-                          Intermediate.MAX_PACKET + 4);
+                    .send(new byte[over], 0, over);
             Assert.fail("oversized intermediate packet accepted");
         }
         catch (IOException expected) { }
+        finally { MemoryBudget.reset(); }
 
         try
         {

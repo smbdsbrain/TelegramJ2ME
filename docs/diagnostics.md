@@ -25,7 +25,7 @@ over and over.
 | Menu item | What it answers |
 |---|---|
 | Platform & build | CLDC/MIDP version, encoding, locale, which optional JSRs exist |
-| Heap probe | the real ceiling — allocate until the VM refuses, plus the largest single block |
+| Heap probe | the real ceiling — allocate until the VM refuses, plus the largest single block. The messenger runs a coarser version of the same probe on its first launch; see [architecture.md](architecture.md#memory-discipline) |
 | RMS test | record store limits, whether a record reads back identical, whether it survives exit |
 | Entropy measure | clock granularity, jitter, `hashCode` and heap readings; the RNG seeding evidence |
 | Keys / Key timing | key codes, game actions, and bits per key press |

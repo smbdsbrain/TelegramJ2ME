@@ -28,14 +28,29 @@
 .PARAMETER SkipBuild
     Reuse build/desktop/test-classes as it stands.
 
+.PARAMETER JavaArgs
+    Extra JVM options, placed before -cp. The reason this exists is -Xmx:
+    MicroEmulator has no heap option of its own, but it runs the MIDlet on the
+    host JVM, so the MIDlet's Runtime.totalMemory()/freeMemory() and its
+    OutOfMemoryError behaviour follow whatever the host was given.
+
+    Read the result honestly. -Xmx bounds the whole host process - AWT font
+    metrics, MicroEmulator's own objects and the harness included - so it is a
+    coarse ceiling, not a faithful CLDC heap, and it cannot go anywhere near the
+    one-megabyte range a real budget floor would need. It proves the client
+    still starts and still measures under a constrained heap. It does not prove
+    anything about a handset.
+
 .EXAMPLE
     ./tools/smoke-emulator.ps1
     ./tools/smoke-emulator.ps1 -ArtifactName tg-min
+    ./tools/smoke-emulator.ps1 -ArtifactName tg -JavaArgs -Xmx24m
 #>
 [CmdletBinding()]
 param(
     [string[]]$ArtifactName = @('tg', 'tg-min'),
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string[]]$JavaArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,7 +90,10 @@ foreach ($name in $ArtifactName) {
     # have, and without this the toolkit tries for an X display and dies.
     # The -D must be quoted: PowerShell otherwise splits an unquoted
     # -Dfoo.bar=baz at the first dot and java sees two broken arguments.
-    & $Jdk8Java "-Djava.awt.headless=true" -cp $runtimeCp tgtest.EmulatorSmokeTest $name
+    $javaInvocation = @("-Djava.awt.headless=true") + $JavaArgs `
+                      + @("-cp", $runtimeCp, "tgtest.EmulatorSmokeTest", $name)
+    if ($JavaArgs.Count -gt 0) { Write-Host "    jvm: $($JavaArgs -join ' ')" }
+    & $Jdk8Java @javaInvocation
     if ($LASTEXITCODE -ne 0) { $failed += $name }
     Write-Host ""
 }

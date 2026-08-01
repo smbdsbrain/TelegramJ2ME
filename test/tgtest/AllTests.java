@@ -49,7 +49,9 @@ public final class AllTests
             new PhotoStreamTest(),
             new JpegDecoderTest(),
             new SelfTestTest(),
-            new ReportTest()
+            new ReportTest(),
+            new MemoryBudgetTest(),
+            new HeapProbeTest()
         };
     }
 

@@ -39,11 +39,32 @@ evidence about the handset.
 | Question | Why the emulator cannot answer it |
 |---|---|
 | Does the JAR pass verification? | The desktop JVM does not run the CLDC verifier, so a missing or malformed `StackMap` goes unnoticed. |
-| Is memory use acceptable? | Desktop heap is effectively unbounded; `Runtime.totalMemory()` bears no relation to the phone. |
+| Is memory use acceptable? | Desktop heap is effectively unbounded; `Runtime.totalMemory()` bears no relation to the phone. A host `-Xmx` narrows this a little - see below - but not to the sizes that matter. |
 | Will `socket://` be permitted? | There is no AMS security policy, no untrusted-MIDlet permission prompt. |
 | Is it fast enough? | 2048-bit `modPow` is 12 ms on this desktop and will be orders of magnitude slower on a 208 MHz ARM without a JIT. |
 | Do the keys work? | Key codes and soft keys are vendor specific; MicroEmulator invents its own. |
 | Will installation work? | No AMS, no JAD parsing, no JAR size limit, no signing policy. |
+
+### Bounding the heap with `-Xmx`
+
+MicroEmulator has no heap option of its own, but it runs the MIDlet on the host
+JVM, so `Runtime.totalMemory()`, `freeMemory()` and `OutOfMemoryError` all follow
+whatever the host was given. `-JavaArgs` on `run-emulator.ps1` and
+`smoke-emulator.ps1` passes it through:
+
+```powershell
+./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName tg -JavaArgs -Xmx12m
+./tools/run-emulator.ps1 -Target tg -EmulatorProfile small -JavaArgs -Xmx24m
+```
+
+That is enough to watch the client's own heap probe measure a constrained
+ceiling and the budgets in `tg.mem.MemoryBudget` follow it. It is **not** a CLDC
+heap. `-Xmx` bounds the whole host process - AWT font metrics, MicroEmulator's
+own objects, the harness - so it cannot reach the low single megabytes where the
+interesting budget floors live: below about 4 MB the harness stops fitting, which
+says nothing about the client. Everything under that is covered by
+`tgtest.MemoryBudgetTest`, which installs a ceiling directly. CI runs the smoke
+test at 16 MB and 12 MB.
 
 The WTK emulator narrows the first, third and sixth of these - it is the
 reference MIDP implementation and does run OTA provisioning. A physical-device

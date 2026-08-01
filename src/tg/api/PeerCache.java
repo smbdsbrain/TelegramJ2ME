@@ -2,6 +2,7 @@ package tg.api;
 
 import java.util.Hashtable;
 
+import tg.mem.MemoryBudget;
 import tg.tl.TlObj;
 
 /**
@@ -14,14 +15,13 @@ import tg.tl.TlObj;
  * {@link #absorb} and lookups go through {@link #resolve}.
  *
  * Bounded on purpose: a busy account has thousands of peers and the heap is
- * 5 MiB. When the cache is full the newest entries still win, because an entry
- * we just received is the one about to be used.
+ * small. When the cache is full the newest entries still win, because an entry
+ * we just received is the one about to be used. The bound is
+ * {@link tg.mem.MemoryBudget#peerCacheEntries} - roughly a hundred bytes each,
+ * so a low hundreds of KB at the reference heap.
  */
 public final class PeerCache
 {
-    /** Roughly 100 bytes per entry, so this is a low hundreds of KB at worst. */
-    private static final int MAX_ENTRIES = 500;
-
     private final Hashtable peers = new Hashtable();
 
     /** The signed-in user, once known. */
@@ -77,7 +77,8 @@ public final class PeerCache
         {
             self = p;
         }
-        if (peers.size() >= MAX_ENTRIES && !peers.containsKey(p.key()))
+        if (peers.size() >= MemoryBudget.peerCacheEntries()
+                && !peers.containsKey(p.key()))
         {
             // Drop an arbitrary existing entry rather than refusing the new one:
             // what just arrived is what is about to be displayed.

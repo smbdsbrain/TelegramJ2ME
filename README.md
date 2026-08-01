@@ -169,9 +169,17 @@ Photos are the one exception: those download and open.
 - Stories, Mini Apps, bots beyond plain messages
 - Localisation — English only
 
-**Bounded by design** — 200 chats, 120 messages of history per chat, 64 queued
-outgoing messages, 1000 characters per message. These are memory budgets, not
-placeholders.
+**Bounded by measurement** — the client measures its own heap on first launch and
+sizes every buffer, cache and page limit from the answer. On the ~5 MB handsets
+tested that is 200 chats, 120 messages of history per chat and a 1 MB packet
+ceiling. Driven under a constrained heap it stays usable down to about **2 MB of
+free heap**, and turning off avatars and inline thumbnails buys roughly another
+480 KB — at ~1.7 MB free that is the difference between a photo that opens and
+one the client refuses. A smaller phone gets proportionally smaller numbers, down to floors it
+refuses to divide past. It also watches its headroom and drops caches before a
+big allocation rather than after the crash. Details in
+[docs/architecture.md](docs/architecture.md#memory-discipline). Fixed regardless
+of heap: 64 queued outgoing messages, 1000 characters per message.
 
 **Two security caveats, stated plainly.** The random number generator's seeding
 has now been **measured on one handset** — an Alcatel OT-810D gives about **58
@@ -193,7 +201,7 @@ extract the session.
 | | |
 |---|---|
 | **MIDP 2.0 and CLDC 1.1** | Both are declared in the manifest. CLDC 1.0 will not run it. |
-| **A few MB of Java heap** | The one handset that has run this had 5 MB. MTProto's 2048-bit arithmetic, a decoded photo and the caches all want room at once. |
+| **About 2 MB of free Java heap** | Measured by driving the client with the heap squeezed in steps: everything works above ~2.2 MB free, photos start being refused near 1.7 MB, avatars stop around 1.5 MB, and sign-in itself fails near 1.1 MB. Both handsets tested have ~5 MB, so they are nowhere near it. Turning off avatars and inline thumbnails in Settings buys about 480 KB. |
 | **A JAR size limit above ~300 KB** | The `-min` build is 291 KB and the normal one is 409 KB. |
 | **Raw TCP (`socket://`), or HTTP** | Raw sockets are the good path. There is an MTProto-over-HTTP fallback for handsets that refuse them outright. |
 

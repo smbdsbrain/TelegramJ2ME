@@ -2,14 +2,19 @@ package tg.api;
 
 import java.io.IOException;
 
+import tg.mem.MemoryBudget;
 import tg.tl.TlObj;
 
-/** Stable fields needed by inputPhotoFileLocation and the photo viewer. */
+/**
+ * Stable fields needed by inputPhotoFileLocation and the photo viewer.
+ *
+ * {@link #choose} filters candidate sizes against
+ * {@link tg.mem.MemoryBudget#photoCompressedBytes} and
+ * {@link tg.mem.MemoryBudget#photoPixels}, so a smaller heap does not merely
+ * fail later on decode - it picks a smaller size from the server, or none.
+ */
 public final class PhotoRef
 {
-    public static final int MAX_COMPRESSED_BYTES = 512 * 1024;
-    public static final int MAX_DECODED_PIXELS = 307200;
-
     public long id;
     public long accessHash;
     public byte[] fileReference;
@@ -61,8 +66,8 @@ public final class PhotoRef
             {
                 continue;
             }
-            if (s.size <= 0 || s.size > MAX_COMPRESSED_BYTES
-                    || area(s) > MAX_DECODED_PIXELS)
+            if (s.size <= 0 || s.size > MemoryBudget.photoCompressedBytes()
+                    || area(s) > MemoryBudget.photoPixels())
             {
                 continue;
             }

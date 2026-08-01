@@ -2,6 +2,8 @@ package tg.ui;
 
 import java.io.IOException;
 
+import tg.mem.MemoryBudget;
+
 /**
  * Reconstructs Telegram's photoStrippedSize payload into a regular JPEG.
  *
@@ -38,7 +40,7 @@ public final class StrippedJpeg
         int height = stripped[1] & 0xff;
         int width = stripped[2] & 0xff;
         if (width < 1 || height < 1
-                || (long) width * (long) height > JpegDecoder.MAX_PIXELS)
+                || (long) width * (long) height > MemoryBudget.photoPixels())
         {
             throw new IOException("invalid stripped JPEG dimensions");
         }

@@ -38,6 +38,9 @@ import tg.api.UpdateState;
 import tg.crypto.Rng;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
+import tg.mem.MemoryBudget;
+import tg.mem.MemoryPressure;
+import tg.mem.MemoryRelief;
 import tg.mt.Dc;
 import tg.mt.ConnectionConfig;
 import tg.mt.ConnectionDiagnostics;
@@ -54,6 +57,7 @@ import tg.plat.TcpLogSink;
 import tg.ui.ChatScreen;
 import tg.ui.AvatarCache;
 import tg.ui.DialogListScreen;
+import tg.ui.EmojiText;
 import tg.ui.SettingsScreen;
 import tg.ui.TextScreen;
 import tg.ui.PhotoScreen;
@@ -76,15 +80,24 @@ import tg.ui.Theme;
  * 2048-bit modular exponentiations - so the UI says what it is doing rather than
  * appearing to hang.
  */
-public class TgMidlet extends MIDlet implements CommandListener
+public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 {
-    /** Dialogs fetched per refresh. A 320x240 screen shows about a dozen. */
-    private static final int DIALOG_LIMIT = 40;
+    /**
+     * Room to ask for before opening a conversation.
+     *
+     * A ChatScreen, the emoji sprite sheet on first paint (49 KB measured),
+     * the wrapped transcript and the inflated history response. Not a
+     * precise figure and it does not need to be: it is the trigger for a
+     * shed, and shedding when it was not strictly necessary costs a redraw.
+     */
+    private static final int CHAT_OPEN_BYTES = 320 * 1024;
 
-    /** Messages fetched per conversation. */
-    private static final int HISTORY_LIMIT = 30;
-    private static final int MAX_DIALOGS = 200;
-    private static final int MAX_HISTORY = 120;
+    /*
+     * How many dialogs and messages this client fetches and holds now comes
+     * from tg.mem.MemoryBudget, which sizes them from the heap the handset
+     * actually reported. On four megabytes or more they are the numbers that
+     * shipped before the budget existed - 40/30 per request, 200/120 held.
+     */
 
     private final Command cmdExit    = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack    = new Command("Back", Command.BACK, 2);
@@ -153,8 +166,15 @@ public class TgMidlet extends MIDlet implements CommandListener
 
     private final Worker worker = new Worker();
     private final Worker avatarWorker = new Worker();
-    private final ScreenStack navigation = new ScreenStack();
-    private final AvatarCache avatarCache = new AvatarCache();
+    /*
+     * Not final, and not built here. Both size their arrays from
+     * MemoryBudget, and instance field initialisers run in the constructor -
+     * before startApp() has had a chance to install the measurement. Built at
+     * the top of startApp() instead, and rebuilt if a first-launch probe later
+     * changes the ceiling.
+     */
+    private ScreenStack navigation = new ScreenStack();
+    private AvatarCache avatarCache = new AvatarCache();
 
     private Display display;
     private Telegram telegram;
@@ -240,6 +260,18 @@ public class TgMidlet extends MIDlet implements CommandListener
      * of it, and a different network may behave differently.
      */
     private volatile boolean avatarsUnavailable;
+
+    /**
+     * Heap measurement state.
+     *
+     * {@code heapMeasured} is written by the probe thread and read by the UI
+     * thread, hence volatile. {@code heapProbeRunning} is only ever touched on
+     * the UI thread - set before the probe starts, cleared in the callSerially
+     * that follows it.
+     */
+    private volatile boolean heapMeasured;
+    private boolean heapProbeRunning;
+
     private final Object readLock = new Object();
     private Peer pendingReadPeer;
     private int pendingReadMaxId;
@@ -261,6 +293,16 @@ public class TgMidlet extends MIDlet implements CommandListener
         Diag.mem("startup");
 
         store = new RmsAuthKeyStore();
+
+        // Before anything sized from it is built. A stored measurement is a
+        // cheap RMS read; a first launch gets the reference profile now and a
+        // real one from the background probe started after the start screen is
+        // up. Either way the caches below are built against the right number.
+        heapMeasured = HeapMeasurement.applyStored(store);
+        MemoryPressure.setRelief(this);
+        navigation = new ScreenStack();
+        avatarCache = new AvatarCache();
+
         outgoingStore = new RmsOutgoingStore();
         draftStore = new RmsDraftStore();
         updateStateStore = new RmsUpdateStateStore();
@@ -314,7 +356,68 @@ public class TgMidlet extends MIDlet implements CommandListener
         // Do not touch the network on startup. An unsigned MIDlet may get only
         // one useful permission prompt, and on restricted handsets the user
         // must be able to configure MTProxy before the first direct attempt.
+        // Decided before the screen is drawn, so the first paint can say so.
+        heapProbeRunning = !heapMeasured && !HeapMeasurement.exhausted(store);
         showStartScreen();
+        startHeapProbe();
+    }
+
+    /**
+     * Measure the heap once, on first launch, in the quietest moment the client
+     * ever has.
+     *
+     * Startup deliberately touches no network, so between the start screen
+     * appearing and the user pressing Connect nothing else is allocating - and
+     * the probe fills the heap, so whatever else allocated would be the thing
+     * that received the OutOfMemoryError. Connect is gated on this finishing,
+     * which is what keeps those two from ever overlapping.
+     */
+    private void startHeapProbe()
+    {
+        if (!heapProbeRunning) { return; }
+
+        Thread probe = new Thread(new Runnable()
+        {
+            public void run()
+            {
+                final boolean changed = HeapMeasurement.measure(store);
+                heapMeasured = true;
+                display.callSerially(new Runnable()
+                {
+                    public void run() { finishHeapProbe(changed); }
+                });
+            }
+        });
+        probe.start();
+    }
+
+    /**
+     * Adopt a fresh measurement on the UI thread.
+     *
+     * Both caches size their arrays at construction, so a new ceiling means new
+     * instances. This is safe only because it runs before Connect: the avatar
+     * cache is empty and the stack holds nothing but the start screen. A
+     * ChatScreen opened later reads the new budget when it is created, which is
+     * on every chat open.
+     */
+    private void finishHeapProbe(boolean changed)
+    {
+        heapProbeRunning = false;
+        if (!navigation.isRoot())
+        {
+            // The user walked into Settings while this ran. Their back path is
+            // worth more than a right-sized stack, and the stack we already
+            // have was built from the default profile, so it is too large
+            // rather than too small. Leave it; the next launch gets both.
+            return;
+        }
+        if (changed)
+        {
+            navigation = new ScreenStack();
+            avatarCache = new AvatarCache();
+            if (dialogList != null) { dialogList.setAvatarCache(avatarCache); }
+        }
+        showStartScreen();          // drops the "measuring" line, adds any warning
     }
 
     protected void pauseApp()
@@ -327,6 +430,9 @@ public class TgMidlet extends MIDlet implements CommandListener
     protected void destroyApp(boolean unconditional)
     {
         Diag.info("destroyApp");
+        // First: the pressure hook is a static and would otherwise hold this
+        // MIDlet, and everything it references, alive past teardown.
+        MemoryPressure.setRelief(null);
         saveDraftNow();
         draftAutosaveRunning = false;
         stopRemoteLog();
@@ -412,6 +518,16 @@ public class TgMidlet extends MIDlet implements CommandListener
         }
         else if (c == cmdConnect)
         {
+            if (heapProbeRunning)
+            {
+                // The probe fills the heap on purpose. Letting a connect start
+                // underneath it means the handshake's 2048-bit exponentiation
+                // is the thing that gets the OutOfMemoryError.
+                showAlert("Still measuring memory. This happens once, on the"
+                          + " first launch. Try Connect again in a moment.",
+                          AlertType.INFO, display.getCurrent());
+                return;
+            }
             showBusy("Connecting", "Connecting using "
                      + ConnectionConfig.name(connectionConfig.mode) + "...\n\n"
                      + "The first run generates an encryption key, which takes "
@@ -665,6 +781,20 @@ public class TgMidlet extends MIDlet implements CommandListener
             form.append("MTProxy: not configured\n");
         }
         form.append("DC: " + Dc.describe());
+        if (heapProbeRunning)
+        {
+            form.append("\n\nMeasuring available memory...");
+        }
+        else if (!MemoryBudget.viable())
+        {
+            // A warning, never a refusal. A handset that under-reports its heap
+            // would otherwise be permanently locked out of an app that might
+            // have run on it perfectly well.
+            form.append("\n\nThis handset reports only "
+                    + (MemoryBudget.ceiling() / 1024) + " KB of usable memory."
+                    + " Everything is at its smallest setting and signing in"
+                    + " may not be possible.");
+        }
         if (DevSink.CONFIGURED)
         {
             // On the first screen, not buried in Settings. A build that can
@@ -1120,7 +1250,7 @@ public class TgMidlet extends MIDlet implements CommandListener
 
             public Object run() throws Exception
             {
-                return telegram.getDialogs(DIALOG_LIMIT);
+                return telegram.getDialogs(MemoryBudget.dialogPageSize());
             }
         }, new Worker.Callback()
         {
@@ -1456,9 +1586,9 @@ public class TgMidlet extends MIDlet implements CommandListener
 
     private void loadMoreDialogs()
     {
-        if (dialogs.length >= MAX_DIALOGS)
+        if (dialogs.length >= MemoryBudget.maxDialogs())
         {
-            showAlert("The in-memory dialog limit (" + MAX_DIALOGS
+            showAlert("The in-memory dialog limit (" + MemoryBudget.maxDialogs()
                     + ") has been reached.", AlertType.INFO, dialogList);
             return;
         }
@@ -1479,7 +1609,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             public String name() { return "messages.getDialogs/more"; }
             public Object run() throws Exception
             {
-                return telegram.getDialogsAfter(pageOffset, DIALOG_LIMIT);
+                return telegram.getDialogsAfter(pageOffset, MemoryBudget.dialogPageSize());
             }
         }, new Worker.Callback()
         {
@@ -1487,7 +1617,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             {
                 Dialog[] page = (Dialog[]) result;
                 int before = dialogs.length;
-                dialogs = mergeDialogs(dialogs, page, MAX_DIALOGS);
+                dialogs = mergeDialogs(dialogs, page, MemoryBudget.maxDialogs());
                 cacheDialogs(dialogs);
                 showDialogList(selected);
                 if (dialogs.length == before)
@@ -1554,6 +1684,10 @@ public class TgMidlet extends MIDlet implements CommandListener
     {
         try
         {
+            // Reclaim before committing, not after failing. The estimate is the
+            // shape of what follows: a ChatScreen, the emoji sheet on first
+            // paint, a wrapped transcript and the inflated history response.
+            MemoryPressure.reserve(CHAT_OPEN_BYTES);
             openPeer = peer;
             telegram.setActivePeer(peer);
             chatScreen = createChatScreen(peer);
@@ -1595,6 +1729,52 @@ public class TgMidlet extends MIDlet implements CommandListener
                 null, AlertType.ERROR);
         alert.setTimeout(Alert.FOREVER);
         display.setCurrent(alert, dialogList == null ? display.getCurrent() : dialogList);
+    }
+
+    // ------------------------------------------------------- memory pressure
+
+    public int levels() { return 4; }
+
+    /**
+     * Give memory back, cheapest and largest first.
+     *
+     * Ordered by what each is actually worth, which is not the order intuition
+     * suggests. The emoji sheet feels expensive and measures 49 KB; one decoded
+     * full-screen photo is six times that and is pure cache.
+     *
+     * Called from a worker thread, so nothing here may touch state a live
+     * screen has already laid out - trimming openHistory would leave a painted
+     * ChatScreen indexing messages that no longer exist. That belongs in
+     * {@link #openChatFailed}, which runs on the UI thread after the fact.
+     */
+    public void release(int level)
+    {
+        switch (level)
+        {
+            case 1:
+                // Largest single sheddable object in the client, and the one
+                // the user is least likely to be looking at right now.
+                cachedPhoto = null;
+                cachedPhotoId = 0;
+                break;
+            case 2:
+                ChatScreen open = chatScreen;
+                if (open != null) { open.clearThumbnails(); }
+                break;
+            case 3:
+                // clear() drops the failure markers too, so the next dialog
+                // list retries the avatars it had given up on.
+                avatarCache.clear();
+                break;
+            case 4:
+                // Last, and worth saying why: 49 KB on the one handset where it
+                // has been measured. It reloads in about 50 ms on the next
+                // paint, so it is cheap to drop and cheap to regret.
+                EmojiText.release();
+                break;
+            default:
+                break;
+        }
     }
 
     private ChatScreen createChatScreen(Peer peer)
@@ -1668,7 +1848,12 @@ public class TgMidlet extends MIDlet implements CommandListener
 
             public Object run() throws Exception
             {
-                return telegram.getHistory(peer, HISTORY_LIMIT);
+                // Here rather than at the inflate itself. Inflating happens on
+                // the MtClient reader thread, where a collect delays every
+                // pending RPC and can trip a read timeout; this is the same
+                // allocation one level up, on a thread that can afford to pause.
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -1716,9 +1901,9 @@ public class TgMidlet extends MIDlet implements CommandListener
     private void loadOlderHistory()
     {
         if (openPeer == null || openHistory.length == 0) { return; }
-        if (openHistory.length >= MAX_HISTORY)
+        if (openHistory.length >= MemoryBudget.maxHistory())
         {
-            showAlert("The in-memory history limit (" + MAX_HISTORY
+            showAlert("The in-memory history limit (" + MemoryBudget.maxHistory()
                     + ") has been reached.", AlertType.INFO, chatScreen);
             return;
         }
@@ -1730,7 +1915,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             public String name() { return "messages.getHistory/older"; }
             public Object run() throws Exception
             {
-                return telegram.getHistoryBefore(peer, offsetId, HISTORY_LIMIT);
+                return telegram.getHistoryBefore(peer, offsetId, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -1739,7 +1924,7 @@ public class TgMidlet extends MIDlet implements CommandListener
                 if (!samePeer(openPeer, peer)) { return; }
                 Message[] page = (Message[]) result;
                 int before = openHistory.length;
-                openHistory = mergeMessages(openHistory, page, MAX_HISTORY);
+                openHistory = mergeMessages(openHistory, page, MemoryBudget.maxHistory());
                 cacheHistory(peer, openHistory);
                 applyKnownReadState(openHistory, peer);
                 chatScreen.setMessages(openHistory);
@@ -1953,7 +2138,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             }
             insert++;
         }
-        int length = Math.min(MAX_HISTORY, openHistory.length + 1);
+        int length = Math.min(MemoryBudget.maxHistory(), openHistory.length + 1);
         Message[] merged = new Message[length];
         if (insert > 0)
         {
@@ -2155,13 +2340,13 @@ public class TgMidlet extends MIDlet implements CommandListener
                         UpdateSnapshot snapshot = new UpdateSnapshot();
                         snapshot.peer = target;
                         snapshot.dialogs = telegram.getDialogs(Math.min(
-                                MAX_DIALOGS, Math.max(DIALOG_LIMIT,
+                                MemoryBudget.maxDialogs(), Math.max(MemoryBudget.dialogPageSize(),
                                 dialogs.length)));
                         if (target != null)
                         {
                             snapshot.history = telegram.getHistory(target,
-                                    Math.min(MAX_HISTORY, Math.max(
-                                    HISTORY_LIMIT, openHistory.length)));
+                                    Math.min(MemoryBudget.maxHistory(), Math.max(
+                                    MemoryBudget.historyPageSize(), openHistory.length)));
                         }
                         return snapshot;
                     }
@@ -2815,7 +3000,7 @@ public class TgMidlet extends MIDlet implements CommandListener
                 result.peer = source;
                 result.messageId = forward.messageId;
                 result.messages = telegram.getHistoryAround(source,
-                        forward.messageId, HISTORY_LIMIT);
+                        forward.messageId, MemoryBudget.historyPageSize());
                 return result;
             }
         }, new Worker.Callback()
@@ -2993,6 +3178,24 @@ public class TgMidlet extends MIDlet implements CommandListener
                     }
                     int width = photoScreen.viewportWidth();
                     int height = photoScreen.viewportHeight();
+
+                    // Refuse before downloading, not after decoding. This is
+                    // the same size Telegram.openPhoto will select, so the
+                    // estimate is of the decode that is actually about to
+                    // happen. A shed runs first; if it still will not fit, the
+                    // message names both numbers rather than blaming the photo.
+                    tg.api.PhotoSizeRef chosen =
+                            message.media.photo.choose(width, height);
+                    long cost = MemoryBudget.photoDecodeCost(
+                            chosen.width, chosen.height, chosen.size);
+                    if (!MemoryPressure.reserve(cost))
+                    {
+                        throw new java.io.IOException("this photo needs about "
+                                + (cost / 1024) + " KB to decode and only "
+                                + (MemoryPressure.headroom() / 1024)
+                                + " KB is available");
+                    }
+
                     in = telegram.openPhoto(message.media.photo,
                             width, height, token);
                     Image decoded = JpegDecoder.decode(in, token);
@@ -3053,7 +3256,7 @@ public class TgMidlet extends MIDlet implements CommandListener
             public String name() { return "refresh expired photo reference"; }
             public Object run() throws Exception
             {
-                return telegram.getHistory(peer, HISTORY_LIMIT);
+                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -3400,10 +3603,19 @@ public class TgMidlet extends MIDlet implements CommandListener
         String[] ring = Diag.snapshot();
         String[] crash = crashLogLines();
 
+        String[] budget = MemoryBudget.lines();
+
         Runtime rt = Runtime.getRuntime();
-        String[] lines = new String[connection.length + ring.length + crash.length + 8];
+        String[] lines = new String[connection.length + ring.length + crash.length
+                                    + budget.length + 10];
         int at = 0;
         lines[at++] = "heapTotal=" + rt.totalMemory() + " heapFree=" + rt.freeMemory();
+        lines[at++] = "";
+        // Every other number in this report has to be read against the budget
+        // profile the client was actually running, not the one it shipped with.
+        lines[at++] = "-- memory budget --";
+        System.arraycopy(budget, 0, lines, at, budget.length);
+        at += budget.length;
         lines[at++] = "";
         lines[at++] = "-- connection --";
         System.arraycopy(connection, 0, lines, at, connection.length);
@@ -3433,9 +3645,16 @@ public class TgMidlet extends MIDlet implements CommandListener
     private String[] diagnosticLines()
     {
         String[] connection = connectionDiagnostics.lines();
-        String[] lines = new String[connection.length + 8];
+        String[] pressure = MemoryPressure.lines();
+        String[] lines = new String[connection.length + pressure.length + 10];
         System.arraycopy(connection, 0, lines, 0, connection.length);
         int at = connection.length;
+        lines[at++] = "";
+        // A client that sheds constantly has budgets that are wrong for this
+        // handset, and that is better read off a report than guessed at.
+        lines[at++] = "-- memory --";
+        System.arraycopy(pressure, 0, lines, at, pressure.length);
+        at += pressure.length;
         lines[at++] = "";
         lines[at++] = "-- updates --";
         lines[at++] = "state: " + telegram.updateSyncState();

@@ -10,6 +10,7 @@ import tg.io.FakeTlsTransport;
 import tg.io.HttpExecutor;
 import tg.io.HttpResponse;
 import tg.io.Transport;
+import tg.mem.MemoryBudget;
 import tg.mt.HttpLink;
 
 /** Packet-carrier tests for HTTP and FakeTLS. */
@@ -184,11 +185,15 @@ public final class TransportPhase1Test implements Test
         }
         catch (IOException expected) { }
 
+        // The packet ceiling is derived from the measured heap now, so shrink it
+        // rather than allocating a megabyte here to prove a megabyte is refused.
+        MemoryBudget.init(64 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
+        final int overLimit = MemoryBudget.packetBytes() + 1;
         HttpLink huge = new HttpLink(new HttpExecutor()
         {
             public HttpResponse post(String url, byte[] body, int max)
             {
-                return new HttpResponse(200, new byte[HttpLink.MAX_PACKET + 1]);
+                return new HttpResponse(200, new byte[overLimit]);
             }
         }, "http://x/api");
         huge.connect("x", 80, 1);
@@ -198,6 +203,57 @@ public final class TransportPhase1Test implements Test
             Assert.fail("oversized HTTP response accepted");
         }
         catch (IOException expected) { }
+        finally { MemoryBudget.reset(); }
+
+        httpQueueIsBoundedInBytes();
+    }
+
+    /**
+     * The response queue used to hold eight bodies of up to a megabyte each -
+     * eight megabytes on a five megabyte heap. The sender must now wait for the
+     * reader once the queued bytes reach the budget, and must never wait when
+     * the queue is empty, or a single oversized body deadlocks the link.
+     */
+    private void httpQueueIsBoundedInBytes() throws Exception
+    {
+        MemoryBudget.init(64 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
+        try
+        {
+            final int bodySize = MemoryBudget.httpQueueBytes();
+            final HttpLink link = new HttpLink(new HttpExecutor()
+            {
+                public HttpResponse post(String url, byte[] body, int max)
+                {
+                    return new HttpResponse(200, new byte[bodySize]);
+                }
+            }, "http://x/api");
+            link.connect("x", 80, 1);
+
+            byte[] request = new byte[64];
+            // First body fills the whole budget on an empty queue: accepted.
+            link.send(request, 0, request.length);
+
+            final boolean[] secondReturned = new boolean[1];
+            Thread sender = new Thread(new Runnable()
+            {
+                public void run()
+                {
+                    try { link.send(new byte[64], 0, 64); secondReturned[0] = true; }
+                    catch (Throwable ignored) { }
+                }
+            });
+            sender.start();
+            Thread.sleep(200);
+            Assert.isFalse("the sender waits once the queue is full",
+                    secondReturned[0]);
+
+            Assert.equal("first body delivered", bodySize, link.receive());
+            sender.join(5000);
+            Assert.isTrue("draining releases the sender", secondReturned[0]);
+            Assert.equal("second body delivered", bodySize, link.receive());
+            link.close();
+        }
+        finally { MemoryBudget.reset(); }
     }
 
     private void fakeTls() throws Exception

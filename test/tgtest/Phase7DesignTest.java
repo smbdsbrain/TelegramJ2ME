@@ -29,6 +29,7 @@ import tg.api.Dialog;
 import tg.api.Message;
 import tg.api.Peer;
 import tg.app.ScreenStack;
+import tg.mem.MemoryBudget;
 import tg.mt.AuthKey;
 import tg.mt.AuthKeyStore;
 import tg.ui.ChatScreen;
@@ -51,6 +52,7 @@ public final class Phase7DesignTest implements Test
         metricsAndRendering();
         dialogListBehaviour();
         avatarCache();
+        cachesAtTheirFloor();
         navigationStack();
     }
 
@@ -190,14 +192,14 @@ public final class Phase7DesignTest implements Test
         stack.resetRoot(root);
         Assert.isTrue("root state", stack.isRoot());
         for (int i = 0; i < 20; i++) { stack.push(new Form("s" + i)); }
-        Assert.equal("bounded depth", ScreenStack.CAPACITY, stack.depth());
+        Assert.equal("bounded depth", stack.capacity(), stack.depth());
         Assert.isTrue("root retained", stack.root() == root);
         Displayable before = stack.current();
         Assert.isTrue("nested current", before != root);
         stack.pop();
-        Assert.equal("pop depth", ScreenStack.CAPACITY - 1, stack.depth());
+        Assert.equal("pop depth", stack.capacity() - 1, stack.depth());
         stack.replace(new Form("replacement"));
-        Assert.equal("replace keeps depth", ScreenStack.CAPACITY - 1,
+        Assert.equal("replace keeps depth", stack.capacity() - 1,
                 stack.depth());
         while (!stack.isRoot()) { stack.pop(); }
         Assert.isTrue("pop reaches root", stack.current() == root);
@@ -218,7 +220,7 @@ public final class Phase7DesignTest implements Test
         cache.put(peer, image);
         Assert.isTrue("avatar cache hit", cache.get(peer) == image);
 
-        for (int i = 0; i < AvatarCache.MAX_ENTRIES + 1; i++)
+        for (int i = 0; i < cache.capacity() + 1; i++)
         {
             Peer item = new Peer(Peer.USER, 1000 + i);
             item.avatar = new AvatarRef();
@@ -227,6 +229,67 @@ public final class Phase7DesignTest implements Test
         }
         Assert.isTrue("decoded avatar cache remains bounded",
                 cache.get(peer) == null);
+    }
+
+    /**
+     * The floor is the only configuration a handset below about a megabyte will
+     * ever see, and it is reachable no other way: the desktop suite runs with
+     * the reference profile, and no measured device has ever been small enough
+     * to exercise it. Evicting correctly at two slots is a different code path
+     * from evicting correctly at sixteen.
+     */
+    private static void cachesAtTheirFloor()
+    {
+        MemoryBudget.init(64 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
+        try
+        {
+            Assert.equal("a tiny heap still gets two avatar slots", 2,
+                    new AvatarCache().capacity());
+            Assert.equal("a tiny heap still gets two thumbnail slots", 2,
+                    new ChatScreen(Theme.byId(Theme.LIGHT)).thumbnailCapacity());
+            Assert.equal("a tiny heap still gets four screens", 4,
+                    new ScreenStack().capacity());
+
+            // A cache built directly with a bad number must floor itself rather
+            // than trusting the caller.
+            Assert.equal("an avatar cache floors its own capacity", 2,
+                    new AvatarCache(0).capacity());
+            Assert.equal("a screen stack floors its own capacity", 4,
+                    new ScreenStack(1).capacity());
+
+            AvatarCache small = new AvatarCache(2);
+            J2SEMutableImage image = new J2SEMutableImage(4, 4);
+            Peer first = avatarPeer(1);
+            small.put(first, image);
+            Assert.isTrue("two-slot cache holds its entry",
+                    small.get(first) == image);
+            small.put(avatarPeer(2), image);
+            small.put(avatarPeer(3), image);
+            Assert.isTrue("two-slot cache evicts the oldest",
+                    small.get(first) == null);
+
+            ChatScreen narrow = new ChatScreen(Theme.byId(Theme.LIGHT), 2);
+            narrow.setThumbnail(11, image);
+            narrow.setThumbnail(12, image);
+            Assert.isTrue("two-slot thumbnails hold", narrow.hasThumbnail(11));
+            narrow.setThumbnail(13, image);
+            Assert.isFalse("two-slot thumbnails evict first in",
+                    narrow.hasThumbnail(11));
+            Assert.isTrue("two-slot thumbnails keep the newest",
+                    narrow.hasThumbnail(13));
+            narrow.clearThumbnails();
+            Assert.isFalse("clearThumbnails releases every slot",
+                    narrow.hasThumbnail(13));
+        }
+        finally { MemoryBudget.reset(); }
+    }
+
+    private static Peer avatarPeer(int id)
+    {
+        Peer peer = new Peer(Peer.USER, 7000 + id);
+        peer.avatar = new AvatarRef();
+        peer.avatar.photoId = 8000 + id;
+        return peer;
     }
 
     private static Dialog dialog(int id, String title, int unread)

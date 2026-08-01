@@ -10,6 +10,7 @@ import javax.microedition.lcdui.Displayable;
 import org.microemu.device.DeviceFactory;
 
 import tg.app.TgMidlet;
+import tg.mem.MemoryBudget;
 
 /**
  * End-to-end launch of a built MIDlet inside MicroEmulator's MIDP runtime.
@@ -70,6 +71,8 @@ public final class EmulatorSmokeTest
 
         DeviceFactory.setDevice(new TestDevice("smoke", 240, 320));
 
+        budgetsAreRuntimeValues();
+
         Harness midlet = new Harness();
         midlet.start();
 
@@ -86,8 +89,89 @@ public final class EmulatorSmokeTest
 
         Assert.isTrue("back at the start screen", display.getCurrent() == start);
 
+        awaitHeapMeasurement();
+
         midlet.stop();
         Assert.isTrue("no MIDlet thread outlives destroyApp", quiesced());
+    }
+
+    /**
+     * Prove, against the artifact that actually ships, that the memory budgets
+     * are still runtime values.
+     *
+     * Every one of them used to be a {@code static final int} with a constant
+     * initialiser, which javac inlines at each use site. The desktop suite
+     * cannot catch a regression here: it runs against build/desktop/classes,
+     * which ProGuard never touches, and config/proguard-debug.pro turns
+     * optimisation off for every non-release build. This is the only place the
+     * obfuscated, optimised jar gets asked the question.
+     *
+     * The budget is reset afterwards, so the MIDlet starts on the same profile
+     * it would have on a device with no stored measurement.
+     *
+     * Only MemoryBudget is named here. Its consumers are obfuscated away in
+     * tg-min and keeping them would trade jar size for a check the desktop
+     * suite already makes - tgtest.Phase7DesignTest asserts that the caches
+     * size themselves from these numbers.
+     */
+    private static void budgetsAreRuntimeValues()
+    {
+        try
+        {
+            MemoryBudget.init(1024 * 1024, 512 * 1024, MemoryBudget.SOURCE_MEASURED);
+            Assert.isTrue("a measured ceiling reaches maxHistory in the shipped jar",
+                    MemoryBudget.maxHistory() < 120);
+            Assert.isTrue("a measured ceiling reaches packetBytes in the shipped jar",
+                    MemoryBudget.packetBytes() < 1024 * 1024);
+            Assert.isTrue("a measured ceiling reaches photoPixels in the shipped jar",
+                    MemoryBudget.photoPixels() < 307200);
+        }
+        finally { MemoryBudget.reset(); }
+        Assert.equal("resetting restores the shipped history budget", 120,
+                MemoryBudget.maxHistory());
+        System.out.println("  budgets respond to a measurement");
+    }
+
+    /**
+     * Wait for the MIDlet's own first-launch heap probe and report what it
+     * found.
+     *
+     * This is the end-to-end half of the budget story: the class-level check
+     * above proves the values can move, this proves the packaged client
+     * actually measures the VM it was given and derives from the answer. Run it
+     * under {@code -JavaArgs -Xmx24m} and the printed ceiling follows.
+     *
+     * Not asserted as an exact figure - it is whatever the host JVM offers -
+     * but a source of "default" here would mean the probe never ran, never
+     * returned, or was refused, and that is worth failing on.
+     */
+    private static void awaitHeapMeasurement() throws Exception
+    {
+        // Generous on purpose. The probe fills the heap and then collects it
+        // several times, and this runs on CI hosts that are slower and busier
+        // than a developer's machine - a tight bound here is a flaky check
+        // that says "the client never measured its heap" when the truth is
+        // "the box was loaded".
+        long t0 = System.currentTimeMillis();
+        long deadline = t0 + 60000;
+        while (MemoryBudget.source() == MemoryBudget.SOURCE_DEFAULT
+                && System.currentTimeMillis() < deadline)
+        {
+            Thread.sleep(100);
+        }
+        long waited = System.currentTimeMillis() - t0;
+
+        String[] lines = MemoryBudget.lines();
+        for (int i = 0; i < lines.length; i++)
+        {
+            System.out.println("  " + lines[i]);
+        }
+        Assert.isTrue("the client measured its own heap on first launch"
+                        + " (waited " + waited + " ms)",
+                MemoryBudget.source() != MemoryBudget.SOURCE_DEFAULT);
+        Assert.isTrue("the measured ceiling is a real number",
+                MemoryBudget.ceiling() > 0);
+        System.out.println("  measured in " + waited + " ms");
     }
 
     /**

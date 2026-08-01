@@ -18,6 +18,7 @@ import javax.imageio.stream.ImageOutputStream;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
+import tg.mem.MemoryBudget;
 import tg.ui.JpegDecoder;
 import tg.ui.StrippedJpeg;
 
@@ -36,6 +37,7 @@ public final class JpegDecoderTest implements Test
         restartMarkers();
         strippedJpeg();
         hostileDimensions();
+        budgetBoundsTheDecode();
         truncation();
         unsupportedArithmetic();
         unsupportedLosslessAndCmyk();
@@ -168,6 +170,48 @@ public final class JpegDecoderTest implements Test
                 markerOrMinusOne(jpeg, 0xd0) >= 0
                 || markerOrMinusOne(jpeg, 0xd1) >= 0);
         compare("restart", jpeg);
+    }
+
+    /**
+     * The pixel cap used to be a literal in three separate classes. It is now
+     * one measured number, and the point of measuring it is that a smaller heap
+     * actually refuses an image a larger heap accepts - before the framebuffer
+     * is allocated, not after the OutOfMemoryError.
+     */
+    private static void budgetBoundsTheDecode() throws Exception
+    {
+        // 256x256 = 65 536 pixels: inside the reference budget of 307 200 and
+        // outside the 16 384 floor a tiny heap gets. The entropy data no longer
+        // matches these dimensions, so at the reference budget this fails for
+        // some other reason - what matters is which reason.
+        byte[] jpeg = encode(pattern(BufferedImage.TYPE_INT_RGB), 2, 2, false);
+        int sof = marker(jpeg, 0xc0);
+        jpeg[sof + 5] = (byte) 0x01;      // height 256
+        jpeg[sof + 6] = (byte) 0x00;
+        jpeg[sof + 7] = (byte) 0x01;      // width 256
+        jpeg[sof + 8] = (byte) 0x00;
+
+        Assert.isTrue("the reference budget admits 256x256",
+                MemoryBudget.photoPixels() >= 65536);
+        try
+        {
+            JpegDecoder.decodePixels(new ByteArrayInputStream(jpeg), null);
+        }
+        catch (IOException other)
+        {
+            Assert.isTrue("the reference budget does not refuse 256x256 on size",
+                    other.getMessage().indexOf("pixel limit") < 0);
+        }
+
+        MemoryBudget.init(64 * 1024, 0, MemoryBudget.SOURCE_MEASURED);
+        try
+        {
+            Assert.isTrue("a 64 KB heap refuses 256x256",
+                    MemoryBudget.photoPixels() < 65536);
+            expectFailure("a measured floor budget refuses the decode",
+                    jpeg, "pixel limit");
+        }
+        finally { MemoryBudget.reset(); }
     }
 
     private static void hostileDimensions() throws Exception

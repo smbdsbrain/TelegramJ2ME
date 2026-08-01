@@ -3,23 +3,54 @@ package tg.ui;
 import javax.microedition.lcdui.Image;
 
 import tg.api.Peer;
+import tg.mem.MemoryBudget;
 
-/** Small LRU of decoded dialog avatars; about 150 KiB at 48x48. */
+/**
+ * Small LRU of decoded dialog avatars; about 150 KiB at 48x48 and sixteen
+ * entries, which is what a heap of four megabytes or more allows.
+ *
+ * The capacity is per instance rather than a class constant because the arrays
+ * are allocated with it: a static value would have to be read before the heap
+ * measurement exists, and could never be resized afterwards.
+ */
 public final class AvatarCache
 {
-    public static final int MAX_ENTRIES = 16;
     private static final int EMPTY = 0;
     private static final int LOADING = 1;
     private static final int READY = 2;
     private static final int FAILED = 3;
 
-    private final int[] kinds = new int[MAX_ENTRIES];
-    private final long[] peerIds = new long[MAX_ENTRIES];
-    private final long[] photoIds = new long[MAX_ENTRIES];
-    private final int[] states = new int[MAX_ENTRIES];
-    private final int[] ages = new int[MAX_ENTRIES];
-    private final Image[] images = new Image[MAX_ENTRIES];
+    private final int capacity;
+    private final int[] kinds;
+    private final long[] peerIds;
+    private final long[] photoIds;
+    private final int[] states;
+    private final int[] ages;
+    private final Image[] images;
     private int tick;
+
+    public AvatarCache()
+    {
+        this(MemoryBudget.avatarCacheEntries());
+    }
+
+    /**
+     * @param capacity entries to hold; floored at two, because a single slot
+     *                 evicts on every scroll step and caches nothing
+     */
+    public AvatarCache(int capacity)
+    {
+        if (capacity < 2) { capacity = 2; }
+        this.capacity = capacity;
+        kinds = new int[capacity];
+        peerIds = new long[capacity];
+        photoIds = new long[capacity];
+        states = new int[capacity];
+        ages = new int[capacity];
+        images = new Image[capacity];
+    }
+
+    public int capacity() { return capacity; }
 
     public synchronized Image get(Peer peer)
     {
@@ -59,7 +90,7 @@ public final class AvatarCache
 
     public synchronized void clearFailures()
     {
-        for (int i = 0; i < MAX_ENTRIES; i++)
+        for (int i = 0; i < capacity; i++)
         {
             if (states[i] == FAILED) { clear(i); }
         }
@@ -67,7 +98,7 @@ public final class AvatarCache
 
     public synchronized void clear()
     {
-        for (int i = 0; i < MAX_ENTRIES; i++) { clear(i); }
+        for (int i = 0; i < capacity; i++) { clear(i); }
         tick = 0;
     }
 
@@ -83,7 +114,7 @@ public final class AvatarCache
     private int slot()
     {
         int oldest = 0;
-        for (int i = 0; i < MAX_ENTRIES; i++)
+        for (int i = 0; i < capacity; i++)
         {
             if (states[i] == EMPTY) { return i; }
             if (ages[i] < ages[oldest]) { oldest = i; }
@@ -95,7 +126,7 @@ public final class AvatarCache
     private int find(Peer peer)
     {
         if (!hasAvatar(peer)) { return -1; }
-        for (int i = 0; i < MAX_ENTRIES; i++)
+        for (int i = 0; i < capacity; i++)
         {
             if (states[i] != EMPTY && kinds[i] == peer.kind
                     && peerIds[i] == peer.id

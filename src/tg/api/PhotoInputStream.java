@@ -3,6 +3,7 @@ package tg.api;
 import java.io.IOException;
 import java.io.InputStream;
 
+import tg.mem.MemoryBudget;
 import tg.mt.MtClient;
 import tg.tl.TlObj;
 import tg.tl.TlParser;
@@ -111,9 +112,10 @@ public final class PhotoInputStream extends InputStream
     {
         checkCancelled();
         if (source == null) { eof = true; chunk = new byte[0]; return; }
-        if (offset >= PhotoRef.MAX_COMPRESSED_BYTES)
+        if (offset >= MemoryBudget.photoCompressedBytes())
         {
-            throw new IOException("photo exceeds compressed memory policy");
+            throw new IOException("photo exceeds the "
+                    + MemoryBudget.photoCompressedBytes() + " byte download limit");
         }
         byte[] query = avatar == null
                 ? Requests.getPhotoFile(photo, size, offset, CHUNK)
@@ -137,7 +139,7 @@ public final class PhotoInputStream extends InputStream
         {
             throw new IOException("oversized upload.getFile chunk " + bytes.length);
         }
-        if (offset + bytes.length > PhotoRef.MAX_COMPRESSED_BYTES
+        if (offset + bytes.length > MemoryBudget.photoCompressedBytes()
                 || (size != null && size.size > 0
                     && offset + bytes.length > size.size))
         {

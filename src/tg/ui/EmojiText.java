@@ -184,6 +184,23 @@ public final class EmojiText
         }
     }
 
+    /**
+     * Drop the decoded sprite sheet so it can be collected, and allow it to be
+     * loaded again on the next paint.
+     *
+     * Both fields have to be reset. {@code loadAttempted} latches true so that
+     * a handset with no PNG decoder is not asked twice, which means nulling the
+     * sheet alone would disable emoji permanently rather than temporarily.
+     *
+     * Worth 49 472 bytes on the one handset where it has been measured - the
+     * smallest thing on the pressure ladder, and last for that reason.
+     */
+    public static synchronized void release()
+    {
+        sheet = null;
+        loadAttempted = false;
+    }
+
     private static synchronized Image sprites()
     {
         if (loadAttempted) { return sheet; }

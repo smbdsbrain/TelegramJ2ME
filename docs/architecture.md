@@ -88,11 +88,66 @@ and compares against that.
 
 ## Memory discipline
 
-Every subsystem is written as if the heap were small, because for a long time
-nobody knew. It is measured now — about 5 MB on both handsets tested — but the
-budgets below are still compile-time constants chosen against the first of them,
-which means they are sized by luck rather than by measurement. Fixing that is
-[issue #3](https://github.com/smbdsbrain/TelegramJ2ME/issues/3).
+Every subsystem is written as if the heap were small. It is measured now — about
+5 MB on both handsets tested — and `tg.mem.MemoryBudget` is the one place a size
+literal is allowed to live. Everything else asks it.
+
+The client measures its own heap once, on first launch, with `HeapProbe` on a
+background thread while nothing else is running; Connect is gated on that
+finishing, because the probe deliberately allocates until the VM refuses and
+whichever thread asks for memory at the wrong moment is the one that receives the
+`OutOfMemoryError`. The result is rounded to a 64 KB grain and kept in `tgkeys`,
+so later launches read a number instead of repeating the measurement. An attempt
+counter is written before the probe and cleared after, so a handset where the
+probe does not come back stops being asked after two tries.
+
+Budgets are the reference profile — the values validated on those two handsets —
+scaled down by `ceiling / 4 MiB`, clamped to a floor, and never scaled up. At or
+above 4 MB the client behaves exactly as it did before any of this existed, which
+is the only configuration hardware has ever confirmed; a handset that
+over-reports its heap cannot talk the client into a buffer the VM will not give
+it. Budgets that bound a single allocation are additionally capped at half the
+largest contiguous block the probe obtained, because total free heap and largest
+block are different numbers and fragmentation is how an honest ceiling still
+refuses a big buffer.
+
+Three kinds of number, treated differently on purpose:
+
+* **Rejection thresholds** on network-controlled lengths — the packet caps, the
+  inflate ceiling, the photo byte cap. Lowering one frees nothing: `Abridged`
+  allocates the *declared* length and the cap only decides whether to throw
+  first. Their floors come from what the protocol actually sends, because a limit
+  under the largest legitimate packet is a disconnect, not a saving.
+* **Retention budgets** — caches and list caps. These genuinely return memory,
+  and scale proportionally.
+* **Transient allocation caps** — the photo pixel budget. The budget sets a
+  ceiling; whether a particular decode fits *right now* is a separate question,
+  answered by `MemoryPressure`.
+
+`MemoryPressure` is what acts before the wall rather than at it. `freeMemory()`
+alone is the wrong number on CLDC — the heap grows on demand, so what is free
+understates what is available — and the measured ceiling is what turns
+`totalMemory()` and `freeMemory()` into `headroom = ceiling - used`. Before
+opening a chat, before decoding a photo and before the request that produces the
+largest response the client inflates, it asks for room; if there is not enough it
+sheds, in order of what each is measured to be worth: the cached full-screen
+photo (~300 KB), the conversation's decoded thumbnails (~190 KB), the avatar
+cache (~150 KB), the emoji sheet (49 KB). That is about 690 KB, roughly 13% of a
+5 MB heap — enough to get a chat open, not enough to rescue a 2 MB decode, which
+is why a photo that cannot fit is refused with both numbers instead of attempted.
+
+This is the only code in the client that calls `System.gc()`, and only after
+headroom has already said the work will not fit. Never on the `MtClient` reader
+thread, where a collect delays every pending RPC; the protection there is the
+smaller budget, not a shed.
+
+Below about 1.5 MB the protocol floors alone are half the heap. The start screen
+says so and lets the user try anyway — a handset that under-reports would
+otherwise be locked out of an app that might have run on it.
+
+Record-store limits (`RmsAvatarCache`, `RmsConversationCache`, the outbox) are
+deliberately *not* derived from any of this. They bound persistent storage, which
+is measured separately and is a different resource.
 
 * `Diag` holds a fixed 100-line ring; lines are truncated, hex dumps capped.
 * `Sha1`/`Sha256` allocate their block and schedule buffers once per instance;

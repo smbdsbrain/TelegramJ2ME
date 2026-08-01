@@ -5,12 +5,17 @@ import java.io.IOException;
 import tg.crypto.Rng;
 import tg.diag.Diag;
 import tg.io.Transport;
+import tg.mem.MemoryBudget;
 
-/** Intermediate and padded-intermediate MTProto packet framing. */
+/**
+ * Intermediate and padded-intermediate MTProto packet framing.
+ *
+ * The packet ceiling comes from {@link tg.mem.MemoryBudget#packetBytes}, the
+ * same number {@link Abridged} uses - both are the transport under one MTProto
+ * session and a length either would refuse must be refused by both.
+ */
 public final class Intermediate implements PacketFrame
 {
-    public static final int MAX_PACKET = Abridged.MAX_PACKET;
-
     /**
      * Padded intermediate documents 0-15 bytes of padding, and that is what we
      * emit. Received frames are held to a far looser bound: a live MTProxy was
@@ -62,7 +67,7 @@ public final class Intermediate implements PacketFrame
 
     public void send(byte[] payload, int off, int len) throws IOException
     {
-        if ((len & 3) != 0 || len <= 0 || len > MAX_PACKET)
+        if ((len & 3) != 0 || len <= 0 || len > MemoryBudget.packetBytes())
         {
             throw new IOException("invalid intermediate payload length " + len);
         }
@@ -109,7 +114,7 @@ public final class Intermediate implements PacketFrame
         {
             throw new IOException("unexpected intermediate quick ack");
         }
-        if (len <= 0 || len > MAX_PACKET + (padded ? MAX_PADDING : 0))
+        if (len <= 0 || len > MemoryBudget.packetBytes() + (padded ? MAX_PADDING : 0))
         {
             throw new IOException("declared intermediate length " + len + " is invalid");
         }
