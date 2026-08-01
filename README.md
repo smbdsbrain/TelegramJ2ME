@@ -171,10 +171,12 @@ Photos are the one exception: those download and open.
 
 **Bounded by measurement** — the client measures its own heap on first launch and
 sizes every buffer, cache and page limit from the answer. On the ~5 MB handsets
-tested that is 200 chats, a sliding window of 120 messages per open conversation
-and a 1 MB packet ceiling. Conversations scroll as far back as they go: pages
-load as the top of the loaded history approaches, blocks that fall outside the
-window are released, and what stays wrapped is three screens either side of the
+tested that is a sliding window of 120 chats, another of 120 messages per open
+conversation, and a 1 MB packet ceiling. Both lists scroll as far as they go:
+pages load as the edge of what is held approaches, rows and blocks that fall
+outside the window are released, and what a window costs does not depend on how
+far anybody scrolled — a chat list of 1690 holds the same 120 rows as one of 60,
+and what stays wrapped in a conversation is three screens either side of the
 viewport rather than everything ever read. Driven under a constrained heap it stays usable down to about **2 MB of
 free heap**, and turning off avatars and inline thumbnails buys roughly another
 480 KB — at ~1.7 MB free that is the difference between a photo that opens and

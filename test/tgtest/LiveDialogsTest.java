@@ -45,7 +45,7 @@ public final class LiveDialogsTest
             System.out.println();
 
             long t0 = System.currentTimeMillis();
-            Dialog[] dialogs = tg.getDialogs(limit);
+            Dialog[] dialogs = tg.getDialogs(limit).dialogs;
             long elapsed = System.currentTimeMillis() - t0;
 
             System.out.println("=== " + dialogs.length + " dialog(s) in " + elapsed + " ms ===");

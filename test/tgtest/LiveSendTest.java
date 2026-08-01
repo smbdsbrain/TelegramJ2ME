@@ -43,7 +43,7 @@ public final class LiveSendTest
             Peer target;
             if (dialogIndex >= 0)
             {
-                Dialog[] dialogs = tg.getDialogs(40);
+                Dialog[] dialogs = tg.getDialogs(40).dialogs;
                 if (dialogIndex >= dialogs.length)
                 {
                     System.out.println("only " + dialogs.length + " dialog(s) available");

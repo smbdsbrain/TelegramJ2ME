@@ -15,6 +15,7 @@ import javax.microedition.midlet.MIDlet;
 import java.io.ByteArrayInputStream;
 
 import tg.api.Dialog;
+import tg.api.DialogPage;
 import tg.api.AppSettings;
 import tg.api.ForwardInfo;
 import tg.api.Message;
@@ -245,6 +246,53 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * report a message the user scrolled past ten minutes ago.
      */
     private int newestKnownId;
+
+    /** Dialogs the server says exist, or 0 before it has said. */
+    private int dialogTotal;
+
+    /**
+     * Rows of the chat list above {@link #dialogs}.
+     *
+     * {@code dialogs} is a window onto the list, not the list: it holds a
+     * contiguous run around what is being read, and this is where that run
+     * starts. Only the header and the paging arithmetic use it.
+     */
+    private int dialogsAbove;
+
+    /**
+     * The dialog immediately above the window, or null when the window starts
+     * at the top of the list.
+     *
+     * This is the offset a request for the run above the window is made from,
+     * and it is the whole reason dropping rows off the top is safe rather than
+     * a wall in disguise.
+     */
+    private Dialog dialogAbove;
+
+    /**
+     * Previous values of {@link #dialogAbove}, oldest first.
+     *
+     * One entry per run dropped off the top, each the offset that brings that
+     * run back. {@code messages.getDialogs} pages downwards only, so without
+     * these a row scrolled past could never be reached again except by
+     * restarting from the top of the list.
+     *
+     * Bounded because it is unbounded otherwise: it grows by one entry per
+     * page scrolled, and an account nobody has met yet must not be able to
+     * turn a scroll into a heap of offsets. At the cap this is a few tens of
+     * kilobytes, reached only after thousands of rows.
+     */
+    private Dialog[] dialogAboveStack = new Dialog[0];
+    private int dialogAboveDepth;
+
+    /** Runs the restore stack forgot; scrolling cannot pass this point. */
+    private boolean dialogTopLost;
+
+    /** A page of dialogs is on the wire; a second request would only be dropped. */
+    private boolean dialogPageInFlight;
+
+    /** The list has reached its end, by the server's word or by ours. */
+    private boolean dialogsExhausted;
 
     /** An older page is on the wire; a second request would only be dropped. */
     private boolean historyPageInFlight;
@@ -620,7 +668,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdMoreDialogs)
         {
-            loadMoreDialogs();
+            loadMoreDialogs(true);
         }
         else if (c == cmdFilter)
         {
@@ -1228,6 +1276,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         try { draftStore.clear(); }
         catch (Throwable t) { Diag.error("draft clear failed", t); }
         dialogs = new Dialog[0];
+        dialogTotal = 0;
+        resetDialogWindow();
         dialogList = null;
         avatarGeneration++;
         avatarCache.clear();
@@ -1243,10 +1293,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     // ------------------------------------------------------------ dialogs
 
+    /**
+     * The list from the top: sign-in, reconnect, or Refresh pressed.
+     *
+     * A reset rather than a page, so it assigns and clears the latch. A reader
+     * who had scrolled a long way loses that position, which is the honest
+     * meaning of Refresh; the scroll path below never comes through here.
+     */
     private void loadDialogs()
     {
         final Peer selectedPeer = selectedDialogPeer();
         avatarCache.clearFailures();
+        resetDialogWindow();
         boolean fallback = dialogs.length > 0;
         if (!fallback)
         {
@@ -1287,7 +1345,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                dialogs = (Dialog[]) result;
+                DialogPage page = (DialogPage) result;
+                // A first page is row zero, whatever the window was showing
+                // before: this is the path Refresh and reconnect take.
+                resetDialogWindow();
+                dialogs = page.dialogs;
+                dialogTotal = page.total;
+                dialogsExhausted = page.complete;
                 cacheDialogs(dialogs);
                 showDialogList(selectedPeer);
             }
@@ -1345,6 +1409,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 public void onDialogViewportChanged()
                 {
                     loadVisibleAvatars();
+                    maybeLoadDialogs();
                 }
             });
         }
@@ -1354,10 +1419,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogList.setStatus(connectionLabel, updateLabel);
         dialogList.setEmptyText(dialogFilter.length() == 0
                 ? "(no chats)" : "(no matches)");
-        dialogList.setDialogs(visibleDialogs, dialogs.length, selectedPeer);
+        // The server's total when it gave one, so the header reads "912/1690"
+        // rather than counting the list against itself and always agreeing.
+        // A filter hides rows without moving them, so the window start it is
+        // given is only meaningful unfiltered.
+        dialogList.setDialogs(visibleDialogs,
+                dialogFilter.length() == 0 ? dialogsAbove : 0,
+                Math.max(dialogTotal, dialogsAbove + dialogs.length),
+                selectedPeer);
         if (navigation.root() != dialogList) { resetRoot(dialogList); }
         else { restoreScreen(dialogList); }
         loadVisibleAvatars();
+        maybeLoadDialogs();
     }
 
     /** Load only avatars that can currently become visible. */
@@ -1546,7 +1619,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             Dialog[] cached = conversationCache.loadDialogs(
                     accountId, Dc.isTest());
             if (cached == null || cached.length == 0) { return false; }
+            resetDialogWindow();
             dialogs = cached;
+            // The cache is the whole list as far as this session can tell, and
+            // there is no connection to ask for more over. Latched so scrolling
+            // to the bottom of it does not fire a request per keypress at a
+            // server we cannot reach; loadDialogs clears it on reconnect.
+            dialogsExhausted = true;
             showDialogList();
             dialogList.setStatus("cached/offline", "stopped");
             return true;
@@ -1615,12 +1694,279 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         showDialogList();
     }
 
-    private void loadMoreDialogs()
+    /** Restore points held before the oldest is forgotten. */
+    private static final int MAX_DIALOG_RESTORE_POINTS = 128;
+
+    /** Rows of a page the window does not already hold. */
+    private int countNewDialogs(Dialog[] page)
     {
-        if (dialogs.length >= MemoryBudget.maxDialogs())
+        if (page == null) { return 0; }
+        int fresh = 0;
+        for (int i = 0; i < page.length; i++)
         {
-            showAlert("The in-memory dialog limit (" + MemoryBudget.maxDialogs()
-                    + ") has been reached.", AlertType.INFO, dialogList);
+            if (page[i] != null && page[i].peer != null
+                    && findDialog(page[i].peer) < 0)
+            {
+                fresh++;
+            }
+        }
+        return fresh;
+    }
+
+    /**
+     * Reset the window to the start of the list.
+     *
+     * Everything about where the window sits goes at once: a fresh first page
+     * is row zero by definition, and a restore stack describing some other
+     * list is worse than no stack at all.
+     */
+    private void resetDialogWindow()
+    {
+        dialogsAbove = 0;
+        dialogAbove = null;
+        dialogAboveStack = new Dialog[0];
+        dialogAboveDepth = 0;
+        dialogTopLost = false;
+        dialogsExhausted = false;
+    }
+
+    /**
+     * Extend the window downwards, dropping as much off the top as it gains.
+     *
+     * The bounded merge cannot be used here: it truncates the tail, which is
+     * the page that was just fetched. Merging unbounded and then dropping from
+     * the front keeps what the reader is moving towards and gives up what they
+     * have already gone past - and records, for each run given up, the one
+     * dialog that brings it back.
+     */
+    private void appendDialogPage(Dialog[] page)
+    {
+        Dialog[] merged = PageMerge.dialogs(dialogs, page, Integer.MAX_VALUE);
+        int cap = MemoryBudget.maxDialogs();
+        int drop = merged.length - cap;
+        if (drop > 0)
+        {
+            pushDialogRestorePoint(merged[drop - 1]);
+            dialogsAbove += drop;
+            merged = PageMerge.keepLast(merged, cap);
+        }
+        dialogs = merged;
+    }
+
+    /**
+     * Extend the window upwards with a restored run, giving up the bottom.
+     *
+     * No restore point is recorded for what falls off the bottom: paging back
+     * down needs no stack, because the last retained row is itself the offset
+     * the next request is made from.
+     */
+    private void prependDialogPage(Dialog[] page, Dialog restoredFrom)
+    {
+        int before = dialogs.length;
+        Dialog[] merged = PageMerge.dialogs(page, dialogs, Integer.MAX_VALUE);
+        int gained = merged.length - before;
+        dialogs = PageMerge.keepFirst(merged, MemoryBudget.maxDialogs());
+        dialogsAbove -= gained;
+        if (dialogsAbove < 0) { dialogsAbove = 0; }
+        dialogAbove = restoredFrom;
+        // Room reappeared below, so whatever was decided about the end of the
+        // list was decided about a window that no longer exists.
+        if (dialogs.length < merged.length) { dialogsExhausted = false; }
+    }
+
+    private void pushDialogRestorePoint(Dialog lastDropped)
+    {
+        if (dialogAboveDepth >= dialogAboveStack.length)
+        {
+            int grown = dialogAboveStack.length == 0
+                    ? 8 : dialogAboveStack.length * 2;
+            if (grown > MAX_DIALOG_RESTORE_POINTS)
+            {
+                grown = MAX_DIALOG_RESTORE_POINTS;
+            }
+            if (grown > dialogAboveStack.length)
+            {
+                Dialog[] bigger = new Dialog[grown];
+                System.arraycopy(dialogAboveStack, 0, bigger, 0,
+                        dialogAboveDepth);
+                dialogAboveStack = bigger;
+            }
+            else
+            {
+                // Full. Forget the oldest, which is the way back to the top of
+                // the list - so say so, and stop offering a scroll that would
+                // land somewhere arbitrary. Refresh still returns to the top.
+                System.arraycopy(dialogAboveStack, 1, dialogAboveStack, 0,
+                        dialogAboveDepth - 1);
+                dialogAboveDepth--;
+                dialogTopLost = true;
+            }
+        }
+        dialogAboveStack[dialogAboveDepth++] = dialogAbove;
+        dialogAbove = lastDropped;
+    }
+
+    /** Whether there is a run above the window that can still be fetched. */
+    private boolean canRestoreDialogs()
+    {
+        return dialogAbove != null && dialogAboveDepth > 0;
+    }
+
+    /**
+     * Fetch another page when the reader is getting close to the bottom of what
+     * is loaded.
+     *
+     * The chat-list twin of {@link #maybeLoadHistory}, and the same shape: an
+     * in-flight guard, an exhausted latch, and a {@code worker.submit} that
+     * returning false clears the flag so the next viewport event retries.
+     *
+     * One thing is different from the transcript: the margin is measured
+     * against the <i>unfiltered</i> window, because a filter narrows what is
+     * displayed and the bottom of three matches is not the bottom of anything.
+     *
+     * The other looks the same and is not. Both directions are fetched, but
+     * {@code messages.getDialogs} pages downwards only, so going back up is not
+     * a mirror of going down - it is a request made from the dialog that was
+     * sitting above the window when the run was given up. That is what
+     * {@link #dialogAboveStack} is for, and it is what makes dropping rows off
+     * the top something other than a wall at the other end.
+     *
+     * Called from the dialog list's viewport callback, so it runs on the lcdui
+     * thread and must not block: everything past the guard is a worker submit.
+     */
+    private void maybeLoadDialogs()
+    {
+        if (dialogList == null || dialogs.length == 0 || dialogPageInFlight
+                || navigation.current() != dialogList)
+        {
+            return;
+        }
+        // Deliberately not gated on avatarWorker.isBusy(). It is busy for most
+        // of any scroll - that is what it is for - so waiting on it would
+        // starve the fetch exactly when the reader reaches an edge. The two are
+        // separate workers over one multiplexed connection; the contention that
+        // does exist is `worker` being busy, and submit() returning false
+        // already handles that.
+        int margin = MemoryBudget.dialogPrefetchMargin();
+
+        // Upwards first. A reader coming back up is retracing a path they have
+        // already taken and expects it to still be there; running out of window
+        // in that direction is the more surprising of the two.
+        if (canRestoreDialogs()
+                && PageMerge.above(dialogs, dialogList.firstVisiblePeer()) < margin)
+        {
+            restoreDialogsAbove();
+            return;
+        }
+        if (!dialogsExhausted
+                && PageMerge.below(dialogs, dialogList.lastVisiblePeer()) < margin)
+        {
+            loadMoreDialogs(false);
+        }
+    }
+
+    /**
+     * Bring back the run of chats immediately above the window.
+     *
+     * Exactly one request, however far down the list the reader has gone,
+     * because the offset it is made from was recorded when the run was
+     * dropped rather than recomputed by paging from the top.
+     */
+    private void restoreDialogsAbove()
+    {
+        if (dialogList == null || dialogPageInFlight || !canRestoreDialogs())
+        {
+            return;
+        }
+        final Dialog from = dialogAboveStack[dialogAboveDepth - 1];
+        final Peer selected = selectedDialogPeer();
+        dialogPageInFlight = true;
+        dialogList.setStatus("loading...", updateLabel);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getDialogs/back"; }
+            public Object run() throws Exception
+            {
+                // A null offset is the top of the list, which is where the
+                // first run ever dropped came from.
+                return from == null
+                        ? telegram.getDialogs(MemoryBudget.dialogPageSize())
+                        : telegram.getDialogsAfter(from,
+                                MemoryBudget.dialogPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(final Object result)
+            {
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        dialogPageInFlight = false;
+                        if (!canRestoreDialogs()) { return; }
+                        DialogPage page = (DialogPage) result;
+                        if (page.size() == 0)
+                        {
+                            // The run is gone from the server's list. Drop the
+                            // restore point rather than asking for it again on
+                            // every keypress.
+                            dialogAboveDepth--;
+                            dialogAbove = from;
+                            return;
+                        }
+                        dialogAboveDepth--;
+                        if (page.total > dialogTotal) { dialogTotal = page.total; }
+                        prependDialogPage(page.dialogs, from);
+                        showDialogList(selected);
+                    }
+                });
+            }
+            public void onFailure(final Throwable error)
+            {
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        dialogPageInFlight = false;
+                        if (dialogList != null)
+                        {
+                            dialogList.setStatus(connectionLabel, updateLabel);
+                        }
+                        Diag.warn("dialog page back failed: "
+                                + shortMessage(error));
+                    }
+                });
+            }
+        });
+        if (!submitted)
+        {
+            dialogPageInFlight = false;
+            dialogList.setStatus(connectionLabel, updateLabel);
+        }
+    }
+
+    /**
+     * One page of further chats.
+     *
+     * @param manual pressed by the user rather than provoked by scrolling. Only
+     *               changes how loudly it reports itself: an automatic fetch
+     *               that finds nothing has simply reached the end of the list,
+     *               which is not news.
+     */
+    private void loadMoreDialogs(final boolean manual)
+    {
+        if (dialogList == null) { return; }
+        if (dialogPageInFlight)
+        {
+            if (manual) { dialogList.setStatus("loading...", updateLabel); }
+            return;
+        }
+        if (dialogsExhausted)
+        {
+            if (manual)
+            {
+                showAlert("No more chats.", AlertType.INFO, dialogList);
+            }
             return;
         }
         Dialog offset = null;
@@ -1632,41 +1978,104 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 break;
             }
         }
+        if (offset == null)
+        {
+            // Nothing but pinned chats: getDialogs is paged by the last
+            // unpinned row's (date, id, peer) and there is no such row to
+            // offset from. Asking again would re-fetch the same first page for
+            // ever.
+            dialogsExhausted = true;
+            if (manual) { showAlert("No more chats.", AlertType.INFO, dialogList); }
+            return;
+        }
         final Dialog pageOffset = offset;
         final Peer selected = selectedDialogPeer();
+        dialogPageInFlight = true;
         dialogList.setStatus("loading...", updateLabel);
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs/more"; }
             public Object run() throws Exception
             {
-                return telegram.getDialogsAfter(pageOffset, MemoryBudget.dialogPageSize());
+                return telegram.getDialogsAfter(pageOffset,
+                        MemoryBudget.dialogPageSize());
             }
         }, new Worker.Callback()
         {
-            public void onSuccess(Object result)
+            public void onSuccess(final Object result)
             {
-                Dialog[] page = (Dialog[]) result;
-                int before = dialogs.length;
-                dialogs = mergeDialogs(dialogs, page, MemoryBudget.maxDialogs());
-                cacheDialogs(dialogs);
-                showDialogList(selected);
-                if (dialogs.length == before)
+                // callSerially for the reason the older-history page needs it:
+                // `dialogs` is also read-modify-written by the update queue on
+                // the UI thread, and two threads doing that to the same array
+                // reference is how a promoted chat disappears.
+                display.callSerially(new Runnable()
                 {
-                    showAlert("No more chats.", AlertType.INFO, dialogList);
-                }
+                    public void run()
+                    {
+                        dialogPageInFlight = false;
+                        DialogPage page = (DialogPage) result;
+                        // Whether the page carried anything the window did not
+                        // already hold. Deliberately not "did the window grow":
+                        // the window is a fixed size, so once it is full its
+                        // length stops moving while its contents keep sliding
+                        // down - and reading that as "no more chats" would stop
+                        // the list dead at exactly the point this change
+                        // exists to get past.
+                        int fresh = countNewDialogs(page.dialogs);
+                        if (page.total > dialogTotal) { dialogTotal = page.total; }
+                        appendDialogPage(page.dialogs);
+                        cacheDialogs(dialogs);
+                        showDialogList(selected);
+                        // Latched rather than retried: without this the
+                        // viewport sits against the end of a fully loaded list
+                        // and asks for the same empty page on every keypress.
+                        if (fresh == 0 || page.complete
+                                || (dialogTotal > 0
+                                    && dialogsAbove + dialogs.length >= dialogTotal))
+                        {
+                            dialogsExhausted = true;
+                            if (manual && fresh == 0)
+                            {
+                                showAlert("No more chats.", AlertType.INFO,
+                                        dialogList);
+                            }
+                        }
+                    }
+                });
             }
-            public void onFailure(Throwable error)
+            public void onFailure(final Throwable error)
             {
-                showAlertThen("Could not load more chats", error, dialogList);
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        dialogPageInFlight = false;
+                        if (dialogList != null)
+                        {
+                            dialogList.setStatus(connectionLabel, updateLabel);
+                        }
+                        if (manual)
+                        {
+                            showAlertThen("Could not load more chats", error,
+                                    dialogList);
+                        }
+                        else
+                        {
+                            Diag.warn("dialog page failed: "
+                                    + shortMessage(error));
+                        }
+                    }
+                });
             }
         });
-    }
-
-    private static Dialog[] mergeDialogs(Dialog[] first, Dialog[] second,
-                                         int limit)
-    {
-        return PageMerge.dialogs(first, second, limit);
+        if (!submitted)
+        {
+            // The worker drops rather than queues. Clearing the flag is the
+            // whole retry: the next viewport event asks again, and by then
+            // whatever was busy has usually finished.
+            dialogPageInFlight = false;
+            dialogList.setStatus(connectionLabel, updateLabel);
+        }
     }
 
     private void openSavedMessages()
@@ -2459,7 +2868,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             message.read = true;
         }
         dialog.topMessageId = message.id;
-        dialog.lastMessage = message.summaryText();
+        dialog.lastMessage = Dialog.clipPreview(message.summaryText());
         dialog.lastMessageOutgoing = message.outgoing;
         dialog.date = message.date;
 
@@ -2574,6 +2983,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void promoteDialog(int index)
     {
         if (index < 0 || index >= dialogs.length || dialogs[index].pinned) { return; }
+        // Only when the window is showing the top of the list. Below that,
+        // "promote" would mean moving the row to the head of a window that
+        // starts at row four hundred - which is not where the chat has gone.
+        // It has gone to row zero, outside what is held, so the honest thing
+        // is to leave it where it is with its content updated and let the
+        // ordering go stale until the reader comes back up or refreshes.
+        if (dialogsAbove > 0) { return; }
         int firstUnpinned = 0;
         while (firstUnpinned < dialogs.length && dialogs[firstUnpinned].pinned)
         {
@@ -2646,7 +3062,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private static final class UpdateSnapshot
     {
-        Dialog[] dialogs;
+        DialogPage dialogs;
         Peer peer;
         Message[] history;
     }
@@ -2687,9 +3103,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     {
                         UpdateSnapshot snapshot = new UpdateSnapshot();
                         snapshot.peer = target;
-                        snapshot.dialogs = telegram.getDialogs(Math.min(
-                                MemoryBudget.maxDialogs(), Math.max(MemoryBudget.dialogPageSize(),
-                                dialogs.length)));
+                        // One page, not the whole retained list. Asking for
+                        // dialogs.length was always a request the server would
+                        // not honour - it caps a getDialogs page well below the
+                        // number a reader can now scroll to - and the reply was
+                        // then assigned, so every update burst truncated the
+                        // list back to one page under whoever was reading it.
+                        snapshot.dialogs = telegram.getDialogs(
+                                MemoryBudget.dialogPageSize());
                         if (target != null)
                         {
                             snapshot.history = telegram.getHistory(target,
@@ -2713,7 +3134,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                 {
                                     selectedPeer = selectedDialogPeer();
                                 }
-                                dialogs = snapshot.dialogs;
+                                // Merged, not assigned - the same correction
+                                // the history half of this snapshot already
+                                // carries. This is the newest page; assigning
+                                // it would throw away every further page a
+                                // reader had scrolled to and drop them at the
+                                // top again.
+                                if (snapshot.dialogs.total > dialogTotal)
+                                {
+                                    dialogTotal = snapshot.dialogs.total;
+                                }
+                                if (dialogsAbove > 0)
+                                {
+                                    // The window is not at the top, so the
+                                    // newest page is not adjacent to it and
+                                    // must not be spliced on. Content only.
+                                    dialogs = PageMerge.restate(
+                                            snapshot.dialogs.dialogs, dialogs);
+                                }
+                                else
+                                {
+                                    dialogs = PageMerge.refresh(
+                                            snapshot.dialogs.dialogs, dialogs,
+                                            MemoryBudget.maxDialogs());
+                                }
                                 cacheDialogs(dialogs);
                                 if (snapshot.history != null
                                         && samePeer(openPeer, snapshot.peer))

@@ -31,6 +31,9 @@ public class DialogListScreen extends Canvas
     private Theme theme;
     private Dialog[] dialogs = new Dialog[0];
     private int totalCount;
+
+    /** Position of {@code dialogs[0]} in the list as a whole. */
+    private int windowStart;
     private int selected;
     private int top;
     private String connection = "";
@@ -69,14 +72,49 @@ public class DialogListScreen extends Canvas
 
     public void avatarsChanged() { repaint(); }
 
-    public void setDialogs(Dialog[] values, int allCount, Peer selectedPeer)
+    /**
+     * Install a list, anchored on a peer rather than on a row index.
+     *
+     * The chat list reorders under the reader: a message arriving in a chat
+     * promotes it above every unpinned one, so the row a reader is looking at
+     * moves whenever anyone writes to them. Following the selected <i>peer</i>
+     * is what makes that survivable, and it is why this takes a Peer at all.
+     *
+     * Following the peer is not enough on its own. {@code ensureVisible} only
+     * guarantees the selected row is somewhere on screen, so a promotion from
+     * below shifts every row by one and the reader's place slides a line at a
+     * time. Holding the anchored row at the same offset within the viewport
+     * makes the rows above it change while it stays put, which is what actually
+     * looks like nothing moved.
+     *
+     * @param firstRow position of {@code values[0]} in the list as a whole.
+     *                 Non-zero when the reader has scrolled far enough that
+     *                 rows above have been dropped from the window
+     * @param allCount dialogs the list has in total, retained or not; the
+     *                 header counts against it
+     * @param selectedPeer row to keep, or null when this is a reset rather than
+     *                     a reorder - a filter change, a fresh sign-in
+     */
+    public void setDialogs(Dialog[] values, int firstRow, int allCount,
+                           Peer selectedPeer)
     {
+        windowStart = firstRow < 0 ? 0 : firstRow;
+        int anchorOffset = -1;
+        if (selectedPeer != null && dialogs.length > 0)
+        {
+            anchorOffset = selected - top;
+        }
         dialogs = values == null ? new Dialog[0] : values;
         totalCount = Math.max(dialogs.length, allCount);
         int found = find(selectedPeer);
         if (found >= 0) { selected = found; }
         else if (selected >= dialogs.length) { selected = dialogs.length - 1; }
         if (selected < 0) { selected = 0; }
+        if (found >= 0 && anchorOffset >= 0)
+        {
+            top = selected - anchorOffset;
+            if (top < 0) { top = 0; }
+        }
         ensureVisible();
         repaint();
         viewportChanged();
@@ -103,6 +141,44 @@ public class DialogListScreen extends Canvas
     public int selectedIndex() { return selected; }
     public int topIndex() { return top; }
     public int visibleRows() { updateMetrics(); return metrics.visibleRows(); }
+
+    /** Rows held. Exposed for the driver, like {@code ChatScreen.messageCount}. */
+    public int dialogCount() { return dialogs.length; }
+
+    /** What the header counts against: the server's total, when it gave one. */
+    public int totalCount() { return totalCount; }
+
+    /**
+     * Peer on the bottom row, or null when nothing is shown.
+     *
+     * The one thing a fetch-on-scroll decision needs from this screen. Kept
+     * here rather than derived from {@link #visiblePeers} by the caller because
+     * a trailing null - a row whose dialog went missing mid-update - would
+     * otherwise read as an empty list and stop paging.
+     */
+    public Peer lastVisiblePeer()
+    {
+        Peer[] shown = visiblePeers();
+        for (int i = shown.length - 1; i >= 0; i--)
+        {
+            if (shown[i] != null) { return shown[i]; }
+        }
+        return null;
+    }
+
+    /** Peer on the top row - the other edge a fetch is decided from. */
+    public Peer firstVisiblePeer()
+    {
+        Peer[] shown = visiblePeers();
+        for (int i = 0; i < shown.length; i++)
+        {
+            if (shown[i] != null) { return shown[i]; }
+        }
+        return null;
+    }
+
+    /** Position of the window in the list as a whole. */
+    public int windowStart() { return windowStart; }
 
     public int avatarSize()
     {
@@ -138,7 +214,12 @@ public class DialogListScreen extends Canvas
     {
         updateMetrics();
         UiChrome.background(g, theme, metrics);
-        String count = dialogs.length + "/" + totalCount;
+        // Where the reader is, not how much is held. The retained count used
+        // to be both, back when the list was everything that had been loaded;
+        // with a window it would report the window size and sit at "500/1690"
+        // whether the reader was at row 500 or row 1500.
+        String count = dialogs.length == 0 ? ("0/" + totalCount)
+                : ((windowStart + selected + 1) + "/" + totalCount);
         String state = connection;
         if (updates.length() > 0) { state += "/" + updates; }
         UiChrome.header(g, theme, metrics, titleFont,
@@ -290,6 +371,13 @@ public class DialogListScreen extends Canvas
 
     private void ensureVisible()
     {
+        // Metrics first. This used to run against whatever the last paint left
+        // behind, which self-corrected on the next one and so never showed -
+        // until the scroll position started deciding when to fetch a page.
+        // Clamping `top` against a row count from before the screen had a size
+        // puts the bottom row somewhere it is not, and the fetch margin is
+        // measured from the bottom row. The update is arithmetic on two ints.
+        updateMetrics();
         int visible = metrics.visibleRows();
         if (selected < top) { top = selected; }
         if (selected >= top + visible) { top = selected - visible + 1; }

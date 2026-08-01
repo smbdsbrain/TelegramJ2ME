@@ -119,10 +119,62 @@ public final class MemoryBudget
     private static final int REF_HTTP_QUEUE      = 256 * 1024;
     private static final int MIN_HTTP_QUEUE      = 64 * 1024;
 
-    private static final int REF_DIALOGS         = 200;
-    private static final int MIN_DIALOGS         = 20;
+    /*
+     * This is a window, not a limit on the chat list. It says how many rows are
+     * held around the reader; it says nothing about how far they can scroll.
+     *
+     * It was 200 and it was a limit, which is to say a wall: the list was a
+     * manual pager that stopped there and said so out loud. Raising it would
+     * only have moved the wall - an account of 1690 chats was driven through
+     * this code, and no share of a 4 MiB heap holds 1690 rows. So the list
+     * fetches on scroll and drops what the reader has gone past, recording for
+     * each dropped run the one dialog that brings it back. Memory then stops
+     * depending on how far anybody scrolled, which is the only version of this
+     * that works on a handset.
+     *
+     * Both halves of the number are measured. Dialog.PREVIEW_MAX gave a row a
+     * fixed size for the first time - until then it held the whole of the last
+     * message, up to 4096 characters, behind a row that draws one clipped line,
+     * so no count of rows bounded anything. And a row then weighs 431 bytes:
+     * the Dialog, the Peer it holds alive, a title and a preview at the cap,
+     * weighed over two thousand of them in MicroEmulator's MIDP runtime.
+     * Reported on every probe run as dialogBytes, so a change to either class
+     * shows up as a changed number rather than as a stale comment.
+     *
+     * The size is three pages, and that is the whole derivation. A window has
+     * to hold what is on screen, a prefetch margin at each end, and enough
+     * slack that a page arriving does not immediately provoke the next one:
+     * seven rows plus two twenties plus a page of room, rounded to the unit
+     * fetches actually come in. It leaves about eleven screens of free movement
+     * between requests.
+     *
+     * Deliberately not sized as a share of the heap. That was the first attempt
+     * and it produced 500 - about 5%, which sounds modest and is seventy-one
+     * screens of buffer against a margin that reasks after three. Coverage
+     * stopped being this number's job the moment the list could be scrolled
+     * past it, so the only question left is how much slack scrolling needs, and
+     * the answer is a few pages rather than a few hundred rows.
+     *
+     * 120 rows is 52 KB, and being small matters here more than anywhere else
+     * in this file: it is the one retained structure the client cannot give
+     * back. MemoryRelief may be called from a worker thread, and trimming a
+     * list a live screen has already laid out is exactly what its contract
+     * forbids - so whatever this holds is held for the session, on a handset
+     * where avatars start failing around 1.5 MB free.
+     *
+     * What a smaller window costs is round trips on the way back up, and only
+     * there: going down, requests track pages scrolled whatever the window is.
+     * Measured over 90 screens down and 110 back up on a 1690-chat account,
+     * moving from 500 to 120 left the descent at 12 requests and took the
+     * return from 5 to 15. Ten round trips against 163 KB that cannot be
+     * reclaimed is not a close trade on a 2 MB handset.
+     */
+    private static final int REF_DIALOGS         = 120;
+    private static final int MIN_DIALOGS         = 40;
     private static final int REF_DIALOG_PAGE     = 40;
     private static final int MIN_DIALOG_PAGE     = 10;
+    private static final int REF_DIALOG_MARGIN   = 20;
+    private static final int MIN_DIALOG_MARGIN   = 5;
     private static final int REF_HISTORY         = 120;
     private static final int MIN_HISTORY         = 20;
     private static final int REF_HISTORY_PAGE    = 30;
@@ -269,11 +321,24 @@ public final class MemoryBudget
 
     // ----------------------------------------------------- retention budgets
 
-    /** Dialogs held in memory. */
+    /** Dialogs held around the reader. Not a limit on how far the list goes. */
     public static int maxDialogs() { return scale(REF_DIALOGS, MIN_DIALOGS); }
 
     /** Dialogs fetched per request. */
     public static int dialogPageSize() { return scale(REF_DIALOG_PAGE, MIN_DIALOG_PAGE); }
+
+    /**
+     * Dialogs below the viewport before the next page is requested.
+     *
+     * The chat-list twin of {@link #historyPrefetchMargin}, and a latency
+     * budget for the same reason: on GPRS a {@code messages.getDialogs} round
+     * trip is seconds, and the page has to arrive before the reader does rather
+     * than while they watch. Half a page at the reference.
+     */
+    public static int dialogPrefetchMargin()
+    {
+        return scale(REF_DIALOG_MARGIN, MIN_DIALOG_MARGIN);
+    }
 
     /** Messages held in memory for the open conversation. */
     public static int maxHistory() { return scale(REF_HISTORY, MIN_HISTORY); }
@@ -381,7 +446,8 @@ public final class MemoryBudget
                  + " thumbs = " + thumbnailCacheEntries()
                  + " screens = " + screenStackDepth();
         out[8] = "chatWindow = " + layoutWindowScreens() + " screens"
-                 + " prefetch = " + historyPrefetchMargin() + " messages";
+                 + " prefetch = " + historyPrefetchMargin() + " messages"
+                 + "/" + dialogPrefetchMargin() + " dialogs";
         return out;
     }
 

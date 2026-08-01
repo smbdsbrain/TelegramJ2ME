@@ -10,11 +10,16 @@ import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.Item;
 
+import tg.api.Dialog;
 import tg.api.Peer;
+import tg.api.Telegram;
+import tg.crypto.Rng;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
 import tg.mem.MemoryBudget;
 import tg.mem.MemoryPressure;
+import tg.mt.ConnectionConfig;
+import tg.mt.Dc;
 import tg.plat.RmsAuthKeyStore;
 import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
@@ -40,6 +45,8 @@ import tg.ui.DialogListScreen;
  *   photos &lt;title&gt;       open a picture-heavy chat and decode its photos
  *   minheap &lt;title&gt; &lt;on|off&gt;    one verdict line: what works at this heap
  *   scroll &lt;title&gt; [pages]      read a chat backwards, then forwards again
+ *   chats  [pages]              scroll the chat list down and back up again
+ *   hashprobe [limit]           does messages.getDialogs honour a hash?
  * </pre>
  *
  * The code file exists because the sign-in code arrives on the user's phone and
@@ -101,6 +108,14 @@ public final class EmulatorDriver
                 exit = scroll(app, arg(args, 1), arg(args, 2), arg(args, 3))
                         ? 0 : 1;
             }
+            else if ("chats".equals(scenario))
+            {
+                exit = chats(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
+            }
+            else if ("hashprobe".equals(scenario))
+            {
+                exit = hashProbe(arg(args, 1));
+            }
             else
             {
                 System.out.println("unknown scenario " + scenario);
@@ -138,6 +153,64 @@ public final class EmulatorDriver
         }
         String[] lines = MemoryBudget.lines();
         for (int i = 0; i < lines.length; i++) { System.out.println("  " + lines[i]); }
+        System.out.println("  dialogBytes = " + measureDialogBytes(2000)
+                + " (measured, " + Dialog.PREVIEW_MAX + "-char preview)");
+    }
+
+    /**
+     * What one retained chat-list row actually costs.
+     *
+     * Every other number in {@link MemoryBudget} is a fraction of a measured
+     * heap. The dialog cap was not derived that way and could not have been:
+     * until the preview was clipped at ingest a Dialog held the whole of the
+     * last message, so it had no fixed size and no count of them bounded
+     * anything.
+     *
+     * Weighed here rather than inferred from the running client, because the
+     * client's list also drags in decoded avatars, peer-cache entries and the
+     * garbage of parsing a TL response - all separately budgeted, all larger
+     * than the thing being measured. What is built is one row's worth: the
+     * Dialog, the Peer it holds alive, a title and a preview at the cap.
+     *
+     * Strings are built rather than written as literals, or the constant pool
+     * would hand the same one back every time and the answer would be a
+     * reference.
+     */
+    private static long measureDialogBytes(int count)
+    {
+        Dialog[] held = new Dialog[count];
+        long before = usedHeap();
+        for (int i = 0; i < count; i++)
+        {
+            Dialog d = new Dialog();
+            d.peer = new Peer(Peer.USER, 100000L + i);
+            d.peer.title = fill("name ", 24, i);
+            d.peer.accessHash = i;
+            d.topMessageId = 1000 + i;
+            d.unreadCount = i & 7;
+            d.date = 1767225600 - i;
+            d.lastMessage = fill("preview ", Dialog.PREVIEW_MAX, i);
+            held[i] = d;
+        }
+        long after = usedHeap();
+        // Touched after the second measurement so nothing can be collected
+        // early, and so no optimiser can decide the array was never needed.
+        int alive = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (held[i] != null && held[i].peer != null) { alive++; }
+        }
+        return alive == count ? (after - before) / count : -1;
+    }
+
+    /** A distinct String of exactly {@code length} characters. */
+    private static String fill(String prefix, int length, int seed)
+    {
+        StringBuffer sb = new StringBuffer(length);
+        sb.append(prefix).append(seed);
+        while (sb.length() < length) { sb.append((char) ('a' + (seed + sb.length()) % 26)); }
+        sb.setLength(length);
+        return sb.toString();
     }
 
     /** Set the connection mode in Settings and save it, the way a user would. */
@@ -763,6 +836,294 @@ public final class EmulatorDriver
                     + " newest message - evicted blocks are not coming back");
         }
         return alive && bounded && returned && count("OutOfMemory") == 0;
+    }
+
+    /**
+     * Scroll the chat list to its end and back, and watch what it costs.
+     *
+     * This is the scenario issue #6 exists for. Everything it reports is
+     * invisible from the screen:
+     *
+     *   - the reader's absolute position, which has to keep climbing past the
+     *     retention cap. Stopping at the cap is the wall this change exists to
+     *     remove, and it would look exactly like success from the retained
+     *     count alone;
+     *   - the retained count, which has to stop growing. It is a window: if it
+     *     tracks the position, memory still depends on how far somebody
+     *     scrolled and a long chat list is an OutOfMemoryError with extra
+     *     steps;
+     *   - requests against pages scrolled. One per few pages is the margin
+     *     doing its job; one per page is a margin too wide to be a prefetch,
+     *     and more than one per page is a fetch storm;
+     *   - whether the way back up works. Runs dropped off the top have to come
+     *     back, one request each, and the reader has to arrive at row zero -
+     *     messages.getDialogs pages downwards only, so this is the half that
+     *     could quietly not work.
+     *
+     * Read-only by construction: it never opens a chat, so nothing is marked
+     * read and nothing is sent.
+     */
+    private static boolean chats(EmulatorHarness app, String pagesArg,
+                                 String pictures) throws Exception
+    {
+        int pages = 40;
+        try { if (pagesArg != null) { pages = Integer.parseInt(pagesArg.trim()); } }
+        catch (Throwable ignored) { }
+
+        if (!setPictures(app, !"off".equalsIgnoreCase(pictures))) { return false; }
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run the login scenario first");
+            return false;
+        }
+        Thread.sleep(8000);          // the first page, and its avatars
+        dialogList = app.current();
+
+        DialogListScreen list = dialogScreen(app);
+        if (list == null)
+        {
+            System.out.println("not the dialog list: "
+                    + EmulatorHarness.describe(app.current()));
+            return false;
+        }
+
+        int openCount = list.dialogCount();
+        int cap = MemoryBudget.maxDialogs();
+        long usedAtOpen = usedHeap();
+        System.out.println("opened: retained=" + openCount
+                + " total=" + list.totalCount()
+                + " cap=" + cap
+                + " rows=" + list.visibleRows()
+                + " used=" + (usedAtOpen / 1024) + "KB");
+
+        int maxRetained = openCount;
+        int deepest = 0;
+        int anchorSlips = 0;
+        int reached = 0;
+        for (int i = 0; i < pages; i++)
+        {
+            DialogListScreen live = dialogScreen(app);
+            if (live == null)
+            {
+                System.out.println("lost the dialog list on page down " + i);
+                break;
+            }
+            list = live;
+            app.key(Canvas.KEY_NUM6);            // one screen down
+            // Long enough for a page to land on a real connection. Too short
+            // and this measures the driver rather than the client.
+            String before = peerKey(list.selectedPeer());
+            Thread.sleep(1200);
+            // Nothing was pressed during that sleep, so a selection that moved
+            // is the list reordering under the reader - a message arriving in
+            // some chat and promoting it. Anchoring on the peer is what is
+            // supposed to make that a no-op for whoever is reading.
+            if (!before.equals(peerKey(list.selectedPeer()))) { anchorSlips++; }
+            if (list.dialogCount() > maxRetained) { maxRetained = list.dialogCount(); }
+            int at = list.windowStart() + list.selectedIndex();
+            if (at > deepest) { deepest = at; }
+            reached = i + 1;
+            if ((i + 1) % 10 == 0)
+            {
+                System.out.println("  down " + (i + 1)
+                        + ": at=" + at + "/" + list.totalCount()
+                        + " window=" + list.windowStart()
+                        + "+" + list.dialogCount()
+                        + " fetches=" + count("messages.getDialogs/more started")
+                        + " back=" + count("messages.getDialogs/back started")
+                        + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB");
+            }
+        }
+
+        int downFetches = count("messages.getDialogs/more started");
+        long heapDelta = usedHeap() - usedAtOpen;
+        System.out.println("turning round at row " + deepest + " after "
+                + reached + " pages down");
+
+        // Back up, further than we came down. This is the half that could
+        // quietly not work: everything above the window was dropped, and
+        // messages.getDialogs cannot ask for it directly.
+        int upPages = reached + 20;
+        for (int i = 0; i < upPages; i++)
+        {
+            DialogListScreen live = dialogScreen(app);
+            if (live == null) { break; }
+            list = live;
+            app.key(Canvas.KEY_NUM4);
+            Thread.sleep(1200);
+            if (list.dialogCount() > maxRetained) { maxRetained = list.dialogCount(); }
+            if ((i + 1) % 10 == 0)
+            {
+                System.out.println("  up " + (i + 1)
+                        + ": at=" + (list.windowStart() + list.selectedIndex())
+                        + " window=" + list.windowStart()
+                        + "+" + list.dialogCount()
+                        + " back=" + count("messages.getDialogs/back started"));
+            }
+        }
+
+        boolean alive = dialogScreen(app) != null;
+        int landedAt = alive ? list.windowStart() + list.selectedIndex() : -1;
+        boolean returnedToTop = landedAt == 0;
+        int backFetches = count("messages.getDialogs/back started");
+
+        System.out.println("VERDICT"
+                + " pages=" + reached
+                + " openRetained=" + openCount
+                + " maxRetained=" + maxRetained
+                + " cap=" + cap
+                + " total=" + list.totalCount()
+                + " deepest=" + deepest
+                + " landedAt=" + landedAt
+                + " fetches=" + downFetches
+                + " backFetches=" + backFetches
+                // Raw, and deliberately not divided by anything. Everything
+                // the run allocated is in here - avatars, peer-cache entries,
+                // the garbage of parsing a TL response, and on an unbounded
+                // host JVM whatever the collector had not got round to. All of
+                // it is budgeted elsewhere; none of it is what a row costs.
+                // dialogBytes on the probe line is the row itself, weighed.
+                + " heapDelta=" + (heapDelta / 1024) + "KB"
+                + " anchorSlips=" + anchorSlips
+                + " returnedToTop=" + returnedToTop
+                + " busy=" + count("worker busy")
+                + " pageFailed=" + count("dialog page failed")
+                + " backFailed=" + count("dialog page back failed")
+                + " sheds=" + MemoryPressure.shedEvents()
+                + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB"
+                + " oom=" + count("OutOfMemory")
+                + " alive=" + alive);
+
+        // Each of these is a way of getting it wrong that would still look
+        // like it worked from one of the other numbers.
+        boolean scrolled = deepest > openCount;
+        boolean bounded = maxRetained <= cap;
+        boolean pastTheCap = list.totalCount() <= cap || deepest >= cap;
+        boolean stormFree = downFetches <= reached;
+        boolean cameBack = returnedToTop || deepest < openCount;
+
+        if (!scrolled)
+        {
+            System.out.println("FAIL: never got past the first page ("
+                    + openCount + ") - nothing is being fetched on scroll");
+        }
+        if (!bounded)
+        {
+            System.out.println("FAIL: retained " + maxRetained + " rows against"
+                    + " a window of " + cap + " - memory still depends on how"
+                    + " far somebody scrolled");
+        }
+        if (!pastTheCap)
+        {
+            System.out.println("FAIL: stopped at row " + deepest + " with a cap"
+                    + " of " + cap + " and " + list.totalCount() + " chats -"
+                    + " the wall moved rather than went");
+        }
+        if (!stormFree)
+        {
+            System.out.println("FAIL: " + downFetches + " requests for "
+                    + reached + " pages - the margin is provoking a fetch"
+                    + " per keypress");
+        }
+        if (!cameBack)
+        {
+            System.out.println("FAIL: paging up ended at row " + landedAt
+                    + " rather than 0 - runs dropped off the top are not"
+                    + " coming back");
+        }
+        if (!alive) { System.out.println("FAIL: the dialog list did not survive"); }
+        return alive && scrolled && bounded && pastTheCap && stormFree
+                && cameBack && count("OutOfMemory") == 0;
+    }
+
+    /**
+     * Ask the server whether it honours a {@code messages.getDialogs} hash.
+     *
+     * Here rather than in the live harness because the only signed-in
+     * production session on this machine is the emulator's record store, and
+     * {@code RmsAuthKeyStore} needs the MIDlet bridge that
+     * {@code EmulatorHarness.install} has already put in place.
+     *
+     * Deliberately does not start the client. It opens its own connection on
+     * the same auth key - which MTProto allows, and which is what keeps the
+     * measurement clear of avatar traffic and update polling - and it only ever
+     * lists dialogs.
+     *
+     * @return a process exit code: 0 a vector was found, 3 a clean negative,
+     *         2 nothing could be concluded
+     */
+    private static int hashProbe(String limitArg) throws Exception
+    {
+        int limit = 30;
+        try { if (limitArg != null) { limit = Integer.parseInt(limitArg.trim()); } }
+        catch (Throwable ignored) { }
+
+        SeTransport transport = new SeTransport();
+        transport.setReadTimeoutMs(60000);
+        Telegram tg = new Telegram(transport, new Rng(), new RmsAuthKeyStore());
+        // FixedLinkFactory is direct-only; the stored mode is whatever the
+        // profile last connected with, which on a build carrying a compiled-in
+        // MTProxy is MTProxy. Set it back after the config has been loaded.
+        tg.connectionConfig().mode = ConnectionConfig.DIRECT;
+        try
+        {
+            tg.connect();
+            System.out.println("connected to dc" + tg.dcId()
+                    + " (" + (Dc.isTest() ? "test" : "production") + ")");
+            if (tg.checkAuthorization() == null)
+            {
+                System.out.println("no session in this profile; run the login"
+                        + " scenario first");
+                return 2;
+            }
+            int winner = LiveDialogHashTest.probe(tg, transport, limit);
+            System.out.println("bytes rx/tx : " + transport.bytesRead()
+                    + " / " + transport.bytesWritten());
+            if (winner >= 0) { return 0; }
+            return winner == LiveDialogHashTest.NONE ? 3 : 2;
+        }
+        finally
+        {
+            try { tg.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    /** The live dialog list, or null if something else is showing. */
+    private static DialogListScreen dialogScreen(EmulatorHarness app)
+            throws Exception
+    {
+        Displayable now = app.current();
+        return now instanceof DialogListScreen ? (DialogListScreen) now : null;
+    }
+
+    /**
+     * Live heap in use, after a collect.
+     *
+     * The one place in this driver that forces a collection. Bytes per dialog
+     * is being measured, and uncollected garbage from avatar decodes is larger
+     * than the thing being weighed.
+     */
+    private static long usedHeap()
+    {
+        Runtime rt = Runtime.getRuntime();
+        for (int i = 0; i < 3; i++)
+        {
+            rt.gc();
+            try { Thread.sleep(120); } catch (InterruptedException ignored) { }
+        }
+        return rt.totalMemory() - rt.freeMemory();
+    }
+
+    /**
+     * A peer as an opaque key.
+     *
+     * Only ever compared with itself. Deliberately not the title: these lines
+     * are printed, and a chat list is somebody's address book.
+     */
+    private static String peerKey(Peer peer)
+    {
+        return peer == null ? "-" : (peer.kind + ":" + peer.id);
     }
 
     /** The live chat screen, or null if something else is showing. */

@@ -134,7 +134,7 @@ public final class Phase7DesignTest implements Test
                         photo.viewportHeight() > 0);
 
                 ExposedDialogs list = new ExposedDialogs(theme);
-                list.setDialogs(new Dialog[] { dialog(1, "One", 2) }, 1,
+                list.setDialogs(new Dialog[] { dialog(1, "One", 2) }, 0, 1,
                         null);
                 int[] pixels = render(list, width, height);
                 Assert.equal("header palette", theme.accent,
@@ -163,7 +163,7 @@ public final class Phase7DesignTest implements Test
                 activated[0] = peer.id;
             }
         });
-        list.setDialogs(values, values.length, values[7].peer);
+        list.setDialogs(values, 0, values.length, values[7].peer);
         Assert.equal("logical selection", 7, list.selectedIndex());
         Assert.isTrue("selection visible",
                 list.topIndex() <= list.selectedIndex());
@@ -174,7 +174,7 @@ public final class Phase7DesignTest implements Test
         reordered[0] = values[7];
         System.arraycopy(values, 0, reordered, 1, 7);
         System.arraycopy(values, 8, reordered, 8, values.length - 8);
-        list.setDialogs(reordered, reordered.length, values[7].peer);
+        list.setDialogs(reordered, 0, reordered.length, values[7].peer);
         Assert.equal("selection survives reorder", 0, list.selectedIndex());
 
         int[] pixels = render(list, 320, 240);
