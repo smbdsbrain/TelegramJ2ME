@@ -65,13 +65,42 @@ public final class ConnectionConfig
     private void applyBuiltInProxy()
     {
         if (!DevProxy.CONFIGURED) { return; }
+        seedProxy(DevProxy.LINK);
+    }
+
+    /**
+     * Seed host, port and secret from a tg://proxy link and put that route at
+     * the head of the Auto chain.
+     *
+     * {@code mode} deliberately stays AUTO. Setting it to MTPROXY made
+     * {@link #attempts()} return a single route, so a build carrying a proxy
+     * could not reach Telegram at all on a network where the proxy was down and
+     * direct would have worked - every first launch of such a build, and every
+     * fresh emulator profile.
+     *
+     * Seeding {@code lastSuccessful} instead keeps the reason that flip existed.
+     * The proxy is still tried first, so a network that needs it does not pay
+     * two direct timeouts before reaching it; direct, obfuscated and HTTP simply
+     * remain behind it. Whichever route completes the preflight is then
+     * persisted by the connect loop, so the order corrects itself after one
+     * launch either way.
+     *
+     * Only when nothing better is known: a stored {@code lastSuccessful} is a
+     * route that actually carried a help.getConfig on this handset, which beats
+     * a guess made at build time.
+     */
+    public void seedProxy(String link)
+    {
         try
         {
-            ProxySecret.ParsedLink parsed = ProxySecret.parseLink(DevProxy.LINK);
+            ProxySecret.ParsedLink parsed = ProxySecret.parseLink(link);
             proxyHost = parsed.host;
             proxyPort = parsed.port;
             proxySecret = parsed.secret.encode();
-            if (mode == AUTO) { mode = MTPROXY; }
+            if (mode == AUTO && (lastSuccessful < DIRECT || lastSuccessful > HTTP))
+            {
+                lastSuccessful = MTPROXY;
+            }
         }
         catch (Throwable t)
         {
