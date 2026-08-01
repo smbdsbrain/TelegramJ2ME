@@ -62,6 +62,87 @@ public final class PageMerge
         return out;
     }
 
+    /**
+     * Merge two newest-first pages into one, preferring the fresher copy.
+     *
+     * {@link #messages} concatenates, which is correct only when the second page
+     * is entirely older than the first - true of paging backwards, and false of
+     * a refresh that arrives while the reader has scrolled the retained window
+     * off the newest end. Ordering by {@code (date, id)} descending is the
+     * invariant the update path already inserts against, so an out-of-order page
+     * lands where it belongs instead of at the tail.
+     *
+     * @param fresher wins on a duplicate id: it carries newer read state,
+     *                reactions and edits
+     */
+    public static Message[] merge(Message[] older, Message[] fresher)
+    {
+        if (older == null) { older = new Message[0]; }
+        if (fresher == null) { fresher = new Message[0]; }
+        Message[] merged = new Message[older.length + fresher.length];
+        int count = 0;
+        int a = 0;
+        int b = 0;
+        while (a < older.length || b < fresher.length)
+        {
+            Message pick;
+            if (a >= older.length) { pick = fresher[b++]; }
+            else if (b >= fresher.length) { pick = older[a++]; }
+            else
+            {
+                Message left = older[a];
+                Message right = fresher[b];
+                if (left == null) { a++; continue; }
+                if (right == null) { b++; continue; }
+                if (left.id == right.id) { pick = right; a++; b++; }
+                else if (newer(left, right)) { pick = left; a++; }
+                else { pick = right; b++; }
+            }
+            // A duplicate normally meets itself in the branch above. Reaching
+            // here means the same id sorted to two different places, which
+            // takes a date that changed between fetches; first position wins
+            // rather than leaving the id in twice.
+            if (pick == null || find(merged, count, pick.id) >= 0) { continue; }
+            merged[count++] = pick;
+        }
+        Message[] out = new Message[count];
+        System.arraycopy(merged, 0, out, 0, count);
+        return out;
+    }
+
+    private static boolean newer(Message left, Message right)
+    {
+        if (left.date != right.date) { return left.date > right.date; }
+        return left.id > right.id;
+    }
+
+    /**
+     * Keep at most {@code limit} messages, the run containing {@code anchor}.
+     *
+     * {@link #messages} truncates the tail, which is the wrong end once history
+     * is scrolled rather than paged: reading backwards means the oldest messages
+     * are the ones on screen and the newest are the ones nobody is looking at.
+     * This keeps the anchor centred, so whichever direction the reader is moving
+     * in, what gets dropped is behind them.
+     *
+     * @param anchor index of the message to keep in view; clamped into range
+     */
+    public static Message[] window(Message[] messages, int anchor, int limit)
+    {
+        if (messages == null) { return new Message[0]; }
+        if (limit >= messages.length) { return messages; }
+        if (limit <= 0) { return new Message[0]; }
+        if (anchor < 0) { anchor = 0; }
+        if (anchor >= messages.length) { anchor = messages.length - 1; }
+
+        int from = anchor - limit / 2;
+        if (from < 0) { from = 0; }
+        if (from + limit > messages.length) { from = messages.length - limit; }
+        Message[] out = new Message[limit];
+        System.arraycopy(messages, from, out, 0, limit);
+        return out;
+    }
+
     public static Dialog[] filter(Dialog[] source, String filter)
     {
         if (filter == null || filter.trim().length() == 0) { return source; }

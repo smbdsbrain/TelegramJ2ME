@@ -27,6 +27,12 @@
     minheap  one verdict line per run: what still works at this heap. Built for
              sweeping -Xmx downwards to find the real minimum, with -Pictures
              on and off.
+    scroll   read a chat backwards -Pages screens and then forwards again,
+             reporting the laid-out line count, the number of history requests
+             and the number of transcript reflows. This is the scenario the
+             virtualised window exists for: what has to stay flat is the line
+             count, and what has to track pages rather than keypresses is the
+             request count.
 
     Everything except probe contacts real Telegram servers.
 
@@ -53,7 +59,18 @@
     nobody else should receive a test message.
 
 .PARAMETER ChatTitle
-    photos only. Substring of the conversation title to open.
+    photos, minheap and scroll. Substring of the conversation title to open.
+
+.PARAMETER SingleSocket
+    scroll only. Turn "Single socket mode" on in Settings before connecting.
+    That mode refuses a second concurrent connection outright, so it is where a
+    path that quietly assumed it could open one fails - and the mode least
+    likely to be exercised by hand.
+
+.PARAMETER Pages
+    scroll only. Screens to page up before turning round. Each one is a real
+    keypress with a settle delay, so this is also roughly the run time in
+    seconds times two.
 
 .PARAMETER BallastKB
     Occupy this much heap before the client starts, so the client sees a
@@ -84,16 +101,19 @@
     ./tools/drive-emulator.ps1 -Scenario probe -EmulatorProfile heapcheck
     ./tools/drive-emulator.ps1 -Scenario route -Mode Auto -Env production
     ./tools/drive-emulator.ps1 -Scenario login -Phone +10000000000 -CodeFile code.txt -Env production
+    ./tools/drive-emulator.ps1 -Scenario scroll -ChatTitle "Some channel" -Pages 40 -Env production
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap')]
+    [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap', 'scroll')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
     [string]$Phone = '',
     [string]$CodeFile = '',
     [string]$SendText = '',
     [string]$ChatTitle = '',
+    [int]$Pages = 40,
+    [switch]$SingleSocket,
     [ValidateSet('on', 'off')][string]$Pictures = 'on',
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$EmulatorProfile = 'driver',
@@ -147,6 +167,8 @@ switch ($Scenario) {
     'session' { $driverArgs += @($Mode, $SendText) }
     'photos'  { $driverArgs += $ChatTitle }
     'minheap' { $driverArgs += @($ChatTitle, $Pictures) }
+    'scroll'  { $driverArgs += @($ChatTitle, "$Pages",
+                                 $(if ($SingleSocket) { 'single' } else { 'multi' })) }
 }
 
 Write-Step "emulator driver [$profileLabel] :: $Scenario ($Env)"

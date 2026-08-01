@@ -16,6 +16,7 @@ import tg.diag.Diag;
 import tg.mem.MemoryBudget;
 import tg.mem.MemoryPressure;
 import tg.plat.RmsAuthKeyStore;
+import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
 
 /**
@@ -36,6 +37,9 @@ import tg.ui.DialogListScreen;
  *   route  &lt;mode&gt;        set the connection mode and connect
  *   login  &lt;phone&gt; &lt;codeFile&gt;   connect, request a code, wait for the file
  *   session              use a stored session: dialogs, open the first chat
+ *   photos &lt;title&gt;       open a picture-heavy chat and decode its photos
+ *   minheap &lt;title&gt; &lt;on|off&gt;    one verdict line: what works at this heap
+ *   scroll &lt;title&gt; [pages]      read a chat backwards, then forwards again
  * </pre>
  *
  * The code file exists because the sign-in code arrives on the user's phone and
@@ -91,6 +95,11 @@ public final class EmulatorDriver
             else if ("minheap".equals(scenario))
             {
                 exit = minheap(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
+            }
+            else if ("scroll".equals(scenario))
+            {
+                exit = scroll(app, arg(args, 1), arg(args, 2), arg(args, 3))
+                        ? 0 : 1;
             }
             else
             {
@@ -589,6 +598,259 @@ public final class EmulatorDriver
         }
         System.out.println("photos opened: " + opened);
         return opened > 0;
+    }
+
+    /**
+     * Read a conversation backwards and watch what it costs.
+     *
+     * This is the scenario issue #4 exists for, and the three numbers that
+     * matter are all invisible from the screen:
+     *
+     *   - the laid-out line count, which is what makes the memory bounded. It
+     *     has to stop growing, not merely grow slowly;
+     *   - the number of {@code messages.getHistory/older} requests, which has to
+     *     track pages scrolled rather than keys pressed;
+     *   - the number of transcript reflows, which is the same claim from the
+     *     other side: a reader crossing an eviction boundary should reflow once.
+     *
+     * The descent afterwards is not decoration. Oscillating across a boundary is
+     * where a naive window turns into a fetch storm, and it is the one failure
+     * mode a person clicking Older could never have produced.
+     */
+    private static boolean scroll(EmulatorHarness app, String chatTitle,
+                                  String pagesArg, String singleSocket)
+            throws Exception
+    {
+        if (chatTitle == null || chatTitle.length() == 0)
+        {
+            System.out.println("usage: scroll <chat title> [pages] [single]");
+            return false;
+        }
+        int pages = 40;
+        try { if (pagesArg != null) { pages = Integer.parseInt(pagesArg.trim()); } }
+        catch (Throwable ignored) { }
+
+        boolean single = "single".equalsIgnoreCase(singleSocket);
+        if (!setSingleSocket(app, single)) { return false; }
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run the login scenario first");
+            return false;
+        }
+        Thread.sleep(6000);          // let messages.getDialogs finish
+        dialogList = app.current();
+
+        if (!openChatNamed(app, chatTitle)) { return false; }
+        Thread.sleep(8000);          // the first page, wrapped
+
+        ChatScreen chat = chatScreen(app);
+        if (chat == null)
+        {
+            System.out.println("the chat screen did not survive opening");
+            return false;
+        }
+
+        int openLines = chat.transcriptLineCount();
+        int openLayouts = chat.layoutCount();
+        System.out.println("opened: lines=" + openLines
+                + " messages=" + chat.messageCount()
+                + " window=" + chat.windowScreens() + " screens"
+                + " layouts=" + openLayouts);
+
+        int maxLines = openLines;
+        int reached = 0;
+        for (int i = 0; i < pages; i++)
+        {
+            ChatScreen live = chatScreen(app);
+            if (live == null)
+            {
+                System.out.println("lost the chat screen on page up " + i);
+                break;
+            }
+            chat = live;
+            app.key(Canvas.KEY_NUM4);
+            // Long enough for a page to land on a real connection. Too short
+            // and this measures the driver rather than the client.
+            Thread.sleep(1200);
+            int lines = chat.transcriptLineCount();
+            if (lines > maxLines) { maxLines = lines; }
+            reached = i + 1;
+            if ((i + 1) % 5 == 0)
+            {
+                System.out.println("  up " + (i + 1) + ": lines=" + lines
+                        + " messages=" + chat.messageCount()
+                        + " older=" + chat.messagesOlderThanViewport()
+                        + " layouts=" + chat.layoutCount()
+                        + " fetches=" + count("messages.getHistory/older")
+                        + " thumbs=" + thumbnailsHeld(chat)
+                        + "/" + thumbnailCandidates(chat)
+                        + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB");
+            }
+        }
+
+        int upFetches = count("messages.getHistory/older started");
+        int upLayouts = chat.layoutCount();
+        System.out.println("turning round after " + reached + " pages up");
+
+        // Down again, further than we came up. The retention window is smaller
+        // than the distance covered, so getting back to the present means
+        // fetching messages that were already loaded once and then evicted -
+        // and that is exactly the path a person takes after reading history.
+        int downPages = reached + 20;
+        for (int i = 0; i < downPages; i++)
+        {
+            ChatScreen live = chatScreen(app);
+            if (live == null) { break; }
+            chat = live;
+            app.key(Canvas.KEY_NUM6);
+            Thread.sleep(1200);
+            int lines = chat.transcriptLineCount();
+            if (lines > maxLines) { maxLines = lines; }
+            if ((i + 1) % 10 == 0)
+            {
+                System.out.println("  down " + (i + 1) + ": lines=" + lines
+                        + " newer=" + chat.messagesNewerThanViewport()
+                        + " atEnd=" + chat.isAtEnd()
+                        + " forward=" + count("messages.getHistory/newer started")
+                        + " layouts=" + chat.layoutCount());
+            }
+        }
+
+        boolean alive = chatScreen(app) != null;
+        boolean returned = alive && chat.isAtEnd();
+        int forwardFetches = count("messages.getHistory/newer started");
+        // Clamped because Diag is a bounded ring: on a long run the lines
+        // counted at the turn-round can age out of it, and a negative delta
+        // reads as a defect when it is only the log forgetting.
+        int downFetches = Math.max(0,
+                count("messages.getHistory/older started") - upFetches);
+        System.out.println("VERDICT"
+                + " single=" + single
+                + " pages=" + reached
+                + " openLines=" + openLines
+                + " maxLines=" + maxLines
+                + " messages=" + chat.messageCount()
+                + " upFetches=" + upFetches
+                + " downFetches=" + downFetches
+                + " forwardFetches=" + forwardFetches
+                + " upLayouts=" + (upLayouts - openLayouts)
+                + " downLayouts=" + (chat.layoutCount() - upLayouts)
+                + " returnedToEnd=" + returned
+                + " thumbs=" + thumbnailsHeld(chat) + "/" + thumbnailCandidates(chat)
+                + " thumbOk=" + count("thumbnail ok")
+                + " thumbDropped=" + count("thumbnail dropped")
+                + " thumbCancelled=" + count("thumbnails cancelled")
+                + " busy=" + count("worker busy")
+                + " sheds=" + MemoryPressure.shedEvents()
+                + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB"
+                + " oom=" + count("OutOfMemory")
+                + " alive=" + alive);
+
+        // The bound is what is being claimed, so it is what is checked. Two
+        // windows of slack: a rebuild can legitimately land on a run of
+        // picture messages that wrap taller than the ones it replaced.
+        boolean bounded = maxLines <= openLines * 3 + 40;
+        if (!bounded)
+        {
+            System.out.println("FAIL: the laid-out transcript grew from "
+                    + openLines + " to " + maxLines);
+        }
+        if (!alive) { System.out.println("FAIL: the chat screen did not survive"); }
+        if (!returned)
+        {
+            System.out.println("FAIL: scrolling forward did not get back to the"
+                    + " newest message - evicted blocks are not coming back");
+        }
+        return alive && bounded && returned && count("OutOfMemory") == 0;
+    }
+
+    /** The live chat screen, or null if something else is showing. */
+    private static ChatScreen chatScreen(EmulatorHarness app) throws Exception
+    {
+        Displayable now = app.current();
+        return now instanceof ChatScreen ? (ChatScreen) now : null;
+    }
+
+    /**
+     * Turn single socket mode on or off before connecting.
+     *
+     * The mode that matters most and is exercised least: it refuses a second
+     * concurrent connection outright, so any path that quietly assumed it could
+     * open one fails there and only there. Set explicitly on every run, because
+     * it persists in RMS and an unset run inherits the previous one's choice.
+     */
+    private static boolean setSingleSocket(EmulatorHarness app, boolean on)
+            throws Exception
+    {
+        Displayable start = app.current();
+        if (!app.press("Settings")) { System.out.println("no Settings"); return false; }
+        Displayable settings = app.awaitChange(start, 5000);
+        if (!(settings instanceof Form))
+        {
+            System.out.println("Settings is not a Form: "
+                    + EmulatorHarness.describe(settings));
+            return false;
+        }
+        Form form = (Form) settings;
+        boolean found = false;
+        for (int i = 0; i < form.size(); i++)
+        {
+            Item item = form.get(i);
+            if (item instanceof ChoiceGroup
+                    && "Single socket mode".equals(item.getLabel()))
+            {
+                ((ChoiceGroup) item).setSelectedIndex(0, on);
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            System.out.println("no Single socket mode choice on Settings");
+            return false;
+        }
+        System.out.println("single socket: " + (on ? "on" : "off"));
+        if (!app.press("Save")) { return false; }
+        app.awaitChange(settings, 5000);
+        for (int i = 0; i < 4 && app.press("Back"); i++)
+        {
+            app.awaitChange(app.current(), 2000);
+        }
+        return true;
+    }
+
+    /** Inline previews actually decoded and held for what is on screen. */
+    private static int thumbnailsHeld(ChatScreen chat)
+    {
+        if (chat == null) { return 0; }
+        tg.api.Message[] visible = chat.visibleMessages();
+        int held = 0;
+        for (int i = 0; i < visible.length; i++)
+        {
+            tg.api.Message m = visible[i];
+            if (m != null && chat.hasThumbnail(m.id)) { held++; }
+        }
+        return held;
+    }
+
+    /** Messages on screen that carry a stripped thumbnail worth decoding. */
+    private static int thumbnailCandidates(ChatScreen chat)
+    {
+        if (chat == null) { return 0; }
+        tg.api.Message[] visible = chat.visibleMessages();
+        int candidates = 0;
+        for (int i = 0; i < visible.length; i++)
+        {
+            tg.api.Message m = visible[i];
+            if (m != null && m.media != null
+                    && m.media.kind == tg.api.Media.PHOTO
+                    && m.media.photo != null
+                    && m.media.photo.stripped() != null)
+            {
+                candidates++;
+            }
+        }
+        return candidates;
     }
 
     /** Walk the dialog list with the keypad until the wanted chat is selected. */

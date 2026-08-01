@@ -33,6 +33,7 @@ public final class MemoryBudgetTest implements Test
         "packetBytes", "inflateOutputBytes", "photoCompressedBytes",
         "updateQueueBytes", "httpQueueBytes",
         "maxDialogs", "dialogPageSize", "maxHistory", "historyPageSize",
+        "layoutWindowScreens", "historyPrefetchMargin",
         "peerCacheEntries", "avatarCacheEntries", "thumbnailCacheEntries",
         "screenStackDepth", "photoPixels"
     };
@@ -41,6 +42,7 @@ public final class MemoryBudgetTest implements Test
     private static final int[] REFERENCE = {
         1024 * 1024, 2 * 1024 * 1024, 512 * 1024, 256 * 1024, 256 * 1024,
         200, 40, 120, 30,
+        3, 15,
         500, 16, 12,
         16, 307200
     };
@@ -49,6 +51,7 @@ public final class MemoryBudgetTest implements Test
     private static final int[] FLOOR = {
         256 * 1024, 192 * 1024, 48 * 1024, 32 * 1024, 64 * 1024,
         20, 10, 20, 10,
+        1, 5,
         64, 2, 2,
         4, 16384
     };
@@ -232,7 +235,7 @@ public final class MemoryBudgetTest implements Test
                     actual[i] <= cap);
         }
         Assert.isTrue("the pixel budget is bounded by the largest block",
-                MemoryBudget.photoPixels() <= Math.max(FLOOR[13], (128 * 1024) / 8));
+                MemoryBudget.photoPixels() <= Math.max(FLOOR[15], (128 * 1024) / 8));
 
         // The floor still wins over the block cap. A device whose largest block
         // cannot hold the smallest legal packet is not one we can rescue by
@@ -300,7 +303,7 @@ public final class MemoryBudgetTest implements Test
     private static void reportingSurvivesEveryState()
     {
         MemoryBudget.reset();
-        Assert.equal("the unmeasured report has every line", 8,
+        Assert.equal("the unmeasured report has every line", 9,
                 MemoryBudget.lines().length);
         Assert.equal("default provenance is named", "default",
                 MemoryBudget.sourceName(MemoryBudget.SOURCE_DEFAULT));
@@ -536,6 +539,8 @@ public final class MemoryBudgetTest implements Test
             MemoryBudget.dialogPageSize(),
             MemoryBudget.maxHistory(),
             MemoryBudget.historyPageSize(),
+            MemoryBudget.layoutWindowScreens(),
+            MemoryBudget.historyPrefetchMargin(),
             MemoryBudget.peerCacheEntries(),
             MemoryBudget.avatarCacheEntries(),
             MemoryBudget.thumbnailCacheEntries(),

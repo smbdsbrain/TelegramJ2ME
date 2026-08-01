@@ -1000,6 +1000,13 @@ public final class Telegram
                 peer, offsetId, limit)), "messages.getHistory/older");
     }
 
+    public Message[] getHistoryAfter(Peer peer, int offsetId, int limit)
+            throws IOException
+    {
+        return parseMessagesReply(invoke(Requests.getHistoryAfter(
+                peer, offsetId, limit)), "messages.getHistory/newer");
+    }
+
     /** History window around a forwarded source message. */
     public Message[] getHistoryAround(Peer peer, int messageId, int limit)
             throws IOException

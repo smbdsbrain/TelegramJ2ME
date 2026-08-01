@@ -77,6 +77,20 @@ public final class ChatScrollState
         followEnd = top == maxTop;
     }
 
+    /**
+     * The bottom of what is laid out is not the end of the conversation.
+     *
+     * {@link #userScroll} can only compare against the {@code maxTop} it is
+     * given, and once the transcript is virtualised that is the bottom of the
+     * window rather than the newest message. Without this, paging down into the
+     * middle of the history would set the follow flag and the next rebuild
+     * would yank the reader to the end.
+     */
+    public void stopFollowingEnd()
+    {
+        followEnd = false;
+    }
+
     private static int find(int[] ids, int[] offsets, int id, int offset)
     {
         if (ids == null || offsets == null) { return -1; }

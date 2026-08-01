@@ -120,6 +120,9 @@ Three kinds of number, treated differently on purpose:
   under the largest legitimate packet is a disconnect, not a saving.
 * **Retention budgets** — caches and list caps. These genuinely return memory,
   and scale proportionally.
+* **Window budgets** — the slice of a conversation that is laid out. Different
+  from a retention cap in that it bounds *work already done* rather than what is
+  kept: see below.
 * **Transient allocation caps** — the photo pixel budget. The budget sets a
   ceiling; whether a particular decode fits *right now* is a separate question,
   answered by `MemoryPressure`.
@@ -140,6 +143,35 @@ This is the only code in the client that calls `System.gc()`, and only after
 headroom has already said the work will not fit. Never on the `MtClient` reader
 thread, where a collect delays every pending RPC; the protection there is the
 smaller budget, not a shed.
+
+### Scrolling a conversation
+
+A chat is a virtualised list. `ChatScreen` holds every retained `Message` — a
+reply has to be able to quote one that is nowhere near the viewport — but wraps
+only those within `MemoryBudget.layoutWindowScreens()` screens either side of
+it. Wrapping is the expensive half: five parallel arrays keyed by display line
+plus a String per line, and before the window that cost was proportional to how
+far back the reader had ever scrolled rather than to the screen.
+
+Scroll position drives the network. `ChatScreen.ViewportListener` reports every
+movement, and when fewer than `historyPrefetchMargin()` retained messages remain
+above the viewport the client asks for another page. The margin is wide because
+a `messages.getHistory` round trip on GPRS is measured in seconds and the reader
+should not watch it happen. The same trigger works forwards: reading far enough
+back slides the newest messages out of the retained window, so coming down again
+fetches them a second time rather than stranding the reader in the past.
+
+Three thresholds, deliberately spread apart so that scrolling across a boundary
+cannot become a request per keypress: the window extends three screens either
+side, it is rebuilt at one screen from an edge, and the retained set is trimmed
+around whatever is being read rather than from the end. The `Older` command
+survives as a manual nudge for a slow link; there is no longer a limit to reach.
+
+Measured by driving the packaged client against a real account through a
+picture-heavy channel: eighty screens of scrolling in both directions, with the
+laid-out line count flat at its opening value, one history request per few
+screens rather than per keypress, none at all on the way back down, and no
+memory shed at any point.
 
 ### What the client actually needs
 

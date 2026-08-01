@@ -54,6 +54,25 @@ public final class Phase6Test implements Test
         history.readLong();
         history.readLong();
         Assert.equal("history offset", 77, history.readInt());
+        Assert.equal("history offset_date", 0, history.readInt());
+        Assert.equal("older pages walk forwards from the offset",
+                0, history.readInt());
+
+        // The forward page. A negative add_offset is the only way to ask for
+        // messages newer than an id without knowing what those ids are, and it
+        // is what lets a reader who scrolled the newest messages out of the
+        // retained window get back to the present.
+        TlReader newer = new TlReader(Requests.getHistoryAfter(
+                offset.peer, 77, 30));
+        Assert.equal("newer method", Api.MESSAGES_GET_HISTORY, newer.readInt());
+        newer.readInt();
+        newer.readLong();
+        newer.readLong();
+        Assert.equal("newer offset", 77, newer.readInt());
+        Assert.equal("newer offset_date", 0, newer.readInt());
+        Assert.equal("newer pages walk backwards a whole page",
+                -30, newer.readInt());
+        Assert.equal("newer limit", 30, newer.readInt());
     }
 
     private static void messageActionWire() throws Exception

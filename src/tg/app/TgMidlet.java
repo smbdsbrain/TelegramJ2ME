@@ -224,6 +224,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private long cachedPhotoId;
     private Image cachedPhoto;
     private int thumbnailGeneration;
+
+    /** A batch of inline previews is decoding; another would only fight it. */
+    private volatile boolean thumbnailsRunning;
     private OutgoingMessage[] outboxItems = new OutgoingMessage[0];
 
     private String phoneNumber;
@@ -232,6 +235,31 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private Dialog[] dialogs = new Dialog[0];
     private Peer openPeer;
     private Message[] openHistory = new Message[0];
+
+    /**
+     * Highest message id ever seen for the open conversation.
+     *
+     * {@code openHistory[0]} used to be that by construction. It is not any
+     * more: reading backwards slides the retained window off the newest end, and
+     * marking read against whatever happens to be at the head of the array would
+     * report a message the user scrolled past ten minutes ago.
+     */
+    private int newestKnownId;
+
+    /** An older page is on the wire; a second request would only be dropped. */
+    private boolean historyPageInFlight;
+
+    /** The last page came back empty: this is the start of the conversation. */
+    private boolean historyExhausted;
+
+    /**
+     * A forward fetch returned nothing newer.
+     *
+     * Separate from clamping {@link #newestKnownId}, which would look like the
+     * same thing and would quietly move the read mark backwards. This only
+     * stops asking; it clears the moment anything newer actually turns up.
+     */
+    private boolean historyForwardStalled;
     private Message replyTarget;
     private List forwardList;
     private Peer[] forwardTargets = new Peer[0];
@@ -489,7 +517,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             chatScreen = context;
             openPeer = context.peer();
-            openHistory = context.messages();
+            setOpenHistory(context.messages());
             telegram.setActivePeer(openPeer);
         }
         display.setCurrent(screen);
@@ -585,7 +613,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdOlder)
         {
-            loadOlderHistory();
+            // Scrolling fetches on its own now; this stays as a manual nudge
+            // for a link slow enough that waiting for the margin to be crossed
+            // feels like nothing is happening.
+            loadOlderPage(true);
         }
         else if (c == cmdMoreDialogs)
         {
@@ -1689,6 +1720,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // paint, a wrapped transcript and the inflated history response.
             MemoryPressure.reserve(CHAT_OPEN_BYTES);
             openPeer = peer;
+            newestKnownId = 0;
+            historyPageInFlight = false;
+            historyExhausted = false;
+            historyForwardStalled = false;
             telegram.setActivePeer(peer);
             chatScreen = createChatScreen(peer);
             chatScreen.setTitle(peer == null ? "Chat" : peer.title);
@@ -1810,6 +1845,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 else { showReactionPalette(messageId); }
             }
         });
+        screen.setViewportListener(new ChatScreen.ViewportListener()
+        {
+            public void onChatViewportChanged()
+            {
+                maybeLoadHistory();
+                scheduleVisibleThumbnails();
+            }
+        });
         return screen;
     }
 
@@ -1827,7 +1870,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                 accountId, Dc.isTest(), peer);
                 if (cached != null && cached.length > 0)
                 {
-                    openHistory = cached;
+                    setOpenHistory(cached);
                     chatScreen.setMessages(openHistory);
                     appendPendingForOpenPeer();
                     chatScreen.setStatus("cached/loading");
@@ -1857,27 +1900,37 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
         }, new Worker.Callback()
         {
-            public void onSuccess(Object result)
+            public void onSuccess(final Object result)
             {
-                if (!samePeer(openPeer, peer)) { return; }
-                try
+                // callSerially, not straight in: openHistory is also written by
+                // the update queue, which arrives on the UI thread. Two threads
+                // doing read-modify-write on the same array reference is how a
+                // message that lands mid-fetch disappears.
+                display.callSerially(new Runnable()
                 {
-                    openHistory = (Message[]) result;
-                    cacheHistory(peer, openHistory);
-                    applyKnownReadState(openHistory, peer);
-                    // setMessages word-wraps the whole transcript and is where
-                    // the heap peaks; the guard is here rather than around the
-                    // fetch for that reason.
-                    chatScreen.setMessages(openHistory);
-                    scheduleInlineThumbnails(peer, openHistory);
-                    appendPendingForOpenPeer();
-                    chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                    markRead();
-                }
-                catch (Throwable t)
-                {
-                    openChatFailed(t);
-                }
+                    public void run()
+                    {
+                        if (!samePeer(openPeer, peer)) { return; }
+                        try
+                        {
+                            setOpenHistory((Message[]) result);
+                            cacheHistory(peer, openHistory);
+                            applyKnownReadState(openHistory, peer);
+                            // setMessages word-wraps the window and is where the
+                            // heap peaks; the guard is here rather than around
+                            // the fetch for that reason.
+                            chatScreen.setMessages(openHistory);
+                            scheduleInlineThumbnails(peer);
+                            appendPendingForOpenPeer();
+                            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                            markRead();
+                        }
+                        catch (Throwable t)
+                        {
+                            openChatFailed(t);
+                        }
+                    }
+                });
             }
 
             public void onFailure(Throwable error)
@@ -1898,69 +1951,364 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
     }
 
-    private void loadOlderHistory()
+    /**
+     * Fetch another page when the reader is getting close to the top of what is
+     * loaded.
+     *
+     * The margin is in messages rather than pixels because lines beyond the
+     * laid-out window have not been wrapped and their count is not known without
+     * doing the work. It is wide on purpose: a {@code messages.getHistory} round
+     * trip on GPRS is measured in seconds, and the request has to finish before
+     * the reader arrives rather than while they watch.
+     *
+     * Called from the chat screen's viewport callback, so it runs on the lcdui
+     * thread and must not block: everything past the guard is a worker submit.
+     */
+    private void maybeLoadHistory()
     {
-        if (openPeer == null || openHistory.length == 0) { return; }
-        if (openHistory.length >= MemoryBudget.maxHistory())
+        if (chatScreen == null || openPeer == null || openHistory.length == 0
+                || historyPageInFlight || navigation.current() != chatScreen)
         {
-            showAlert("The in-memory history limit (" + MemoryBudget.maxHistory()
-                    + ") has been reached.", AlertType.INFO, chatScreen);
+            return;
+        }
+        int margin = MemoryBudget.historyPrefetchMargin();
+
+        // Forward first. Both directions can be short at once - the retained
+        // window is smaller than the distance a reader can cover - and being
+        // unable to get back to the present is the worse of the two.
+        if (!historyForwardStalled
+                && chatScreen.messagesNewerThanViewport() < margin
+                && newestOpenId() < newestKnownId)
+        {
+            loadNewerPage();
+            return;
+        }
+        if (!historyExhausted
+                && chatScreen.messagesOlderThanViewport() < margin)
+        {
+            loadOlderPage(false);
+        }
+    }
+
+    /**
+     * One page of older history.
+     *
+     * @param manual pressed by the user rather than provoked by scrolling. Only
+     *               changes how loudly it reports itself: an automatic fetch
+     *               that finds nothing has simply reached the start of the
+     *               conversation, which is not news.
+     */
+    private void loadOlderPage(final boolean manual)
+    {
+        if (openPeer == null || chatScreen == null
+                || openHistory.length == 0)
+        {
+            return;
+        }
+        if (historyPageInFlight)
+        {
+            if (manual) { chatScreen.setStatus("loading older messages..."); }
+            return;
+        }
+        if (historyExhausted)
+        {
+            if (manual)
+            {
+                showAlert("No older messages.", AlertType.INFO, chatScreen);
+            }
             return;
         }
         final Peer peer = openPeer;
         final int offsetId = openHistory[openHistory.length - 1].id;
+        historyPageInFlight = true;
         chatScreen.setStatus("loading older messages...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/older"; }
             public Object run() throws Exception
             {
-                return telegram.getHistoryBefore(peer, offsetId, MemoryBudget.historyPageSize());
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                return telegram.getHistoryBefore(peer, offsetId,
+                        MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
-            public void onSuccess(Object result)
+            public void onSuccess(final Object result)
             {
-                if (!samePeer(openPeer, peer)) { return; }
-                Message[] page = (Message[]) result;
-                int before = openHistory.length;
-                openHistory = mergeMessages(openHistory, page, MemoryBudget.maxHistory());
-                cacheHistory(peer, openHistory);
-                applyKnownReadState(openHistory, peer);
-                chatScreen.setMessages(openHistory);
-                scheduleInlineThumbnails(peer, openHistory);
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                if (before == openHistory.length)
+                display.callSerially(new Runnable()
                 {
-                    showAlert("No older messages.", AlertType.INFO, chatScreen);
-                }
+                    public void run()
+                    {
+                        historyPageInFlight = false;
+                        if (!samePeer(openPeer, peer)) { return; }
+                        Message[] page = (Message[]) result;
+                        // Whether the page itself carried anything older than
+                        // what was held. Deliberately not "did the retained
+                        // array change": the retention window is a fixed size,
+                        // so once it is full its length stops moving while its
+                        // contents keep sliding backwards - and reading that as
+                        // "no older messages" stopped paging five pages into a
+                        // channel that had thousands. Deliberately not "did the
+                        // retained oldest move" either, because a page fetched
+                        // while the viewport is elsewhere can be windowed
+                        // straight back out again without being news.
+                        boolean older = carriesOlderThan(page, oldestOpenId());
+                        mergeHistoryPage(page);
+                        cacheHistory(peer, openHistory);
+                        applyKnownReadState(openHistory, peer);
+                        chatScreen.setMessages(openHistory);
+                        scheduleInlineThumbnails(peer);
+                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                        if (!older)
+                        {
+                            // Latched rather than retried: without this the
+                            // viewport sits against the top of a fully loaded
+                            // conversation and asks for the same empty page on
+                            // every keypress.
+                            historyExhausted = true;
+                            if (manual)
+                            {
+                                showAlert("No older messages.", AlertType.INFO,
+                                        chatScreen);
+                            }
+                        }
+                    }
+                });
             }
-            public void onFailure(Throwable error)
+            public void onFailure(final Throwable error)
             {
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                showAlertThen("Could not load older messages", error, chatScreen);
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        historyPageInFlight = false;
+                        if (!samePeer(openPeer, peer)) { return; }
+                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                        if (manual)
+                        {
+                            showAlertThen("Could not load older messages", error,
+                                    chatScreen);
+                        }
+                        else
+                        {
+                            Diag.warn("older page failed: " + shortMessage(error));
+                        }
+                    }
+                });
             }
         });
+        if (!submitted)
+        {
+            // The worker drops rather than queues. Clearing the flag is the
+            // whole retry: the next viewport event asks again, and by then
+            // whatever was busy has usually finished.
+            historyPageInFlight = false;
+            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+        }
     }
 
-    private static Message[] mergeMessages(Message[] first, Message[] second,
-                                           int limit)
+    /**
+     * Merge a page into the retained history and slide the window onto it.
+     *
+     * A bounded merge would truncate the tail, which is the wrong end when
+     * reading backwards: the oldest messages are the ones on screen. Merging
+     * unbounded and then windowing around what the reader is looking at drops
+     * the newest instead, which is the half nobody is looking at.
+     */
+    private void mergeHistoryPage(Message[] page)
     {
-        return PageMerge.messages(first, second, limit);
+        int oldestBefore = oldestOpenId();
+        Message[] merged = PageMerge.merge(openHistory, page);
+        // Before windowing, not after: a message can arrive, be recorded as the
+        // newest thing this conversation has, and then fall outside a window
+        // anchored two hundred messages back. It is still what "read up to
+        // here" has to mean.
+        noteNewest(merged);
+        int anchor = indexOfMessage(merged, chatScreen == null
+                ? 0 : chatScreen.topVisibleMessageId());
+        if (anchor < 0) { anchor = merged.length - 1; }
+        openHistory = PageMerge.window(merged, anchor,
+                MemoryBudget.maxHistory());
+        // The window slid off the oldest end, so whatever was decided about the
+        // start of the conversation was decided about a different oldest.
+        if (oldestOpenId() > oldestBefore) { historyExhausted = false; }
+    }
+
+    /** Install a new retained history, keeping the high-water mark. */
+    private void setOpenHistory(Message[] messages)
+    {
+        openHistory = messages == null ? new Message[0] : messages;
+        noteNewest(openHistory);
+    }
+
+    /**
+     * Remember the highest id seen. Cannot be recomputed from what is retained:
+     * sliding the window off the newest end is exactly what this path does.
+     */
+    private void noteNewest(Message[] messages)
+    {
+        for (int i = 0; i < messages.length; i++)
+        {
+            Message m = messages[i];
+            if (m != null && m.id > newestKnownId)
+            {
+                newestKnownId = m.id;
+                historyForwardStalled = false;
+            }
+        }
+    }
+
+    /**
+     * The page immediately newer than what is retained.
+     *
+     * Scrolling back far enough slides the newest messages out of the retention
+     * window, and without this the reader arrives at the top of the retained
+     * set and simply stops - stranded a few hundred messages behind the present
+     * with no way forward but leaving the conversation and opening it again.
+     */
+    private void loadNewerPage()
+    {
+        if (openPeer == null || chatScreen == null
+                || openHistory.length == 0)
+        {
+            return;
+        }
+        final Peer peer = openPeer;
+        final int offsetId = newestOpenId();
+        historyPageInFlight = true;
+        chatScreen.setStatus("loading newer messages...");
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getHistory/newer"; }
+            public Object run() throws Exception
+            {
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                return telegram.getHistoryAfter(peer, offsetId,
+                        MemoryBudget.historyPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(final Object result)
+            {
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        historyPageInFlight = false;
+                        if (!samePeer(openPeer, peer)) { return; }
+                        Message[] page = (Message[]) result;
+                        int before = newestOpenId();
+                        mergeHistoryPage(page);
+                        cacheHistory(peer, openHistory);
+                        applyKnownReadState(openHistory, peer);
+                        chatScreen.setMessages(openHistory);
+                        scheduleInlineThumbnails(peer);
+                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                        // Nothing newer came back: the mark is ahead of what
+                        // the server will hand over, and asking again on every
+                        // keypress would be a request per scroll step.
+                        historyForwardStalled = newestOpenId() <= before;
+                    }
+                });
+            }
+            public void onFailure(final Throwable error)
+            {
+                display.callSerially(new Runnable()
+                {
+                    public void run()
+                    {
+                        historyPageInFlight = false;
+                        if (!samePeer(openPeer, peer)) { return; }
+                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                        Diag.warn("newer page failed: " + shortMessage(error));
+                    }
+                });
+            }
+        });
+        if (!submitted)
+        {
+            historyPageInFlight = false;
+            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+        }
+    }
+
+    /** Id of the newest message retained, or 0. */
+    private int newestOpenId()
+    {
+        for (int i = 0; i < openHistory.length; i++)
+        {
+            if (openHistory[i] != null) { return openHistory[i].id; }
+        }
+        return 0;
+    }
+
+    /** Id of the oldest message retained, or 0. */
+    private int oldestOpenId()
+    {
+        for (int i = openHistory.length - 1; i >= 0; i--)
+        {
+            if (openHistory[i] != null) { return openHistory[i].id; }
+        }
+        return 0;
+    }
+
+    private static boolean carriesOlderThan(Message[] page, int id)
+    {
+        if (page == null) { return false; }
+        for (int i = 0; i < page.length; i++)
+        {
+            if (page[i] != null && page[i].id < id) { return true; }
+        }
+        return false;
+    }
+
+    private static int indexOfMessage(Message[] messages, int id)
+    {
+        if (id == 0) { return -1; }
+        for (int i = 0; i < messages.length; i++)
+        {
+            if (messages[i] != null && messages[i].id == id) { return i; }
+        }
+        return -1;
     }
 
     /**
      * Decode only bytes already present in message objects. This queue never
      * calls Telegram/openPhoto, so inline mode cannot generate file traffic.
+     *
+     * Candidates come from the viewport rather than from the head of the
+     * transcript. Taking the newest twelve was right while the newest twelve
+     * were the only ones anybody could see; once history scrolls, it means
+     * reading back through a picture-heavy channel shows no pictures at all.
      */
-    private void scheduleInlineThumbnails(final Peer peer, Message[] messages)
+    /**
+     * Decode previews for whatever is on screen now, unless a batch is already
+     * doing that.
+     *
+     * Scrolling has to be a trigger. Every other caller is a history landing,
+     * and while the newest page was the only page anybody could see that was
+     * the same thing; once a reader can scroll to messages that arrived pages
+     * ago, those messages never get their previews decoded at all. Measured
+     * before this existed: nine photos on screen, none of them decoded.
+     *
+     * Guarded by a running flag rather than by the generation counter, because
+     * restarting on every keypress would cancel each batch a keypress after
+     * starting it and nothing would ever finish.
+     */
+    private void scheduleVisibleThumbnails()
+    {
+        if (thumbnailsRunning || openPeer == null) { return; }
+        scheduleInlineThumbnails(openPeer);
+    }
+
+    private void scheduleInlineThumbnails(final Peer peer)
     {
         final int generation = ++thumbnailGeneration;
-        if (!appSettings.mediaPreviews || chatScreen == null
-                || messages == null)
+        if (!appSettings.mediaPreviews || chatScreen == null)
         {
             return;
         }
+        Message[] messages = chatScreen.visibleMessages();
         final Message[] candidates = new Message[Math.min(12, messages.length)];
         int count = 0;
         for (int i = 0; i < messages.length && count < candidates.length; i++)
@@ -1977,9 +2325,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         if (count == 0) { return; }
         final int candidateCount = count;
+        thumbnailsRunning = true;
         new Thread(new Runnable()
         {
             public void run()
+            {
+                try { decode(); }
+                finally { thumbnailsRunning = false; }
+            }
+
+            private void decode()
             {
                 for (int i = 0; i < candidateCount; i++)
                 {
@@ -1987,6 +2342,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                             || !samePeer(openPeer, peer)
                             || !appSettings.mediaPreviews)
                     {
+                        // Worth a line. Silent cancellation is what a stuck
+                        // inline preview looks like from the outside, and there
+                        // was previously no way to tell it apart from a decode
+                        // that failed or a message that carried no thumbnail.
+                        Diag.info("thumbnails cancelled after " + i + " of "
+                                + candidateCount);
                         return;
                     }
                     final Message message = candidates[i];
@@ -2007,6 +2368,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                         && appSettings.mediaPreviews)
                                 {
                                     chatScreen.setThumbnail(message.id, thumbnail);
+                                    Diag.info("thumbnail ok " + message.id);
+                                }
+                                else
+                                {
+                                    Diag.info("thumbnail dropped " + message.id);
                                 }
                             }
                         });
@@ -2027,11 +2393,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void markRead()
     {
-        if (openHistory.length == 0 || openPeer == null)
+        if (newestKnownId == 0 || openPeer == null)
         {
             return;
         }
-        requestMarkRead(openPeer, openHistory[0].id);
+        requestMarkRead(openPeer, newestKnownId);
     }
 
     // -------------------------------------------------------- live updates
@@ -2070,7 +2436,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (chatScreen != null && display.getCurrent() == chatScreen)
         {
             chatScreen.setMessages(openHistory);
-            scheduleInlineThumbnails(openPeer, openHistory);
+            scheduleInlineThumbnails(openPeer);
             appendPendingForOpenPeer();
             chatScreen.setStatus(connectionLabel + "/" + updateLabel);
         }
@@ -2116,6 +2482,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return true;
     }
 
+    /**
+     * Fold one live message into the open conversation.
+     *
+     * A message already present is replaced in place, which allocates nothing
+     * and is the common case for a read or reaction update. A genuinely new one
+     * goes through the same merge-and-window path as a fetched page: it used to
+     * make room by truncating the oldest message, and once a reader can be
+     * anywhere in the history that is the message they are looking at.
+     */
     private void mergeOpenHistory(Message message)
     {
         for (int i = 0; i < openHistory.length; i++)
@@ -2127,34 +2502,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 return;
             }
         }
-        int insert = 0;
-        while (insert < openHistory.length)
-        {
-            Message existing = openHistory[insert];
-            if (existing == null || existing.date < message.date
-                    || (existing.date == message.date && existing.id < message.id))
-            {
-                break;
-            }
-            insert++;
-        }
-        int length = Math.min(MemoryBudget.maxHistory(), openHistory.length + 1);
-        Message[] merged = new Message[length];
-        if (insert > 0)
-        {
-            System.arraycopy(openHistory, 0, merged, 0,
-                    Math.min(insert, length));
-        }
-        if (insert < length)
-        {
-            merged[insert] = message;
-            int tail = length - insert - 1;
-            if (tail > 0)
-            {
-                System.arraycopy(openHistory, insert, merged, insert + 1, tail);
-            }
-        }
-        openHistory = merged;
+        mergeHistoryPage(new Message[] { message });
     }
 
     private boolean applyReadState(ReadState read)
@@ -2370,7 +2718,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                 if (snapshot.history != null
                                         && samePeer(openPeer, snapshot.peer))
                                 {
-                                    openHistory = snapshot.history;
+                                    // Merged, not assigned. This is the newest
+                                    // page; assigning it would throw away every
+                                    // older page a reader had scrolled back to
+                                    // and drop them at the bottom again.
+                                    mergeHistoryPage(snapshot.history);
                                     applyKnownReadState(openHistory, openPeer);
                                     cacheHistory(openPeer, openHistory);
                                 }
@@ -2384,7 +2736,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                         && display.getCurrent() == chatScreen)
                                 {
                                     chatScreen.setMessages(openHistory);
-                                    scheduleInlineThumbnails(openPeer, openHistory);
+                                    scheduleInlineThumbnails(openPeer);
                                     appendPendingForOpenPeer();
                                     chatScreen.setStatus(connectionLabel + "/"
                                             + updateLabel);
@@ -3009,8 +3361,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 ForwardOpen result = (ForwardOpen) value;
                 openPeer = result.peer;
+                newestKnownId = 0;
+                historyPageInFlight = false;
+                historyExhausted = false;
+                historyForwardStalled = false;
                 telegram.setActivePeer(openPeer);
-                openHistory = result.messages;
+                openHistory = new Message[0];
+                setOpenHistory(result.messages);
                 applyKnownReadState(openHistory, openPeer);
                 chatScreen = createChatScreen(openPeer);
                 chatScreen.setTitle(openPeer.title == null
@@ -3018,7 +3375,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         ? "Chat" : openPeer.title);
                 chatScreen.resetMessages(openHistory);
                 chatScreen.focusMessage(result.messageId);
-                scheduleInlineThumbnails(openPeer, openHistory);
+                scheduleInlineThumbnails(openPeer);
                 chatScreen.setStatus(connectionLabel + "/" + updateLabel);
                 pushScreen(chatScreen);
                 markRead();
@@ -3263,9 +3620,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public void onSuccess(Object result)
             {
                 if (!samePeer(openPeer, peer)) { return; }
-                openHistory = (Message[]) result;
+                mergeHistoryPage((Message[]) result);
                 chatScreen.setMessages(openHistory);
-                scheduleInlineThumbnails(peer, openHistory);
+                scheduleInlineThumbnails(peer);
                 Message refreshed = findOpenMessage(previous.id);
                 if (refreshed == null)
                 {
@@ -3697,7 +4054,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 chatScreen.setMediaPreviews(appSettings.mediaPreviews);
                 chatScreen.setMessages(openHistory);
-                scheduleInlineThumbnails(openPeer, openHistory);
+                scheduleInlineThumbnails(openPeer);
             }
             restoreScreen(navigation.pop());
         }

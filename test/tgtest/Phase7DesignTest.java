@@ -268,7 +268,7 @@ public final class Phase7DesignTest implements Test
             Assert.isTrue("two-slot cache evicts the oldest",
                     small.get(first) == null);
 
-            ChatScreen narrow = new ChatScreen(Theme.byId(Theme.LIGHT), 2);
+            ChatScreen narrow = new ChatScreen(Theme.byId(Theme.LIGHT), 2, 1);
             narrow.setThumbnail(11, image);
             narrow.setThumbnail(12, image);
             Assert.isTrue("two-slot thumbnails hold", narrow.hasThumbnail(11));
