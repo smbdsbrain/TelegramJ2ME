@@ -20,6 +20,7 @@
     config     - handshake, then an encrypted help.getConfig
     login      - interactive sign-in, persists the session
     dialogs    - list dialogs using a stored session
+    dialog-hash- does messages.getDialogs honour a hash, and of what? (no writes)
     reactions  - read global/per-peer allowed reaction policies (no writes)
     send       - send a message using a stored session
     updates    - wait for proactive messages/read state and catch-up
@@ -32,8 +33,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('handshake', 'config', 'obfs-config', 'http-config',
-                 'proxy-config', 'login', 'dialogs', 'reactions',
-                 'send', 'updates')]
+                 'proxy-config', 'login', 'dialogs', 'dialog-hash',
+                 'reactions', 'send', 'updates')]
     [string]$Scenario = 'handshake',
 
     [ValidateSet('test', 'production')]
@@ -62,6 +63,7 @@ $mainClass = @{
     'proxy-config' = "tgtest.LiveRouteTest"
     login     = "tgtest.LiveLoginTest"
     dialogs   = "tgtest.LiveDialogsTest"
+    'dialog-hash' = "tgtest.LiveDialogHashTest"
     reactions = "tgtest.LiveReactionsTest"
     send      = "tgtest.LiveSendTest"
     updates   = "tgtest.LiveUpdatesTest"

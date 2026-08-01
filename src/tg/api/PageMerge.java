@@ -33,6 +33,164 @@ public final class PageMerge
         return out;
     }
 
+    /**
+     * Lay a freshly fetched head page over the retained list.
+     *
+     * {@link #dialogs} gives position to the first array and content to the
+     * second, which is exactly right for appending a page at the bottom and
+     * exactly backwards for a refresh, where the head is both newer and
+     * authoritative about order. Assigning instead of merging is worse still:
+     * the server caps a {@code messages.getDialogs} page well below the number
+     * a reader can scroll to, so a refresh that replaces would truncate the
+     * list under them on every update burst.
+     *
+     * Appending the retained tail unchanged is safe because the head is the
+     * newest run: anything the server did not just send is older than
+     * everything it did.
+     *
+     * @param head     newest first, as the server returned it; wins on order
+     *                 and on content
+     * @param retained what the client already holds, head first
+     */
+    public static Dialog[] refresh(Dialog[] head, Dialog[] retained, int limit)
+    {
+        if (head == null) { head = new Dialog[0]; }
+        if (retained == null) { retained = new Dialog[0]; }
+        Dialog[] merged = new Dialog[Math.min(limit,
+                head.length + retained.length)];
+        int count = 0;
+        for (int pass = 0; pass < 2 && count < merged.length; pass++)
+        {
+            Dialog[] source = pass == 0 ? head : retained;
+            for (int i = 0; i < source.length && count < merged.length; i++)
+            {
+                Dialog value = source[i];
+                if (value == null || value.peer == null) { continue; }
+                if (find(merged, count, value.peer) >= 0) { continue; }
+                merged[count++] = value;
+            }
+        }
+        Dialog[] out = new Dialog[count];
+        System.arraycopy(merged, 0, out, 0, count);
+        return out;
+    }
+
+    /**
+     * Keep at most {@code limit} dialogs, dropping from the top.
+     *
+     * The counterpart of {@link #messages}'s tail truncation, and the opposite
+     * end, because the chat list is read downwards: the rows a reader has gone
+     * past are above them, and those are the ones nobody is looking at. What
+     * makes dropping them safe is that they can be fetched again - see the
+     * restore stack in {@code TgMidlet}, which records the one dialog sitting
+     * above each dropped run so a single request brings the run back.
+     *
+     * @return the rows kept; {@code dropped[0]} of the caller's bookkeeping is
+     *         whatever fell off the front
+     */
+    public static Dialog[] keepLast(Dialog[] source, int limit)
+    {
+        if (source == null) { return new Dialog[0]; }
+        if (limit >= source.length) { return source; }
+        if (limit <= 0) { return new Dialog[0]; }
+        Dialog[] out = new Dialog[limit];
+        System.arraycopy(source, source.length - limit, out, 0, limit);
+        return out;
+    }
+
+    /** Keep at most {@code limit} dialogs, dropping from the bottom. */
+    public static Dialog[] keepFirst(Dialog[] source, int limit)
+    {
+        if (source == null) { return new Dialog[0]; }
+        if (limit >= source.length) { return source; }
+        if (limit <= 0) { return new Dialog[0]; }
+        Dialog[] out = new Dialog[limit];
+        System.arraycopy(source, 0, out, 0, limit);
+        return out;
+    }
+
+    /**
+     * Refresh the content of rows a page happens to share, and nothing else.
+     *
+     * {@link #refresh} lays the newest page over the front of the list, which
+     * is right when the list starts at the top and wrong the moment it does
+     * not. A window sitting at row four hundred is not adjacent to the newest
+     * page: splicing them would put row 400 directly under row 0 and read as a
+     * contiguous list that skips four hundred chats.
+     *
+     * So when the window has scrolled, this is what a refresh is allowed to do.
+     * Unread counts, previews and dates come forward; order and membership do
+     * not move. The ordering goes stale until the reader scrolls back to the
+     * top or presses Refresh, which is a far smaller lie than a list with an
+     * invisible hole in it.
+     *
+     * @return {@code window}, mutated in place
+     */
+    public static Dialog[] restate(Dialog[] fresh, Dialog[] window)
+    {
+        if (fresh == null || window == null) { return window; }
+        for (int i = 0; i < fresh.length; i++)
+        {
+            Dialog value = fresh[i];
+            if (value == null || value.peer == null) { continue; }
+            int at = find(window, window.length, value.peer);
+            if (at >= 0) { window[at] = value; }
+        }
+        return window;
+    }
+
+    /**
+     * How many dialogs sit above {@code first} in the retained window.
+     *
+     * The mirror of {@link #below}, and it exists for the same reason: a reader
+     * coming back up has to provoke a fetch before they run out of window, and
+     * a filter must not be able to make that decision on their behalf.
+     */
+    public static int above(Dialog[] all, Peer first)
+    {
+        if (all == null) { return 0; }
+        if (first == null) { return all.length; }
+        for (int i = 0; i < all.length; i++)
+        {
+            Peer candidate = all[i] == null ? null : all[i].peer;
+            if (candidate != null && candidate.kind == first.kind
+                    && candidate.id == first.id)
+            {
+                return i;
+            }
+        }
+        return all.length;
+    }
+
+    /**
+     * How many dialogs sit below {@code last} in the list as a whole.
+     *
+     * This is what decides when another page is worth asking for, and it takes
+     * the unfiltered array on purpose. {@link #filter} narrows what is
+     * displayed, so "scrolled to the bottom" under a filter means the bottom of
+     * the matches: measuring against the filtered array would fetch for ever on
+     * a filter that matches three chats near the top.
+     *
+     * @param last the peer on the bottom row, or null when nothing is shown
+     * @return dialogs after it, or {@code all.length} when it cannot be placed -
+     *         the answer that asks for nothing
+     */
+    public static int below(Dialog[] all, Peer last)
+    {
+        if (all == null) { return 0; }
+        if (last == null) { return all.length; }
+        for (int i = 0; i < all.length; i++)
+        {
+            Peer candidate = all[i] == null ? null : all[i].peer;
+            if (candidate != null && candidate.kind == last.kind
+                    && candidate.id == last.id)
+            {
+                return all.length - 1 - i;
+            }
+        }
+        return all.length;
+    }
+
     public static Message[] messages(Message[] first, Message[] second,
                                      int limit)
     {

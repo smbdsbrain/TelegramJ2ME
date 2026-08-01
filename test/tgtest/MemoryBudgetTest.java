@@ -33,16 +33,24 @@ public final class MemoryBudgetTest implements Test
         "packetBytes", "inflateOutputBytes", "photoCompressedBytes",
         "updateQueueBytes", "httpQueueBytes",
         "maxDialogs", "dialogPageSize", "maxHistory", "historyPageSize",
-        "layoutWindowScreens", "historyPrefetchMargin",
+        "layoutWindowScreens", "historyPrefetchMargin", "dialogPrefetchMargin",
         "peerCacheEntries", "avatarCacheEntries", "thumbnailCacheEntries",
         "screenStackDepth", "photoPixels"
     };
 
-    /** What every one of these was, as a literal, before this class existed. */
+    /**
+     * What every one of these was, as a literal, before this class existed.
+     *
+     * With one exception: maxDialogs was 200 and is 500. It also stopped
+     * meaning the same thing - it is the window held around the reader now,
+     * not a limit on how far the chat list goes - and both halves of the new
+     * number are measured. 500 rows at 431 bytes each is 215 KB; the reasoning
+     * is in MemoryBudget beside the constant.
+     */
     private static final int[] REFERENCE = {
         1024 * 1024, 2 * 1024 * 1024, 512 * 1024, 256 * 1024, 256 * 1024,
-        200, 40, 120, 30,
-        3, 15,
+        500, 40, 120, 30,
+        3, 15, 20,
         500, 16, 12,
         16, 307200
     };
@@ -50,8 +58,8 @@ public final class MemoryBudgetTest implements Test
     /** Below these, shrinking further breaks something instead of saving something. */
     private static final int[] FLOOR = {
         256 * 1024, 192 * 1024, 48 * 1024, 32 * 1024, 64 * 1024,
-        20, 10, 20, 10,
-        1, 5,
+        40, 10, 20, 10,
+        1, 5, 5,
         64, 2, 2,
         4, 16384
     };
@@ -541,6 +549,7 @@ public final class MemoryBudgetTest implements Test
             MemoryBudget.historyPageSize(),
             MemoryBudget.layoutWindowScreens(),
             MemoryBudget.historyPrefetchMargin(),
+            MemoryBudget.dialogPrefetchMargin(),
             MemoryBudget.peerCacheEntries(),
             MemoryBudget.avatarCacheEntries(),
             MemoryBudget.thumbnailCacheEntries(),

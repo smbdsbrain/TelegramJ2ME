@@ -10,6 +10,21 @@ package tg.api;
  */
 public final class Dialog
 {
+    /**
+     * Characters of preview kept per row.
+     *
+     * The row draws one clipped line and always did, but what was <i>held</i>
+     * was the whole message - up to 4096 characters of it. That is why nothing
+     * in this client could say what a dialog costs: it had no fixed size, and a
+     * list capped at a count was bounded only in the sense that a hundred
+     * novels is a hundred of something.
+     *
+     * 96 is wider than any 320px row survives after {@code UiChrome.clip}, with
+     * room for the "You: " prefix and for a proportional font narrower than the
+     * one measured, so nothing visible changes.
+     */
+    public static final int PREVIEW_MAX = 96;
+
     public Peer peer;
     public int topMessageId;
     public int unreadCount;
@@ -29,6 +44,24 @@ public final class Dialog
     public String title()
     {
         return peer == null ? "?" : peer.title;
+    }
+
+    /**
+     * Bound a preview at ingest.
+     *
+     * At ingest rather than at paint, because paint already clips and the
+     * problem is retention: every path that fills {@link #lastMessage} goes
+     * through here, so a Dialog costs the same whatever arrived in it.
+     */
+    public static String clipPreview(String text)
+    {
+        if (text == null) { return ""; }
+        // The newline cut is here as well as in preview() so the retained copy
+        // is not carrying a second paragraph nobody can see.
+        int nl = text.indexOf('\n');
+        if (nl >= 0) { text = text.substring(0, nl); }
+        return text.length() <= PREVIEW_MAX
+                ? text : text.substring(0, PREVIEW_MAX);
     }
 
     /** One-line preview, matching what other clients show. */

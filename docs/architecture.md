@@ -173,6 +173,49 @@ laid-out line count flat at its opening value, one history request per few
 screens rather than per keypress, none at all on the way back down, and no
 memory shed at any point.
 
+### Scrolling the chat list
+
+The same shape one screen up, with one difference that changes the mechanism.
+
+`DialogListScreen` precomputes nothing — `paint` draws `visibleRows()` of an
+array — so there is no layout to virtualise. What needed bounding was the array
+itself. A row weighs a measured 431 bytes, so the list a reader has scrolled
+past is the cost, and an account of 1690 chats is more of it than any share of a
+4 MiB heap can hold. `TgMidlet` therefore keeps a *window* of
+`MemoryBudget.maxDialogs()` rows around the reader and drops what they have gone
+past. Memory stops depending on how far anybody scrolled: 1690 chats cost the
+same as 60.
+
+The difference is direction. `messages.getHistory` takes one `offset_id` and
+pages either way; `messages.getDialogs` takes `(offset_date, offset_id,
+offset_peer)` and pages **downwards only**, so a run dropped off the top cannot
+simply be asked for again. Instead, each time a run is dropped the client
+records the single dialog that was sitting immediately above it — that dialog is
+a valid offset, so the run comes back in one request rather than by paging from
+the start of the list. The restore points are a bounded stack; past its depth
+the way back to the very top is given up rather than the memory, and `Refresh`
+still returns there.
+
+Two orderings have to be given up in exchange, and both are deliberate. Below
+the top of the list the periodic update snapshot may change what rows *say* but
+not where they are (`PageMerge.restate`), because the newest page is not
+adjacent to a window at row four hundred and splicing them would render a
+contiguous list with an invisible hole in it. For the same reason a chat that
+receives a message is not promoted while the window has scrolled: it has moved
+to row zero, which is not somewhere the window can put it.
+
+The fetch trigger is `PageMerge.below`/`above` against the **unfiltered** window,
+because `PageMerge.filter` narrows what is displayed and the bottom of three
+matches is not the bottom of anything. `More` survives as a manual nudge. The
+header counts the reader's position against the server's total — `912/1690`,
+from `messages.dialogsSlice` — rather than counting what is held against itself.
+
+Measured by driving the packaged client against a real account of 1690 chats:
+ninety screens down reached row 630 with the window never exceeding 500 rows and
+twelve requests spent, then a hundred and ten screens back up returned to row
+zero on five restore requests, with the reader's row never moving under them and
+nothing shed.
+
 ### What the client actually needs
 
 Measured by driving the packaged client under a constrained heap, against a real

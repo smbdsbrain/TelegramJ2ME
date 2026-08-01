@@ -86,7 +86,7 @@ public final class ShowcaseRenderer
                     true, false, 1784214000)
         };
         screen.setStatus("online", "live");
-        screen.setDialogs(dialogs, dialogs.length, dialogs[0].peer);
+        screen.setDialogs(dialogs, 0, dialogs.length, dialogs[0].peer);
         write(file, screen);
     }
 

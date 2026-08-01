@@ -33,6 +33,17 @@
              virtualised window exists for: what has to stay flat is the line
              count, and what has to track pages rather than keypresses is the
              request count.
+    chats    scroll the chat list down -Pages screens and back up, reporting
+             the retained count, requests per page, bytes per dialog and
+             whether the reader's row moved under them. The chat-list twin of
+             scroll: what has to grow is the retained count, and what has to
+             track pages rather than keypresses is the request count. It never
+             opens a chat, so it reads and mutates nothing.
+    hashprobe does messages.getDialogs honour a hash, and of what? Sends each
+             candidate vector back to the server twice in a row and reports
+             which - if any - comes back messages.dialogsNotModified. Uses the
+             profile's stored session but does not start the client. -Pages is
+             the page size here. Lists dialogs and nothing else.
 
     Everything except probe contacts real Telegram servers.
 
@@ -105,7 +116,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap', 'scroll')]
+    [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap',
+                 'scroll', 'chats', 'hashprobe')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
     [string]$Phone = '',
@@ -169,6 +181,8 @@ switch ($Scenario) {
     'minheap' { $driverArgs += @($ChatTitle, $Pictures) }
     'scroll'  { $driverArgs += @($ChatTitle, "$Pages",
                                  $(if ($SingleSocket) { 'single' } else { 'multi' })) }
+    'chats'   { $driverArgs += @("$Pages", $Pictures) }
+    'hashprobe' { $driverArgs += "$Pages" }
 }
 
 Write-Step "emulator driver [$profileLabel] :: $Scenario ($Env)"

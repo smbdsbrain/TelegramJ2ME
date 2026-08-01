@@ -257,16 +257,35 @@ public final class Requests
      * messages.getDialogs#a0f4cb4f flags:# exclude_pinned:flags.0?true
      *     folder_id:flags.1?int offset_date:int offset_id:int
      *     offset_peer:InputPeer limit:int hash:long = messages.Dialogs
-     *
-     * hash is 0 to force a full response; the incremental form needs a hash of
-     * the dialog list we already hold, which the MVP does not track.
      */
     public static byte[] getDialogs(int limit)
     {
-        return getDialogs(null, limit);
+        return getDialogs(null, limit, 0);
     }
 
     public static byte[] getDialogs(Dialog offset, int limit)
+    {
+        return getDialogs(offset, limit, 0);
+    }
+
+    /**
+     * @param hash of the list already held, or 0 to force a full response. Only
+     *             ever non-zero with a null offset: a hash describes a list
+     *             from its start, and every later page is asked for by
+     *             {@code (offset_date, offset_id, offset_peer)}.
+     *
+     * <p>The client sends 0, and that is a measurement rather than a shrug.
+     * Production DC2, 2026-08-01, one page of thirty against a real account:
+     * the control with hash 0 came back full, and so did all three candidate
+     * vectors - the top messages, the peer ids, and the per-dialog
+     * {@code (pinned, peer, top, unread)} tuple - each folded with the
+     * documented algorithm. Not one produced {@code messages.dialogsNotModified}.
+     * Consistent with the official clients, which never send a non-zero hash
+     * here either. The parameter and {@link PageHash} stay so the next attempt
+     * starts from that evidence instead of repeating it; see
+     * {@code tgtest.LiveDialogHashTest} to re-run it.
+     */
+    public static byte[] getDialogs(Dialog offset, int limit, long hash)
     {
         TlWriter w = new TlWriter(64);
         w.writeInt(Api.MESSAGES_GET_DIALOGS);
@@ -276,7 +295,7 @@ public final class Requests
         if (offset == null) { writeInputPeerEmpty(w); }
         else { writeInputPeer(w, offset.peer); }
         w.writeInt(limit);
-        w.writeLong(0);                     // hash
+        w.writeLong(offset == null ? hash : 0);
         return w.toByteArray();
     }
 

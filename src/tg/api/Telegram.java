@@ -892,18 +892,28 @@ public final class Telegram
      * chats those refer to, all in separate vectors - so this joins them and
      * feeds {@link PeerCache} on the way through.
      */
-    public Dialog[] getDialogs(int limit) throws IOException
+    public DialogPage getDialogs(int limit) throws IOException
     {
-        return parseDialogsReply(invoke(Requests.getDialogs(limit)));
+        return getDialogs(limit, 0);
     }
 
-    public Dialog[] getDialogsAfter(Dialog offset, int limit)
+    /**
+     * The first page, offered the chance to come back as "not modified".
+     *
+     * @param hash of the list already held; 0 forces a full response
+     */
+    public DialogPage getDialogs(int limit, long hash) throws IOException
+    {
+        return parseDialogsReply(invoke(Requests.getDialogs(null, limit, hash)));
+    }
+
+    public DialogPage getDialogsAfter(Dialog offset, int limit)
             throws IOException
     {
         return parseDialogsReply(invoke(Requests.getDialogs(offset, limit)));
     }
 
-    private Dialog[] parseDialogsReply(byte[] result) throws IOException
+    private DialogPage parseDialogsReply(byte[] result) throws IOException
     {
         TlObj res = TlParser.parse(new TlReader(result));
         if (res == null)
@@ -915,6 +925,7 @@ public final class Telegram
         TlObj[] messages;
         TlObj[] chats;
         TlObj[] users;
+        DialogPage page = new DialogPage();
 
         if (res.id == Api.MESSAGES_DIALOGS)
         {
@@ -922,6 +933,11 @@ public final class Telegram
             messages = res.vec(Api.F_MESSAGES_DIALOGS__MESSAGES);
             chats = res.vec(Api.F_MESSAGES_DIALOGS__CHATS);
             users = res.vec(Api.F_MESSAGES_DIALOGS__USERS);
+            // Not a slice: this constructor is the whole list, which is the
+            // cheapest "stop asking" signal there is - no empty page needed to
+            // discover it.
+            page.complete = true;
+            page.total = dialogs == null ? 0 : dialogs.length;
         }
         else if (res.id == Api.MESSAGES_DIALOGS_SLICE)
         {
@@ -929,6 +945,17 @@ public final class Telegram
             messages = res.vec(Api.F_MESSAGES_DIALOGS_SLICE__MESSAGES);
             chats = res.vec(Api.F_MESSAGES_DIALOGS_SLICE__CHATS);
             users = res.vec(Api.F_MESSAGES_DIALOGS_SLICE__USERS);
+            page.total = res.intAt(Api.F_MESSAGES_DIALOGS_SLICE__COUNT);
+        }
+        else if (res.id == Api.MESSAGES_DIALOGS_NOT_MODIFIED)
+        {
+            // Only reachable with a non-zero hash, which this client sends only
+            // for the first page. Nothing to parse and nothing to seed: the
+            // caller keeps what it already holds, including the total it was
+            // last told - which is why the count this constructor carries is
+            // not read, and why no field of it is on the TL whitelist.
+            page.notModified = true;
+            return page;
         }
         else
         {
@@ -965,7 +992,7 @@ public final class Telegram
             Message last = findMessage(messages, entry.topMessageId, reference);
             if (last != null)
             {
-                entry.lastMessage = last.summaryText();
+                entry.lastMessage = Dialog.clipPreview(last.summaryText());
                 entry.date = last.date;
                 entry.lastMessageOutgoing = last.outgoing;
             }
@@ -983,7 +1010,12 @@ public final class Telegram
             System.arraycopy(out, 0, resultDialogs, 0, w);
         }
         updates.seedDialogs(resultDialogs);
-        return resultDialogs;
+        page.dialogs = resultDialogs;
+        // A slice whose count is below what it just handed over is a count for
+        // a different question - the folder total, or a figure that moved
+        // between requests. Never let it read as "you already have them all".
+        if (page.total < resultDialogs.length) { page.total = resultDialogs.length; }
+        return page;
     }
 
     /** Message history for one peer, newest first. */

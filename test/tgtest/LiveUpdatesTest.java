@@ -63,7 +63,7 @@ public final class LiveUpdatesTest
                 System.out.println("Not signed in. Run: ./tools/live.ps1 login");
                 System.exit(2);
             }
-            Dialog[] dialogs = tg.getDialogs(40);
+            Dialog[] dialogs = tg.getDialogs(40).dialogs;
             if (activeIndex >= 0)
             {
                 if (activeIndex >= dialogs.length)

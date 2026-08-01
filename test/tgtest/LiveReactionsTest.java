@@ -23,7 +23,7 @@ public final class LiveReactionsTest
                 throw new IllegalStateException(
                         "not signed in; run ./tools/live.ps1 login");
             }
-            Dialog[] dialogs = tg.getDialogs(40);
+            Dialog[] dialogs = tg.getDialogs(40).dialogs;
             Peer[] samples = new Peer[3];
             for (int i = 0; i < dialogs.length; i++)
             {
