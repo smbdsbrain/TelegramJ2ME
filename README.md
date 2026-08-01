@@ -135,7 +135,7 @@ anyone can do for this project right now.
 - SRP-6a for two-step verification
 
 **Two companion MIDlets**
-- **Probe** (~91 KB) — reports what your handset actually supports: platform,
+- **Probe** (~110 KB) — reports what your handset actually supports: platform,
   heap, RMS, raw sockets, key codes, image decoding, and how much entropy the
   runtime's clock and allocator actually yield
 - **Crypto** — runs the cryptographic test vectors and benchmarks on the device

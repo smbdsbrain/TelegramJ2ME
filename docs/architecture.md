@@ -54,9 +54,9 @@ Three MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
 
 | Target | Entry point | Size | Purpose |
 |---|---|---|---|
-| `probe` | `tg.app.ProbeMidlet` | ~91 KB | platform, heap, RMS, entropy, keys, sockets, images, pause/resume |
-| `crypto` | `tg.app.CryptoMidlet` | ~103 KB | crypto vectors, modPow and PBKDF2 benchmarks, entropy |
-| `tg` | `tg.app.TgMidlet` | ~399 KB, ~291 KB with `-Release` | messenger with connection settings/diagnostics |
+| `probe` | `tg.app.ProbeMidlet` | ~110 KB | platform, heap, RMS, entropy, keys, sockets, images, pause/resume |
+| `crypto` | `tg.app.CryptoMidlet` | ~118 KB | crypto vectors, modPow and PBKDF2 benchmarks, entropy |
+| `tg` | `tg.app.TgMidlet` | ~428 KB, ~312 KB with `-Release` | messenger with connection settings/diagnostics |
 
 `config/proguard-common.pro` deliberately has **no** blanket
 `-keep class * extends MIDlet`: that would keep every entry point in every
@@ -141,9 +141,36 @@ headroom has already said the work will not fit. Never on the `MtClient` reader
 thread, where a collect delays every pending RPC; the protection there is the
 smaller budget, not a shed.
 
-Below about 1.5 MB the protocol floors alone are half the heap. The start screen
-says so and lets the user try anyway — a handset that under-reports would
-otherwise be locked out of an app that might have run on it.
+### What the client actually needs
+
+Measured by driving the packaged client under a constrained heap, against a real
+account, with the free heap reduced in steps. "Free" is what remained for the
+MIDlet after the runtime loaded, which is the share a handset's AMS also decides
+— not the figure on a spec sheet.
+
+| free heap | with pictures | with pictures off |
+|---|---|---|
+| above ~2.2 MB | everything, no pressure | everything, no pressure |
+| ~2.0 MB | the shed ladder starts firing | no pressure |
+| ~1.7 MB | photos refused; avatars and chat fine | photos still decode |
+| ~1.5 MB | avatars stop loading | chat still usable |
+| ~1.1 MB | sign-in fails | sign-in fails |
+
+Turning pictures off does not move the sign-in floor — the handshake decodes no
+images, so both modes fail at the same ~1.1 MB. What it moves is everything above
+that. It is worth roughly 480 KB at rest, and at ~1.7 MB free it is the
+difference between a photo that opens and one the client refuses: the memory the
+thumbnails were holding is the memory the photo needed. That is what those two
+settings are for, and why they sit on the first Settings screen rather than
+buried.
+
+Below 2 MB of measured heap the start screen warns that signing in may not be
+possible. That threshold is measured, not reasoned: at a 1536 KB ceiling the
+connect task runs out of memory before the dialog list, and at 3584 KB the whole
+client works. Nothing between the two was reachable on the host used for the
+sweep, so the warning sits nearer the proven failure. It stays a warning and
+never a refusal — a handset that under-reports would otherwise be locked out of
+an app that might have run on it.
 
 Record-store limits (`RmsAvatarCache`, `RmsConversationCache`, the outbox) are
 deliberately *not* derived from any of this. They bound persistent storage, which
