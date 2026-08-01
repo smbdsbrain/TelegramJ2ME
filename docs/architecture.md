@@ -186,6 +186,13 @@ past is the cost, and an account of 1690 chats is more of it than any share of a
 past. Memory stops depending on how far anybody scrolled: 1690 chats cost the
 same as 60.
 
+The window is three pages, sized by the slack scrolling needs rather than by how
+much of an account it covers — the viewport, a prefetch margin at each end, and
+a page of room so that an arriving page does not provoke the next one. Coverage
+stopped being its job the moment the list could be scrolled past it. A smaller
+window costs round trips on the way back up and nowhere else; going down,
+requests track pages scrolled whatever it is set to.
+
 The difference is direction. `messages.getHistory` takes one `offset_id` and
 pages either way; `messages.getDialogs` takes `(offset_date, offset_id,
 offset_peer)` and pages **downwards only**, so a run dropped off the top cannot
@@ -211,10 +218,10 @@ header counts the reader's position against the server's total — `912/1690`,
 from `messages.dialogsSlice` — rather than counting what is held against itself.
 
 Measured by driving the packaged client against a real account of 1690 chats:
-ninety screens down reached row 630 with the window never exceeding 500 rows and
+ninety screens down reached row 630 with the window never exceeding 120 rows and
 twelve requests spent, then a hundred and ten screens back up returned to row
-zero on five restore requests, with the reader's row never moving under them and
-nothing shed.
+zero on fifteen restore requests, with the reader's row never moving under them
+and nothing shed.
 
 ### What the client actually needs
 

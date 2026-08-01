@@ -41,15 +41,16 @@ public final class MemoryBudgetTest implements Test
     /**
      * What every one of these was, as a literal, before this class existed.
      *
-     * With one exception: maxDialogs was 200 and is 500. It also stopped
-     * meaning the same thing - it is the window held around the reader now,
-     * not a limit on how far the chat list goes - and both halves of the new
-     * number are measured. 500 rows at 431 bytes each is 215 KB; the reasoning
-     * is in MemoryBudget beside the constant.
+     * With one exception: maxDialogs was 200 and is 120. It went *down*,
+     * because it stopped meaning the same thing - it is the window held around
+     * the reader now, not a limit on how far the chat list goes, and a window
+     * is sized by the slack scrolling needs rather than by how much of an
+     * account it covers. Three pages, 52 KB at the measured 431 bytes a row;
+     * the derivation is in MemoryBudget beside the constant.
      */
     private static final int[] REFERENCE = {
         1024 * 1024, 2 * 1024 * 1024, 512 * 1024, 256 * 1024, 256 * 1024,
-        500, 40, 120, 30,
+        120, 40, 120, 30,
         3, 15, 20,
         500, 16, 12,
         16, 307200

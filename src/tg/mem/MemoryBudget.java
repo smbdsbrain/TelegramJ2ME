@@ -141,19 +141,35 @@ public final class MemoryBudget
      * Reported on every probe run as dialogBytes, so a change to either class
      * shows up as a changed number rather than as a stale comment.
      *
-     * 500 rows is 215 KB, about 5% of the reference heap, and the size is
-     * chosen for scrolling rather than for coverage: it is the slack that
-     * decides how much a reader can move back and forth before provoking a
-     * refetch. Driven at 90 screens down and 110 back up, that cost 12 requests
-     * one way and 5 the other.
+     * The size is three pages, and that is the whole derivation. A window has
+     * to hold what is on screen, a prefetch margin at each end, and enough
+     * slack that a page arriving does not immediately provoke the next one:
+     * seven rows plus two twenties plus a page of room, rounded to the unit
+     * fetches actually come in. It leaves about eleven screens of free movement
+     * between requests.
      *
-     * It is not larger because this is the one retained structure the client
-     * cannot give back. MemoryRelief may be called from a worker thread, and
-     * trimming a list a live screen has already laid out is exactly what its
-     * contract forbids - so whatever this holds is held for the session, on a
-     * handset where avatars start failing around 1.5 MB free.
+     * Deliberately not sized as a share of the heap. That was the first attempt
+     * and it produced 500 - about 5%, which sounds modest and is seventy-one
+     * screens of buffer against a margin that reasks after three. Coverage
+     * stopped being this number's job the moment the list could be scrolled
+     * past it, so the only question left is how much slack scrolling needs, and
+     * the answer is a few pages rather than a few hundred rows.
+     *
+     * 120 rows is 52 KB, and being small matters here more than anywhere else
+     * in this file: it is the one retained structure the client cannot give
+     * back. MemoryRelief may be called from a worker thread, and trimming a
+     * list a live screen has already laid out is exactly what its contract
+     * forbids - so whatever this holds is held for the session, on a handset
+     * where avatars start failing around 1.5 MB free.
+     *
+     * What a smaller window costs is round trips on the way back up, and only
+     * there: going down, requests track pages scrolled whatever the window is.
+     * Measured over 90 screens down and 110 back up on a 1690-chat account,
+     * moving from 500 to 120 left the descent at 12 requests and took the
+     * return from 5 to 15. Ten round trips against 163 KB that cannot be
+     * reclaimed is not a close trade on a 2 MB handset.
      */
-    private static final int REF_DIALOGS         = 500;
+    private static final int REF_DIALOGS         = 120;
     private static final int MIN_DIALOGS         = 40;
     private static final int REF_DIALOG_PAGE     = 40;
     private static final int MIN_DIALOG_PAGE     = 10;

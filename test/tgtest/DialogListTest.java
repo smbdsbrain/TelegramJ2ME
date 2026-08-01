@@ -21,7 +21,7 @@ import tg.ui.Theme;
  *
  *   - what is held is a window around the reader, so how far they have scrolled
  *     stops deciding how much memory the list costs. A 1690-chat account is the
- *     same 500 rows as a 60-chat one;
+ *     same few pages as a 60-chat one;
  *   - a run dropped off the top can be fetched back, in one request rather than
  *     by paging from the start. messages.getDialogs goes downwards only, so
  *     without that the window would be a wall at the other end;
