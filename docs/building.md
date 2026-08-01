@@ -228,6 +228,31 @@ MicroEmulator runs the MIDlet on the host JVM, so a bounded host heap is what th
 client's own probe measures. Read the result with the caveats in
 [emulator-notes.md](emulator-notes.md#bounding-the-heap-with--xmx).
 
+The smoke test stops before the network on purpose. To exercise what comes after
+it — connect, sign in, open a chat — without a person at the keyboard:
+
+```bash
+pwsh -File tools/drive-emulator.ps1 -Scenario probe -EmulatorProfile check
+pwsh -File tools/drive-emulator.ps1 -Scenario route -Mode Auto -Env production
+```
+
+```bash
+pwsh -File tools/drive-emulator.ps1 -Scenario minheap \n     -ChatTitle "<chat>" -Pictures off -Remeasure -JavaArgs "-Xmx3m"
+```
+
+`drive-emulator.ps1` presses the same commands by label inside MicroEmulator's
+MIDP runtime and prints the diagnostic ring, which is otherwise readable only on
+the Log screen of a running emulator. The `minheap` scenario prints one verdict
+line per run — what still worked at that heap — so a sweep of `-Xmx` values
+reads as a table; `-Pictures off` repeats it with dialog avatars and inline
+thumbnails disabled. `-Remeasure` is required for any constrained run: a profile
+otherwise carries the ceiling of whichever JVM first wrote it, which under a
+smaller `-Xmx` is a lie in the direction that matters. Unlike the smoke harness it registers a
+record store, so auth keys and the stored heap measurement persist across runs
+exactly as they do in the GUI. Every scenario except `probe` contacts real
+Telegram servers; `-Scenario login` additionally needs a phone number and a file
+to read the sign-in code from.
+
 See [emulator-notes.md](emulator-notes.md) for what an emulator pass does and
 does not prove.
 

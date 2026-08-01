@@ -18,6 +18,7 @@ import org.microemu.device.impl.Rectangle;
 import org.microemu.device.j2se.J2SEDevice;
 import org.microemu.device.j2se.J2SEDeviceDisplay;
 import org.microemu.device.j2se.J2SEFontManager;
+import org.microemu.device.j2se.J2SEInputMethod;
 import org.microemu.device.ui.UIFactory;
 
 /**
@@ -29,9 +30,17 @@ import org.microemu.device.ui.UIFactory;
  * J2SE font manager and display so text measurement and painting behave the
  * way the emulator does.
  *
- * {@link #getInputMethod()} is null: nothing here delivers key events. Tests
- * drive screens through their own API, or through
+ * {@link #getInputMethod()} is null by default: nothing here delivers key
+ * events, and tests drive screens through their own API or through
  * {@code org.microemu.DisplayAccess} when a MIDlet is running.
+ *
+ * A TextBox is the exception and it fails loudly. MIDP's TextBox is a
+ * full-screen native editor, so {@code showNotify} reaches for an input method
+ * the moment one is shown - and a NullPointerException there is thrown on
+ * MicroEmulator's event thread, which kills the dispatcher. From that point
+ * {@code setCurrent} silently stops working and the screen simply never
+ * changes. Anything that has to reach the phone-number or message boxes needs
+ * {@link #withInput}.
  */
 public final class TestDevice implements Device
 {
@@ -40,6 +49,7 @@ public final class TestDevice implements Device
     private final NoUiDisplayComponent component = new NoUiDisplayComponent();
     private final J2SEDeviceDisplay screen;
     private final String name;
+    private InputMethod input;
 
     public TestDevice(String name, int width, int height)
     {
@@ -59,10 +69,23 @@ public final class TestDevice implements Device
         screen.setForegroundColor(new org.microemu.device.impl.Color(0x000000));
     }
 
+    /**
+     * Install a real input method, which TextBox requires to be shown at all.
+     *
+     * Opt-in rather than always-on: the screens the smoke test and the showcase
+     * renderer visit do not need it, and adding machinery to a harness that
+     * three other things depend on is not free.
+     */
+    public TestDevice withInput()
+    {
+        input = new J2SEInputMethod();
+        return this;
+    }
+
     public void init() { }
     public void destroy() { }
     public String getName() { return name; }
-    public InputMethod getInputMethod() { return null; }
+    public InputMethod getInputMethod() { return input; }
     public FontManager getFontManager() { return fonts; }
     public DeviceDisplay getDeviceDisplay() { return screen; }
     public UIFactory getUIFactory() { return ui; }
