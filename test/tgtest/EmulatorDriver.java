@@ -39,7 +39,8 @@ import tg.ui.DialogListScreen;
  * Scenarios:
  * <pre>
  *   probe                measure the heap, print the derived budgets, exit
- *   route  &lt;mode&gt;        set the connection mode and connect
+ *   route  &lt;mode&gt;        set the connection mode and connect ("asis": do not
+ *                          touch Settings, connect on what is stored)
  *   login  &lt;phone&gt; &lt;codeFile&gt;   connect, request a code, wait for the file
  *   session              use a stored session: dialogs, open the first chat
  *   photos &lt;title&gt;       open a picture-heavy chat and decode its photos
@@ -275,7 +276,14 @@ public final class EmulatorDriver
     private static boolean route(EmulatorHarness app, String modeLabel)
             throws Exception
     {
-        if (!setMode(app, modeLabel)) { return false; }
+        // "asis" is the only way to observe a genuine first launch. Every other
+        // value opens Settings and saves, and saving is itself the repair for
+        // anything the stored configuration got wrong - so a driver that always
+        // sets the mode can never see what an untouched profile does.
+        if (!"asis".equalsIgnoreCase(modeLabel) && !setMode(app, modeLabel))
+        {
+            return false;
+        }
         return connect(app);
     }
 

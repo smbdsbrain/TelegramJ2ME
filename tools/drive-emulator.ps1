@@ -51,10 +51,11 @@
     Connection mode to select in Settings first: Auto, Direct,
     "Direct obfuscated", MTProxy or HTTP.
 
-    Worth knowing: on a profile with nothing stored, a build carrying a
-    compiled-in MTProxy pins itself to MTProxy alone, because attempts()
-    returns a single route for any mode but Auto. Saving Auto once persists the
-    proxy as a fallback and restores the full chain.
+    AsIs is different: it does not open Settings at all and connects on
+    whatever the profile has stored. Pair it with a fresh -EmulatorProfile to
+    drive a genuine first launch - every other value visits Settings and saves,
+    and saving is itself the repair for anything the stored configuration got
+    wrong, so no other value can observe an untouched profile.
 
 .PARAMETER Phone
     login only. International format, e.g. +10000000000.
@@ -111,6 +112,7 @@
 .EXAMPLE
     ./tools/drive-emulator.ps1 -Scenario probe -EmulatorProfile heapcheck
     ./tools/drive-emulator.ps1 -Scenario route -Mode Auto -Env production
+    ./tools/drive-emulator.ps1 -Scenario route -Mode AsIs -Env production -EmulatorProfile firstrun
     ./tools/drive-emulator.ps1 -Scenario login -Phone +10000000000 -CodeFile code.txt -Env production
     ./tools/drive-emulator.ps1 -Scenario scroll -ChatTitle "Some channel" -Pages 40 -Env production
 #>
