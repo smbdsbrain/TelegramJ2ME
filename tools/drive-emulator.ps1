@@ -207,16 +207,25 @@ if ($EmulatorProfile -ne 'default') {
     if ((Test-Path $keyStore) -and (Get-Item $keyStore).Length -gt 0) {
         $keyBackup = "$keyStore.bak"
         Copy-Item $keyStore $keyBackup -Force
-    } else {
-        $keyStore = $null
     }
 }
 
 function Restore-KeyStoreIfEmptied {
-    if (-not $keyStore -or -not $keyBackup) { return }
-    if (-not (Test-Path $keyStore) -or (Get-Item $keyStore).Length -eq 0) {
+    if (-not $keyStore) { return }
+    if ((Test-Path $keyStore) -and (Get-Item $keyStore).Length -gt 0) { return }
+
+    if ($keyBackup -and (Test-Path $keyBackup)) {
         Copy-Item $keyBackup $keyStore -Force
         Write-Warn2 "tgkeys.rs was emptied by this run; restored from the backup taken before it"
+        return
+    }
+    # No backup to put back, so at least leave the profile able to make a new
+    # store. A zero-byte file is worse than an absent one: MicroEmulator reads
+    # its header on every open and throws EOFException, so the profile cannot
+    # even be signed in again by hand until the file is gone.
+    if (Test-Path $keyStore) {
+        Remove-Item $keyStore -Force
+        Write-Warn2 "tgkeys.rs was emptied and there was no backup; removed it so the profile can sign in again"
     }
 }
 
