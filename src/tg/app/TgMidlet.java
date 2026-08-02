@@ -1484,6 +1484,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // fits() rather than reserve(): this runs on the lcdui thread, where a
         // collect stalls the display. The worker asks the expensive question a
         // moment later, with the real size of the real image in hand.
+        //
+        // And the estimate is not the only bar. avatarHeapFloor is what the VM
+        // has already demonstrated about this heap, which beats any arithmetic
+        // done from freeMemory().
         long room = MemoryPressure.headroom();
         if (!MemoryPressure.fits(MemoryBudget.avatarDecodeCost())
                 || room <= avatarHeapFloor)
