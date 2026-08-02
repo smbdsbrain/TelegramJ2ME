@@ -55,6 +55,34 @@ public final class StrippedJpeg
         return jpeg;
     }
 
+    /**
+     * Live bytes at the peak of decoding this payload, before restoring it.
+     *
+     * A conversation screen queues up to a dozen of these at once, so the
+     * question "does the next one fit" has to be answerable without doing any of
+     * the work. It is: the payload states its own size in bytes 1 and 2, and the
+     * restored JPEG is the fixed template plus the entropy data, both known here.
+     *
+     * @return 0 for a payload this class would refuse to restore anyway. The
+     *         caller admits it and lets {@link #restore} report the real fault
+     *         rather than turning a malformed thumbnail into a memory refusal.
+     */
+    public static long decodeCost(byte[] stripped)
+    {
+        if (stripped == null || stripped.length < 4 || stripped[0] != 1)
+        {
+            return 0;
+        }
+        int height = stripped[1] & 0xff;
+        int width = stripped[2] & 0xff;
+        if (width < 1 || height < 1) { return 0; }
+        // What restore() will build: the template, the entropy data, and the two
+        // bytes of EOI it appends. HEADER.length() / 2 rather than header(),
+        // which would allocate the template to measure it.
+        int restored = HEADER.length() / 2 + stripped.length - 3 + 2;
+        return MemoryBudget.photoDecodeCost(width, height, restored);
+    }
+
     private static synchronized byte[] header()
     {
         if (header != null) { return header; }

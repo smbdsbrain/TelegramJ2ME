@@ -98,6 +98,33 @@ public final class MemoryPressure
      */
     public static boolean reserve(long bytes)
     {
+        return reserve(bytes, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Make room for {@code bytes}, shedding no further than {@code maxLevel}.
+     *
+     * <h3>Why a caller would ask for less than the whole ladder</h3>
+     * The ladder exists to rescue work the user asked for. Some of the work that
+     * needs admission is not that: a dialog-list avatar and an inline thumbnail
+     * are decoration, they arrive a dozen at a time, and the levels they would
+     * reach are the avatar cache and the open conversation's thumbnails - so an
+     * unbounded shed here clears the cache it is filling and the client does the
+     * same work again. Bounded at level 1 the decoration still gets the two
+     * cheap steps that matter, {@link #fits} and a collect, and it may drop the
+     * cached full-screen photo nobody is looking at; it cannot evict the emoji
+     * sheet the next paint needs, or the avatars, or the thumbnails.
+     *
+     * The collect is the important half. Twelve small decodes in a row leave
+     * their own garbage behind, and {@link #headroom} counts uncollected garbage
+     * as used, so without it the second thumbnail would be refused because of
+     * the first - which stops previews far earlier than the heap requires.
+     *
+     * @param maxLevel highest relief level this caller may reach, counting from
+     *                 1; zero or less means collect but never shed
+     */
+    public static boolean reserve(long bytes, int maxLevel)
+    {
         if (fits(bytes)) { return true; }
 
         MemoryRelief target;
@@ -110,6 +137,7 @@ public final class MemoryPressure
         if (target == null) { return false; }
 
         int levels = target.levels();
+        if (levels > maxLevel) { levels = maxLevel; }
         for (int level = 1; level <= levels; level++)
         {
             long before = headroom();

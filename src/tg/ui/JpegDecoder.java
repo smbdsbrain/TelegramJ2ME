@@ -76,6 +76,69 @@ public final class JpegDecoder
         return readCompressed(in, token);
     }
 
+    /**
+     * How large this image is, without decoding it.
+     *
+     * Exists so a decode can be refused before it is attempted.
+     * {@link tg.mem.MemoryBudget#photoDecodeCost} needs the pixel count, and on
+     * the avatar path there is nowhere else to get it: {@code AvatarRef} carries
+     * a photo id and a data centre, and the server chooses the size. Reading the
+     * frame header costs a walk over a few hundred bytes of markers and
+     * allocates nothing, which is the difference between an honest refusal and
+     * an OutOfMemoryError caught after the fact.
+     *
+     * Stops at the first frame header. A JPEG that reaches its scan or its end
+     * without one is malformed, and saying so here would only duplicate the
+     * decoder's own error a moment early.
+     *
+     * @return {@code (width << 16) | height} - read the width back with
+     *         {@code >>> 16}, not {@code >>}, because a legal width above 32767
+     *         sets the sign bit - or 0 when the header cannot be read, in which
+     *         case the caller should let the decode report the real problem
+     */
+    public static int dimensions(byte[] data)
+    {
+        if (data == null || data.length < 4) { return 0; }
+        if (((data[0] & 0xff) << 8 | (data[1] & 0xff)) != 0xffd8) { return 0; }
+
+        int pos = 2;
+        while (pos < data.length)
+        {
+            while (pos < data.length && (data[pos] & 0xff) != 0xff) { pos++; }
+            while (pos < data.length && (data[pos] & 0xff) == 0xff) { pos++; }
+            if (pos >= data.length) { return 0; }
+            int marker = 0xff00 | (data[pos++] & 0xff);
+
+            // No frame header before the scan or the end of image: malformed.
+            if (marker == 0xffda || marker == 0xffd9) { return 0; }
+            // Standalone markers, no length field of their own.
+            if (marker == 0xff01 || (marker >= 0xffd0 && marker <= 0xffd7))
+            {
+                continue;
+            }
+            if (pos + 1 >= data.length) { return 0; }
+            int length = ((data[pos] & 0xff) << 8) | (data[pos + 1] & 0xff);
+            if (length < 2 || pos + length > data.length) { return 0; }
+
+            // SOF0..SOF15. c4 is DHT, c8 is JPG and cc is DAC, which share the
+            // range without being frame headers. The unsupported frame types are
+            // deliberately measured too: refusing to size an arithmetic-coded
+            // JPEG would only hide it from the budget, and the decoder rejects
+            // it a moment later anyway.
+            if (marker >= 0xffc0 && marker <= 0xffcf && marker != 0xffc4
+                    && marker != 0xffc8 && marker != 0xffcc)
+            {
+                if (length < 7) { return 0; }
+                int height = ((data[pos + 3] & 0xff) << 8) | (data[pos + 4] & 0xff);
+                int width = ((data[pos + 5] & 0xff) << 8) | (data[pos + 6] & 0xff);
+                if (width < 1 || height < 1) { return 0; }
+                return (width << 16) | height;
+            }
+            pos += length;
+        }
+        return 0;
+    }
+
     public static Decoded decodePixels(InputStream in, DownloadToken token)
             throws IOException
     {

@@ -338,6 +338,37 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private volatile boolean avatarsUnavailable;
 
     /**
+     * Whether avatar loading is currently held back for want of heap.
+     *
+     * Unlike {@link #avatarsUnavailable} this is not a decision, it is the last
+     * answer: it exists only so the client says "avatars paused" once rather
+     * than on every scroll step, and it clears itself as soon as there is room
+     * again.
+     */
+    private volatile boolean avatarsPaused;
+
+    /**
+     * Headroom at which an avatar decode has actually been seen to fail, and
+     * the level this client will not try again below.
+     *
+     * The estimate can be admitted and still not fit.
+     * {@link MemoryPressure#headroom} is built on {@code freeMemory()}, which
+     * says how much heap is unused and not whether the VM will hand over one
+     * contiguous piece of it; measured at 1410 KB of ballast, every check passed
+     * and every decode threw {@code OutOfMemoryError: Java heap space}.
+     *
+     * So the VM's answer is taken as the better measurement. An error here is
+     * the most reliable evidence available that there is no room - better than
+     * any estimate - and it is remembered, so the thirteen failures that
+     * followed the first one become thirteen placeholders instead. It only ever
+     * rises, and only from an observation.
+     */
+    private volatile long avatarHeapFloor;
+
+    /** Headroom the avatar worker was admitted at, for {@link #avatarHeapFloor}. */
+    private volatile long avatarAdmittedAt;
+
+    /**
      * Heap measurement state.
      *
      * {@code heapMeasured} is written by the probe thread and read by the UI
@@ -1445,6 +1476,33 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             return;
         }
+        // Asked before the request, not after the decode. An avatar that will
+        // not fit costs a placeholder here; attempted, it costs a round trip, a
+        // decode and a caught OutOfMemoryError, and the list would pay that once
+        // per visible row.
+        //
+        // fits() rather than reserve(): this runs on the lcdui thread, where a
+        // collect stalls the display. The worker asks the expensive question a
+        // moment later, with the real size of the real image in hand.
+        long room = MemoryPressure.headroom();
+        if (!MemoryPressure.fits(MemoryBudget.avatarDecodeCost())
+                || room <= avatarHeapFloor)
+        {
+            if (!avatarsPaused)
+            {
+                avatarsPaused = true;
+                Diag.warn("avatars paused: one needs about "
+                        + (MemoryBudget.avatarDecodeCost() / 1024)
+                        + "k, headroom is " + (room / 1024)
+                        + "k, one failed at " + (avatarHeapFloor / 1024) + "k");
+            }
+            return;
+        }
+        if (avatarsPaused)
+        {
+            avatarsPaused = false;
+            Diag.info("avatars resumed");
+        }
         Peer[] candidates = dialogList.visiblePeers();
         for (int i = 0; i < candidates.length; i++)
         {
@@ -1483,6 +1541,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                             if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
                         }
                     }
+                    // The exact question, now that the image is here: its own
+                    // header says how many pixels it is about to become.
+                    // Bounded at level 1 - an avatar must not clear the avatar
+                    // cache to make room for an avatar. See MemoryPressure.
+                    int size = JpegDecoder.dimensions(bytes);
+                    long cost = MemoryBudget.photoDecodeCost(size >>> 16,
+                            size & 0xffff, bytes.length);
+                    if (!MemoryPressure.reserve(cost, 1))
+                    {
+                        throw new NoRoom("avatar needs " + (cost / 1024)
+                                + "k, headroom "
+                                + (MemoryPressure.headroom() / 1024) + "k");
+                    }
+                    // Remembered so that, if the decode throws anyway, the
+                    // failure can tell the list how much room turned out not to
+                    // be enough. One avatar worker at a time, so no race.
+                    avatarAdmittedAt = MemoryPressure.headroom();
                     Image decoded = JpegDecoder.decode(bytes, null);
                     Image scaled = ImageScaler.fitBox(decoded, target, target);
                     if (downloaded && accountId != 0)
@@ -1535,6 +1610,29 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     // rest of the session rather than repeating it per peer.
                     if (isSocketUnavailable(error)) { avatarsUnavailable = true; }
 
+                    // An OutOfMemoryError out of the decode is a better
+                    // measurement than the estimate that let it through, so it
+                    // becomes the floor. Without this the list simply moves to
+                    // the next row and fails there too, which is the storm this
+                    // whole change exists to end.
+                    if (error instanceof OutOfMemoryError)
+                    {
+                        // Not the headroom at the failure - the headroom at the
+                        // failure plus what the work needed. headroom() said
+                        // there was room for this decode and there was not, so
+                        // it was overstating by at least the size of the decode;
+                        // asking only for "more than last time" lets the first
+                        // collect clear the bar and the next row fail the same
+                        // way. Measured: at 1410 KB of ballast that flapped
+                        // between paused and resumed nine times in fifteen
+                        // seconds, which is nine wasted decodes.
+                        long floor = avatarAdmittedAt
+                                + MemoryBudget.avatarDecodeCost();
+                        if (floor > avatarHeapFloor) { avatarHeapFloor = floor; }
+                    }
+                    final boolean noRoom = error instanceof NoRoom
+                            || error instanceof OutOfMemoryError;
+
                     display.callSerially(new Runnable()
                     {
                         public void run()
@@ -1554,7 +1652,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                             + " this handset refused a second"
                                             + " connection");
                                 }
-                                loadVisibleAvatars();
+                                // Chained on every other failure, because the
+                                // next row may well succeed. Not on a memory
+                                // refusal: that would walk the whole visible
+                                // list refusing one row at a time. The next
+                                // scroll asks again, by which time the collect
+                                // this already ran may have changed the answer.
+                                if (!noRoom) { loadVisibleAvatars(); }
                             }
                         }
                     });
@@ -2209,6 +2313,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // clear() drops the failure markers too, so the next dialog
                 // list retries the avatars it had given up on.
                 avatarCache.clear();
+                // And with them the remembered failure level. That number is an
+                // observation about a heap that no longer exists - a hundred and
+                // fifty kilobytes of decoded avatars have just gone back - so
+                // keeping it would leave the list refusing to try on the
+                // strength of a measurement taken before the room was made.
+                avatarHeapFloor = 0;
                 break;
             case 4:
                 // Last, and worth saying why: 49 KB on the one handset where it
@@ -2763,6 +2873,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     try
                     {
                         byte[] stripped = message.media.photo.stripped().bytes;
+
+                        // Twelve of these are queued per chat open, and before
+                        // this they were simply attempted: on a small heap that
+                        // is a dozen decodes, a dozen OutOfMemoryErrors and a
+                        // dozen caught Errors, one after another, for pictures
+                        // nobody asked for. Refusing costs a placeholder.
+                        //
+                        // Bounded at level 1 - a thumbnail must not clear the
+                        // thumbnails it is filling - and it stops the batch
+                        // rather than skipping one: the next candidate needs the
+                        // same memory this one could not get.
+                        long cost = StrippedJpeg.decodeCost(stripped);
+                        if (!MemoryPressure.reserve(cost, 1))
+                        {
+                            Diag.info("thumbnails stopped at " + i + " of "
+                                    + candidateCount + ": needs " + (cost / 1024)
+                                    + "k, headroom "
+                                    + (MemoryPressure.headroom() / 1024) + "k");
+                            return;
+                        }
                         Image image = JpegDecoder.decode(new ByteArrayInputStream(
                                 StrippedJpeg.restore(stripped)), null);
                         final Image thumbnail = ImageScaler.fitBox(image,
@@ -2790,6 +2920,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     {
                         Diag.warn("stripped thumbnail " + message.id + ": "
                                 + shortMessage(error));
+                        // A decode that failed for its own reasons - a payload
+                        // this decoder does not support - says nothing about the
+                        // next one, so the batch carries on. An
+                        // OutOfMemoryError says everything about the next one:
+                        // the admission check let this through and the VM
+                        // disagreed, and eleven more attempts would each cost a
+                        // decode and another caught Error to learn the same
+                        // thing.
+                        if (error instanceof OutOfMemoryError)
+                        {
+                            Diag.info("thumbnails stopped at " + i + " of "
+                                    + candidateCount + ": the decode ran out of"
+                                    + " memory at " + (MemoryPressure.headroom()
+                                            / 1024) + "k headroom");
+                            return;
+                        }
                     }
                 }
             }
@@ -3079,6 +3225,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             this.photoId = photoId;
             this.image = image;
         }
+    }
+
+    /**
+     * "There is not enough heap for this", as distinct from every other reason
+     * a background image can fail.
+     *
+     * A type rather than a message, because the failure path has to branch on
+     * it: a download that failed is worth retrying on the next row, and a
+     * refusal is not - the next row needs the same memory this one could not
+     * get. Extends IOException so it travels the paths that already exist.
+     */
+    private static final class NoRoom extends java.io.IOException
+    {
+        NoRoom(String message) { super(message); }
     }
 
     private void scheduleSnapshotRefresh()
@@ -4600,12 +4760,27 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * A failure the user can do something about - typically "no signal". The
      * log is one keypress away because on a handset it is the only diagnostic
      * anyone has.
+     *
+     * "Check the network connection" is the right advice for most of what
+     * reaches here and exactly the wrong advice for one of them. Driving the
+     * client at 1195 KB of free heap produced a startup where the connection was
+     * fine and everything after it - the dialog list, the RMS caches, the reader
+     * thread - died with OutOfMemoryError; a screen telling that user to check
+     * their signal sends them to look at the one thing that was working. The
+     * heap figures are named instead, because on a handset with no console they
+     * are the only evidence the user can pass on.
      */
     private void showRetryableError(String title, Throwable t)
     {
         Form form = new Form(title);
         form.append(shortMessage(t));
-        form.append("\n\nCheck the network connection and try again.");
+        Runtime rt = Runtime.getRuntime();
+        form.append(outOfMemory(t)
+                ? "\n\nThis phone ran out of memory rather than out of signal."
+                        + " Closing other applications may help."
+                        + "\n\nheapFree=" + rt.freeMemory()
+                        + " of " + rt.totalMemory()
+                : "\n\nCheck the network connection and try again.");
         form.addCommand(cmdRefresh);
         form.addCommand(cmdDiag);
         form.addCommand(cmdSettings);
@@ -4614,6 +4789,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         form.addCommand(cmdExit);
         form.setCommandListener(this);
         pushScreen(form);
+    }
+
+    /**
+     * Was this failure the heap rather than the network?
+     *
+     * The class is checked first and the message second, because an
+     * OutOfMemoryError raised on a worker is routinely wrapped: the RMS layer
+     * reports it as an IOException whose text names it, and the reader thread
+     * hands it on as a request failure. Both still mean "there was no memory",
+     * and both should say so.
+     */
+    private static boolean outOfMemory(Throwable t)
+    {
+        if (t instanceof OutOfMemoryError) { return true; }
+        String message = t == null ? null : t.getMessage();
+        return message != null && message.indexOf("OutOfMemoryError") >= 0;
     }
 
     private void showAlert(String text, AlertType type, Displayable next)
