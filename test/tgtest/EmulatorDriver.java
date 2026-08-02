@@ -1,5 +1,6 @@
 package tgtest;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 
@@ -9,6 +10,8 @@ import javax.microedition.lcdui.ChoiceGroup;
 import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.Item;
+import javax.microedition.rms.RecordEnumeration;
+import javax.microedition.rms.RecordStore;
 
 import tg.api.Dialog;
 import tg.api.Peer;
@@ -21,8 +24,10 @@ import tg.mem.MemoryPressure;
 import tg.mt.ConnectionConfig;
 import tg.mt.Dc;
 import tg.plat.RmsAuthKeyStore;
+import tg.tl.TlReader;
 import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
+import tg.ui.JpegDecoder;
 
 /**
  * Drives the client through MicroEmulator's MIDP runtime from a script.
@@ -61,14 +66,53 @@ public final class EmulatorDriver
 {
     private static final int CONNECT_TIMEOUT_MS = 120000;
 
+    /**
+     * Dialogs weighed at once by {@link #measureDialogBytes}.
+     *
+     * Large on purpose: the answer is a difference between two heap readings and
+     * a small sample is mostly noise. It is also why the measurement has to be
+     * skippable - see {@link #awaitHeapMeasurement}.
+     */
+    private static final int DIALOG_SAMPLE = 2000;
+
     /** Remembered so a stuck modal alert can be stepped past. */
     private static Displayable dialogList;
 
+    /**
+     * Run one scenario and leave, whatever happened.
+     *
+     * The exit is in a finally of its own because at the bottom of the heap
+     * ladder {@link #drive} can die inside its own teardown - the report itself
+     * needs to allocate - and MicroEmulator's event thread and the client's
+     * network threads are not daemons. A JVM whose main thread is dead but whose
+     * threads are not stays up forever, and an unattended sweep then hangs on
+     * exactly the rung it was built to measure. Observed: a run at 1760 KB of
+     * ballast printed its verdict, threw out of dumpMemory, and was still
+     * resident eight minutes later.
+     */
     public static void main(String[] args) throws Exception
+    {
+        int exit = 1;
+        try { exit = drive(args); }
+        catch (Throwable t)
+        {
+            System.out.println("DRIVER FAILED OUTRIGHT: " + t);
+        }
+        finally
+        {
+            try { System.out.flush(); } catch (Throwable ignored) { }
+            System.exit(exit);
+        }
+    }
+
+    private static int drive(String[] args) throws Exception
     {
         String scenario = args.length > 0 ? args[0] : "probe";
 
+        startWatchdog();
+        if (!environmentMatches()) { return 2; }
         holdBallast();
+        startDiagTail(scenario);
         EmulatorHarness.install("driver", 240, 320);
         if (System.getProperty("tg.driver.remeasure") != null) { forgetMeasurement(); }
         EmulatorHarness app = new EmulatorHarness();
@@ -131,12 +175,97 @@ public final class EmulatorDriver
         }
         finally
         {
-            dumpMemory();
-            dumpLog();
+            // Individually guarded. Every one of these allocates, this is the
+            // moment the heap is at its worst, and the later steps are the ones
+            // that carry the evidence - losing the log because the memory
+            // summary threw would be the wrong way round.
+            try { DiagTail.stop(); } catch (Throwable t) { note("tail", t); }
+            try { dumpMemory(); } catch (Throwable t) { note("memory", t); }
+            try { dumpLog(); } catch (Throwable t) { note("log", t); }
+            // Last, because it decodes twelve images: on a ballasted run that is
+            // the largest allocation the driver itself makes, and nothing after
+            // it should depend on the heap surviving.
+            try { reportAvatarBlobs(); } catch (Throwable t) { note("avatars", t); }
             try { app.stop(); } catch (Throwable ignored) { }
         }
-        System.out.flush();
-        System.exit(exit);
+        return exit;
+    }
+
+    private static void note(String what, Throwable t)
+    {
+        try { System.out.println("could not report " + what + ": " + t); }
+        catch (Throwable ignored) { }
+    }
+
+    /**
+     * Is the build in {@code build/desktop/classes} the one the caller asked
+     * for?
+     *
+     * The data centres are compiled in, and {@code -SkipBuild} drives whatever
+     * happens to be there. Anything that rebuilds as {@code -Env test} - and
+     * {@code test.ps1} and {@code smoke-emulator.ps1} both do - therefore leaves
+     * a later production run pointed at the test data centres, where the stored
+     * production key is unknown. What comes back is
+     * {@code 401 AUTH_KEY_UNREGISTERED}, the client says "sign-in required", and
+     * a whole sweep reads as a signed-out account. It is documented as a trap in
+     * the private notes; it costs the same hour every time it is rediscovered.
+     *
+     * The build knows which it is, so it says so and stops.
+     */
+    private static boolean environmentMatches()
+    {
+        String expected = System.getProperty("tg.driver.expectenv");
+        if (expected == null || expected.length() == 0) { return true; }
+        boolean wantTest = "test".equalsIgnoreCase(expected);
+        if (wantTest == Dc.isTest()) { return true; }
+
+        System.out.println("WRONG BUILD: asked for -Env " + expected
+                + " but build/desktop/classes is "
+                + (Dc.isTest() ? "test" : "production") + ".");
+        System.out.println("  Something rebuilt the desktop classes for the"
+                + " other environment - test.ps1 and smoke-emulator.ps1 both"
+                + " build -Env test.");
+        System.out.println("  Re-run without -SkipBuild.");
+        return false;
+    }
+
+    /**
+     * A hard deadline on the whole run.
+     *
+     * A scenario that blocks - a connect that never times out, a modal alert
+     * nobody dismisses, a thread wedged mid-teardown - costs an unattended sweep
+     * everything after it. {@code halt} rather than {@code exit}: the reason to
+     * be here at all is that the orderly path is not working.
+     *
+     * Long enough that no healthy scenario reaches it. The slowest measured is
+     * {@code minheap} with a full photo hunt at about three minutes.
+     */
+    private static void startWatchdog()
+    {
+        String configured = System.getProperty("tg.driver.deadline");
+        int seconds = 600;
+        try
+        {
+            if (configured != null) { seconds = Integer.parseInt(configured.trim()); }
+        }
+        catch (Throwable ignored) { }
+        if (seconds <= 0) { return; }
+
+        final long deadlineMs = seconds * 1000L;
+        Thread watchdog = new Thread(new Runnable()
+        {
+            public void run()
+            {
+                try { Thread.sleep(deadlineMs); }
+                catch (InterruptedException e) { return; }
+                System.out.println("DRIVER DEADLINE: " + (deadlineMs / 1000)
+                        + "s elapsed, halting");
+                System.out.flush();
+                Runtime.getRuntime().halt(3);
+            }
+        }, "driver-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
     }
 
     // ------------------------------------------------------------- scenarios
@@ -154,8 +283,27 @@ public final class EmulatorDriver
         }
         String[] lines = MemoryBudget.lines();
         for (int i = 0; i < lines.length; i++) { System.out.println("  " + lines[i]); }
-        System.out.println("  dialogBytes = " + measureDialogBytes(2000)
-                + " (measured, " + Dialog.PREVIEW_MAX + "-char preview)");
+
+        // Weighing two thousand dialogs costs the better part of a megabyte, and
+        // this runs before every scenario including the ballasted ones, where
+        // the whole point is that a megabyte is not there. It is why a run at
+        // 1280 KB of ballast died with "GC overhead limit exceeded" before the
+        // client had connected - the driver, not the client, was out of memory.
+        //
+        // Asked rather than assumed, and skipped out loud: a missing number is a
+        // fact, a number measured out of a thrashing heap is not.
+        long need = (long) DIALOG_SAMPLE * 512L;
+        if (MemoryPressure.fits(need))
+        {
+            System.out.println("  dialogBytes = " + measureDialogBytes(DIALOG_SAMPLE)
+                    + " (measured, " + Dialog.PREVIEW_MAX + "-char preview)");
+        }
+        else
+        {
+            System.out.println("  dialogBytes = skipped (needs " + (need / 1024)
+                    + " KB, headroom " + (MemoryPressure.headroom() / 1024)
+                    + " KB)");
+        }
     }
 
     /**
@@ -479,6 +627,18 @@ public final class EmulatorDriver
                 connect = "ok";
                 if (EmulatorHarness.command(app.current(), "Saved Messages") != null)
                 {
+                    // One step down and back before the count. The avatar
+                    // worker is driven from viewport events as well as from the
+                    // first paint, and a list nobody has touched sometimes
+                    // raises neither - which reads as "no avatars decoded" when
+                    // the truth is "nothing ever asked for one". Two runs at the
+                    // same heap disagreed on that alone. A person moves within a
+                    // second of the list appearing; so does this.
+                    Thread.sleep(1500);
+                    app.key(Canvas.KEY_NUM8);
+                    Thread.sleep(400);
+                    app.key(Canvas.KEY_NUM2);
+
                     Thread.sleep(12000);        // dialogs plus the avatar workers
                     avatars = count("task dialog avatar ok");
                     dialogList = app.current();
@@ -514,7 +674,16 @@ public final class EmulatorDriver
                 + " freed=" + (MemoryPressure.shedBytes() / 1024) + "KB"
                 + " headroom=" + (MemoryPressure.headroom() / 1024) + "KB"
                 + " oom=" + count("OutOfMemory")
-                + " ballast=" + (ballast == null ? 0 : ballast.length / 1024) + "KB");
+                + " oomBy=" + DiagTail.oomBreakdown()
+                + " thumbOk=" + count("thumbnail ok")
+                + " thumbFail=" + count("stripped thumbnail ")
+                // The two refusals. They are the point of the admission check:
+                // a run that reports these instead of OOMs has traded a wasted
+                // download for a placeholder, which is the whole trade.
+                + " thumbStop=" + count("thumbnails stopped")
+                + " avPaused=" + count("avatars paused")
+                + " ballast=" + (ballast == null ? 0 : ballast.length / 1024) + "KB"
+                + " lostLines=" + DiagTail.lostLines());
         return "ok".equals(connect);
     }
 
@@ -554,16 +723,49 @@ public final class EmulatorDriver
         return "none";
     }
 
-    /** Count diagnostic lines containing a marker. */
+    /**
+     * The markers every scenario reports on, registered before the client
+     * starts.
+     *
+     * Counted as lines arrive rather than by rescanning at the end. The
+     * difference is not stylistic: this runs inside the heap being measured, and
+     * a verdict line that rescans the whole log four times was enough to end a
+     * ballasted run in {@code GC overhead limit exceeded} before the client had
+     * finished connecting.
+     */
+    private static void startDiagTail(String scenario) throws Exception
+    {
+        DiagTail.watch("OutOfMemory");
+        DiagTail.watch("task dialog avatar ok");
+        DiagTail.watch("thumbnail ok");
+        DiagTail.watch("stripped thumbnail ");
+        DiagTail.watch("thumbnails stopped");
+        DiagTail.watch("avatars paused");
+        DiagTail.watch("shed level");
+
+        String path = System.getProperty("tg.driver.diaglog");
+        File target = path != null && path.length() > 0
+                ? new File(path)
+                : File.createTempFile("tg-diag-" + scenario + "-", ".log");
+        File written = DiagTail.start(target);
+        if (written != null)
+        {
+            System.out.println("diagnostic tail -> " + written.getAbsolutePath());
+        }
+    }
+
+    /**
+     * Count diagnostic lines containing a marker, over the whole run.
+     *
+     * Reads {@link DiagTail} rather than {@link Diag#snapshot}. That distinction
+     * is the reason this class changed at all: the counts that matter are taken
+     * at the bottom of a heap ladder, where thirty error lines have long since
+     * pushed every success out of a hundred-line ring, and a zero from the ring
+     * means "not in the last hundred lines", not "did not happen".
+     */
     private static int count(String marker)
     {
-        String[] lines = Diag.snapshot();
-        int n = 0;
-        for (int i = 0; i < lines.length; i++)
-        {
-            if (lines[i] != null && lines[i].indexOf(marker) >= 0) { n++; }
-        }
-        return n;
+        return DiagTail.count(marker);
     }
 
     /**
@@ -1535,8 +1737,115 @@ public final class EmulatorDriver
             System.out.println("---- crash log ----");
             for (int i = 0; i < crash.length; i++) { System.out.println(crash[i]); }
         }
-        System.out.println("---- diagnostic ring ----");
-        String[] lines = Diag.snapshot();
-        for (int i = 0; i < lines.length; i++) { System.out.println(lines[i]); }
+        System.out.println("---- diagnostic log (" + DiagTail.writtenLines()
+                + " lines, " + DiagTail.lostLines() + " lost, ring dropped "
+                + Diag.droppedLines()
+                + (DiagTail.healthy() ? "" : ", TAIL DIED - counts are floors")
+                + ") ----");
+        System.out.flush();
+        DiagTail.dumpTo(System.out);
+    }
+
+    /**
+     * What an avatar actually costs to decode, measured from the ones this
+     * profile has already cached.
+     *
+     * The client's admission check needs a number before the download, and
+     * nothing in the protocol supplies one: {@code AvatarRef} carries a photo id
+     * and a data centre, not a size, and the server picks the dimensions. The
+     * blobs in {@code tgavatars} are those exact bytes, so decoding them here -
+     * on a desktop heap, after the run, where nothing is at stake - answers the
+     * question with observation instead of a guess.
+     *
+     * Prints sizes and dimensions only. Peer ids and account ids stay in the
+     * record store where they belong.
+     */
+    private static void reportAvatarBlobs()
+    {
+        RecordStore rs = null;
+        RecordEnumeration en = null;
+        try
+        {
+            rs = RecordStore.openRecordStore("tgavatars", false);
+            en = rs.enumerateRecords(null, null, false);
+            int count = 0;
+            int minBytes = Integer.MAX_VALUE;
+            int maxBytes = 0;
+            long sumBytes = 0;
+            long maxCost = 0;
+            StringBuffer dims = new StringBuffer();
+            while (en.hasNextElement())
+            {
+                byte[] blob = avatarBytes(rs.getRecord(en.nextRecordId()));
+                if (blob == null) { continue; }
+                count++;
+                sumBytes += blob.length;
+                if (blob.length < minBytes) { minBytes = blob.length; }
+                if (blob.length > maxBytes) { maxBytes = blob.length; }
+                try
+                {
+                    JpegDecoder.Decoded d = JpegDecoder.decodePixels(
+                            new ByteArrayInputStream(blob), null);
+                    long cost = MemoryBudget.photoDecodeCost(d.width, d.height,
+                            blob.length);
+                    if (cost > maxCost) { maxCost = cost; }
+                    if (dims.length() > 0) { dims.append(' '); }
+                    dims.append(d.width).append('x').append(d.height)
+                        .append('/').append(blob.length).append('b');
+                }
+                catch (Throwable t)
+                {
+                    // Says which. At the bottom of the ladder this is usually
+                    // the driver's own heap giving out rather than a bad blob,
+                    // and reading it as "the cache is corrupt" would send the
+                    // next person looking in the wrong place.
+                    if (dims.length() > 0) { dims.append(' '); }
+                    dims.append("unread(").append(Diag.className(t)).append(')');
+                }
+            }
+            if (count == 0) { return; }
+            System.out.println("---- cached avatars ----");
+            System.out.println("avatarBlobs = " + count
+                    + " bytes " + minBytes + ".." + maxBytes
+                    + " mean " + (sumBytes / count)
+                    + " worstDecodeCost " + (maxCost / 1024) + "KB");
+            System.out.println("avatarSizes = " + dims);
+        }
+        catch (Throwable ignored)
+        {
+            // No store, no avatars loaded, no measurement. Not a failure of the
+            // scenario that just ran.
+        }
+        finally
+        {
+            if (en != null) { try { en.destroy(); } catch (Throwable ignored) { } }
+            if (rs != null) { try { rs.closeRecordStore(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /**
+     * The compressed JPEG out of one tgavatars record.
+     *
+     * Duplicates RmsAvatarCache's private layout on purpose: this is a
+     * measurement tool reading a store it does not own, and giving the device
+     * class a public reader so a driver can weigh its contents would be a worse
+     * trade than eight lines of TL here.
+     */
+    private static byte[] avatarBytes(byte[] raw)
+    {
+        try
+        {
+            TlReader reader = new TlReader(raw);
+            if (reader.readInt() != 0x54474131) { return null; }   // "TGA1"
+            reader.readLong();                                     // accountId
+            reader.readInt();                                      // test
+            reader.readInt();                                      // kind
+            reader.readLong();                                     // peerId
+            reader.readLong();                                     // photoId
+            reader.readLong();                                     // savedAt
+            byte[] bytes = reader.readBytes();
+            return bytes != null && bytes.length > 4 ? bytes : null;
+        }
+        catch (Throwable ignored) { return null; }
     }
 }
