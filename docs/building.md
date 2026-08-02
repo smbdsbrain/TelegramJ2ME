@@ -241,8 +241,15 @@ pwsh -File tools/drive-emulator.ps1 -Scenario minheap \n     -ChatTitle "<chat>"
 ```
 
 `drive-emulator.ps1` presses the same commands by label inside MicroEmulator's
-MIDP runtime and prints the diagnostic ring, which is otherwise readable only on
-the Log screen of a running emulator. The `minheap` scenario prints one verdict
+MIDP runtime and records the diagnostic log, which is otherwise readable only on
+the Log screen of a running emulator. It follows the ring rather than reading it
+once at the end, so a run that produces more than a hundred lines still reports
+totals instead of whatever survived in the buffer — the verdict prints
+`lostLines=0` when nothing was missed, and `-NoDiagTail` switches the recorder
+off, which is the control for whether a number belongs to the client or to the
+observer. `oomBy=[...]` names the task behind every `OutOfMemoryError`.
+
+The `minheap` scenario prints one verdict
 line per run — what still worked at that heap — so a sweep of `-Xmx` values
 reads as a table; `-Pictures off` repeats it with dialog avatars and inline
 thumbnails disabled. `-Remeasure` is required for any constrained run: a profile
@@ -252,6 +259,12 @@ record store, so auth keys and the stored heap measurement persist across runs
 exactly as they do in the GUI. Every scenario except `probe` contacts real
 Telegram servers; `-Scenario login` additionally needs a phone number and a file
 to read the sign-in code from.
+
+`-SkipBuild` drives whatever is in `build/desktop/classes`, and the data centres
+are compiled in — so a run that follows `test.ps1` or `smoke-emulator.ps1`, both
+of which build `-Env test`, would otherwise present a stored production session
+to the test data centres and report a signed-out account. The driver compares the
+build against `-Env` and stops with `WRONG BUILD` instead.
 
 See [emulator-notes.md](emulator-notes.md) for what an emulator pass does and
 does not prove.

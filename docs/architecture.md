@@ -130,19 +130,41 @@ Three kinds of number, treated differently on purpose:
 `MemoryPressure` is what acts before the wall rather than at it. `freeMemory()`
 alone is the wrong number on CLDC — the heap grows on demand, so what is free
 understates what is available — and the measured ceiling is what turns
-`totalMemory()` and `freeMemory()` into `headroom = ceiling - used`. Before
-opening a chat, before decoding a photo and before the request that produces the
-largest response the client inflates, it asks for room; if there is not enough it
-sheds, in order of what each is measured to be worth: the cached full-screen
-photo (~300 KB), the conversation's decoded thumbnails (~190 KB), the avatar
-cache (~150 KB), the emoji sheet (49 KB). That is about 690 KB, roughly 13% of a
-5 MB heap — enough to get a chat open, not enough to rescue a 2 MB decode, which
-is why a photo that cannot fit is refused with both numbers instead of attempted.
+`totalMemory()` and `freeMemory()` into `headroom = ceiling - used`. Every
+allocation large enough to matter asks for room first: opening a chat, the
+request that produces the largest response the client inflates, and each of the
+three image decodes — the full photo, a dialog-list avatar, an inline thumbnail.
+If there is not enough it sheds, in order of what each is measured to be worth:
+the cached full-screen photo (~300 KB), the conversation's decoded thumbnails
+(~190 KB), the avatar cache (~150 KB), the emoji sheet (49 KB). That is about
+690 KB, roughly 13% of a 5 MB heap — enough to get a chat open, not enough to
+rescue a 2 MB decode, which is why a photo that cannot fit is refused with both
+numbers instead of attempted.
+
+The image decodes ask with a bound on how far the ladder may run, and stop at the
+first level. Two reasons. The levels below it are the avatar cache and the open
+conversation's thumbnails, so an unbounded shed there clears the cache the caller
+is filling and the client does the same work twice. And a decoration should not
+be able to evict something the user asked for: dropping a cached photo nobody is
+looking at is a fair trade for an avatar, dropping the emoji sheet the next paint
+needs is not. What a bounded call still gets is the part that matters — a
+`fits()` and a collect, without which a dozen small decodes in a row are refused
+because of each other's garbage rather than because of the heap.
+
+An avatar is priced from its own JPEG frame header (`JpegDecoder.dimensions`) and
+a thumbnail from the size the stripped payload states (`StrippedJpeg.decodeCost`),
+so the number checked is the decode that is actually about to happen. Before the
+download there is no size to work from at all — the server chooses it — so the
+dialog list asks a cheaper question first, `MemoryBudget.avatarDecodeCost()`,
+which is a measurement of what Telegram actually serves rather than a share of
+the heap.
 
 This is the only code in the client that calls `System.gc()`, and only after
 headroom has already said the work will not fit. Never on the `MtClient` reader
 thread, where a collect delays every pending RPC; the protection there is the
-smaller budget, not a shed.
+smaller budget, not a shed. Nor on the lcdui thread for anything speculative: the
+dialog list's pre-flight is the side-effect-free `fits()`, and the collect happens
+on the worker that is about to allocate.
 
 ### Scrolling a conversation
 
