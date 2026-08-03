@@ -177,10 +177,10 @@ pages load as the edge of what is held approaches, rows and blocks that fall
 outside the window are released, and what a window costs does not depend on how
 far anybody scrolled — a chat list of 1690 holds the same 120 rows as one of 60,
 and what stays wrapped in a conversation is three screens either side of the
-viewport rather than everything ever read. Driven under a constrained heap it stays usable down to about **2 MB of
-free heap**, and turning off avatars and inline thumbnails buys roughly another
-480 KB — at ~1.7 MB free that is the difference between a photo that opens and
-one the client refuses. A smaller phone gets proportionally smaller numbers, down to floors it
+viewport rather than everything ever read. Driven under a constrained heap it stays usable down to about **1.5 MB of
+free heap**, and below that it gives up decoration rather than function: an
+avatar or an inline preview that will not fit is refused and drawn as a
+placeholder, and the conversation still opens. A smaller phone gets proportionally smaller numbers, down to floors it
 refuses to divide past. It also watches its headroom and drops caches before a
 big allocation rather than after the crash. Details in
 [docs/architecture.md](docs/architecture.md#memory-discipline). Fixed regardless
@@ -206,7 +206,7 @@ extract the session.
 | | |
 |---|---|
 | **MIDP 2.0 and CLDC 1.1** | Both are declared in the manifest. CLDC 1.0 will not run it. |
-| **About 2 MB of free Java heap** | Measured by driving the client with the heap squeezed in steps: everything works above ~2.2 MB free, photos start being refused near 1.7 MB, avatars stop around 1.5 MB, and sign-in itself fails near 1.1 MB. Both handsets tested have ~5 MB, so they are nowhere near it. Turning off avatars and inline thumbnails in Settings buys about 480 KB. |
+| **About 1 MB of free Java heap** | Measured by driving the client against a real account with the heap squeezed in steps: everything works above ~1.7 MB free; near 1.5 MB an avatar decode starts being refused, and from then on avatars and inline previews are drawn as placeholders while the chat itself still opens; below ~1.1 MB the client connects but little after that survives, and near 0.95 MB sign-in itself runs out of memory. Both handsets tested have ~5 MB, so they are nowhere near it. Turning avatars and inline previews off in Settings gives back the ~340 KB those caches retain, and stops the decodes that need room on top of it. |
 | **A JAR size limit above ~300 KB** | The `-min` build is 291 KB and the normal one is 409 KB. |
 | **Raw TCP (`socket://`), or HTTP** | Raw sockets are the good path. There is an MTProto-over-HTTP fallback for handsets that refuse them outright. |
 
