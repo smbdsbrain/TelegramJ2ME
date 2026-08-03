@@ -52,6 +52,7 @@ public final class AllTests
             new JpegDecoderTest(),
             new SelfTestTest(),
             new ReportTest(),
+            new DiagTailTest(),
             new MemoryBudgetTest(),
             new HeapProbeTest()
         };

@@ -98,9 +98,21 @@
     otherwise carries the ceiling of whichever JVM first ran it, which under a
     smaller -Xmx is a lie in the dangerous direction.
 
+.PARAMETER NoDiagTail
+    Do not follow the diagnostic ring. The tail runs inside the heap under
+    measurement, so this is the control: if a number moves when the tail is
+    switched off, the number was about the observer. Without it the run reports
+    only the last hundred lines, which at the bottom of the ladder is the last
+    hundred errors.
+
 .PARAMETER EmulatorProfile
     Isolated, persistent RMS under local/microemulator/<name>/, the same
     convention run-emulator.ps1 uses. "default" keeps the host user.home.
+
+    The auth-key store is copied before the run and put back if the run leaves
+    it empty. A run that dies of OutOfMemoryError mid-write truncates it, and a
+    truncated tgkeys.rs is a signed-out profile that only the user's phone can
+    restore - which is a heavy price for a measurement.
 
 .PARAMETER Env
     test or production data centres.
@@ -134,6 +146,7 @@ param(
     [ValidateSet('test', 'production')][string]$Env = 'test',
     [int]$BallastKB = 0,
     [switch]$Remeasure,
+    [switch]$NoDiagTail,
     [switch]$SkipBuild,
     [string[]]$JavaArgs = @()
 )
@@ -174,6 +187,48 @@ if ($EmulatorProfile -eq 'default') {
     $profileLabel = $EmulatorProfile
 }
 
+# --------------------------------------------------------------------------
+# A signed-in profile has to survive the experiments it exists for.
+#
+# MicroEmulator's file-backed record store is rewritten wholesale, and a run
+# that dies of OutOfMemoryError part-way through a write leaves the file at zero
+# bytes. Observed: a minheap run at 1410 KB of ballast truncated tgkeys.rs, and
+# every run after it reported a signed-out account - the stored auth key was
+# gone and only the user's phone could put it back.
+#
+# The store is small. Copying it before the run and putting it back if the run
+# emptied it costs nothing and is the difference between a failed measurement
+# and a lost session.
+# --------------------------------------------------------------------------
+$keyStore = $null
+$keyBackup = $null
+if ($EmulatorProfile -ne 'default') {
+    $keyStore = Join-Path $profileHome ".microemulator/suite-null/tgkeys.rs"
+    if ((Test-Path $keyStore) -and (Get-Item $keyStore).Length -gt 0) {
+        $keyBackup = "$keyStore.bak"
+        Copy-Item $keyStore $keyBackup -Force
+    }
+}
+
+function Restore-KeyStoreIfEmptied {
+    if (-not $keyStore) { return }
+    if ((Test-Path $keyStore) -and (Get-Item $keyStore).Length -gt 0) { return }
+
+    if ($keyBackup -and (Test-Path $keyBackup)) {
+        Copy-Item $keyBackup $keyStore -Force
+        Write-Warn2 "tgkeys.rs was emptied by this run; restored from the backup taken before it"
+        return
+    }
+    # No backup to put back, so at least leave the profile able to make a new
+    # store. A zero-byte file is worse than an absent one: MicroEmulator reads
+    # its header on every open and throws EOFException, so the profile cannot
+    # even be signed in again by hand until the file is gone.
+    if (Test-Path $keyStore) {
+        Remove-Item $keyStore -Force
+        Write-Warn2 "tgkeys.rs was emptied and there was no backup; removed it so the profile can sign in again"
+    }
+}
+
 $driverArgs = @($Scenario)
 switch ($Scenario) {
     'route'   { $driverArgs += $Mode }
@@ -199,10 +254,30 @@ $runtimeCp = (@($classes, $tests, $res) + $MicroEmuJars) -join $PathSep
 # [string[]] is load-bearing. A one-element array on the right of an if()
 # is unwrapped to a scalar, and += on a string concatenates instead of
 # appending - the two -D options end up glued into one unusable argument.
-[string[]]$measureArgs = @()
+[string[]]$measureArgs = @("-Dtg.driver.expectenv=$Env")
 if ($Remeasure) { $measureArgs += "-Dtg.driver.remeasure=1" }
 if ($BallastKB -gt 0) { $measureArgs += "-Dtg.driver.ballast=$BallastKB" }
+
+# The complete diagnostic log, not the last hundred lines of it. Kept beside the
+# profile it came from, under local/, which is ignored by Git and excluded by
+# the public audit - a driven run against a real account logs peer keys and chat
+# titles.
+if ($NoDiagTail) {
+    $measureArgs += "-Dtg.driver.tail=off"
+} else {
+    $diagDir = Join-RepoPath "local" "diaglogs"
+    New-Item -ItemType Directory -Force -Path $diagDir | Out-Null
+    # Stamped, not overwritten. A sweep runs the same profile and scenario back
+    # to back, and a shared path lets a previous run that has not finished
+    # exiting write into the file the next one just truncated - which showed up
+    # as a duplicated, out-of-order line in a log that was otherwise correct.
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $diagLog = Join-Path $diagDir "$EmulatorProfile-$Scenario-$stamp.log"
+    $measureArgs += "-Dtg.driver.diaglog=$diagLog"
+}
 $invocation = @("-Djava.awt.headless=true") + $javaProfileArgs + $measureArgs + $JavaArgs `
               + @("-cp", $runtimeCp, "tgtest.EmulatorDriver") + $driverArgs
 & $Jdk8Java @invocation
-exit $LASTEXITCODE
+$driverExit = $LASTEXITCODE
+Restore-KeyStoreIfEmptied
+exit $driverExit

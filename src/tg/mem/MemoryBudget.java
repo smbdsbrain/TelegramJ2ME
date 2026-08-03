@@ -410,6 +410,36 @@ public final class MemoryBudget
     }
 
     /**
+     * What a dialog-list avatar costs to decode, before one has been fetched.
+     *
+     * The avatar path has no size to work from: {@code AvatarRef} carries a
+     * photo id and a data centre, the server picks the dimensions, and by the
+     * time the JPEG header can be read the download has already happened. So the
+     * question "is there room for an avatar at all" - asked on the UI thread
+     * before anything is requested - needs a number from somewhere else.
+     *
+     * Measured, not assumed. Twelve avatars cached by a real account, read back
+     * out of {@code tgavatars} and decoded: every one of them 160x160, 3 269 to
+     * 16 129 compressed bytes. Telegram serves the small peer photo at that size
+     * and it does not vary with our heap, so unlike the retention budgets this
+     * one does not scale - it describes the server's object, not our appetite.
+     * Reproduce with any {@code drive-emulator.ps1} scenario that loads a dialog
+     * list; it reports {@code avatarSizes} at the end of the run.
+     *
+     * The compressed figure is the largest seen rather than the mean, on the
+     * same principle as {@link #photoDecodeCost}: an over-estimate costs a
+     * placeholder and an under-estimate costs the OutOfMemoryError this exists
+     * to avoid.
+     */
+    public static long avatarDecodeCost()
+    {
+        return photoDecodeCost(AVATAR_EDGE, AVATAR_EDGE, AVATAR_COMPRESSED);
+    }
+
+    private static final int AVATAR_EDGE = 160;
+    private static final int AVATAR_COMPRESSED = 16 * 1024;
+
+    /**
      * Live bytes at the peak of decoding an image of this size.
      *
      * Used to refuse a decode that cannot fit rather than discovering it with an

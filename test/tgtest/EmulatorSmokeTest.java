@@ -77,9 +77,20 @@ public final class EmulatorSmokeTest
         midlet.start();
 
         Display display = Display.getDisplay(midlet);
-        Displayable start = awaitChange(display, null);
-        Assert.isTrue("the MIDlet reached a screen", start != null);
-        System.out.println("  start screen: " + describe(start));
+        Displayable first = awaitChange(display, null);
+        Assert.isTrue("the MIDlet reached a screen", first != null);
+        System.out.println("  start screen: " + describe(first));
+
+        // Before anything is pressed, not after. The heap probe rebuilds the
+        // start screen when it finishes - it has a "measuring" line to drop and
+        // possibly a warning to add - and MicroEmulator's setCurrent posts
+        // rather than switches, so a visit that overlaps with that lands on the
+        // *new* start screen and reports the screen it opened as having no
+        // Back. Seen on a CI runner as "Settings -> Form Telegram J2ME": not a
+        // navigation defect, a race with the probe.
+        awaitHeapMeasurement();
+        Displayable start = awaitSettled(display);
+        Assert.isTrue("a screen survived the measurement", start != null);
         checkMenuOrdering("start screen", start);
 
         for (int i = 0; i < VISIT.length; i++)
@@ -88,8 +99,6 @@ public final class EmulatorSmokeTest
         }
 
         Assert.isTrue("back at the start screen", display.getCurrent() == start);
-
-        awaitHeapMeasurement();
 
         midlet.stop();
         Assert.isTrue("no MIDlet thread outlives destroyApp", quiesced());
@@ -145,6 +154,31 @@ public final class EmulatorSmokeTest
      * but a source of "default" here would mean the probe never ran, never
      * returned, or was refused, and that is worth failing on.
      */
+    /**
+     * The screen the client has settled on, once nothing is repainting it.
+     *
+     * A measurement being installed and the screen that reports it being posted
+     * are two different moments: {@code finishHeapProbe} rebuilds the start
+     * screen from a {@code callSerially} that runs after
+     * {@link MemoryBudget#init}, and MicroEmulator's {@code setCurrent} posts to
+     * a dispatcher rather than switching inline. Waiting for the budget alone
+     * therefore still races the repaint it causes.
+     */
+    private static Displayable awaitSettled(Display display) throws Exception
+    {
+        Displayable stable = display.getCurrent();
+        int unchanged = 0;
+        long deadline = System.currentTimeMillis() + 10000;
+        while (unchanged < 4 && System.currentTimeMillis() < deadline)
+        {
+            Thread.sleep(150);
+            Displayable now = display.getCurrent();
+            if (now == stable) { unchanged++; }
+            else { stable = now; unchanged = 0; }
+        }
+        return stable;
+    }
+
     private static void awaitHeapMeasurement() throws Exception
     {
         // Generous on purpose. The probe fills the heap and then collects it

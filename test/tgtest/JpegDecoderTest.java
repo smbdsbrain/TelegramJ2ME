@@ -36,6 +36,8 @@ public final class JpegDecoderTest implements Test
         differential("progressive", BufferedImage.TYPE_INT_RGB, 2, 2, true);
         restartMarkers();
         strippedJpeg();
+        headerDimensions();
+        strippedDecodeCost();
         hostileDimensions();
         budgetBoundsTheDecode();
         truncation();
@@ -240,6 +242,103 @@ public final class JpegDecoderTest implements Test
                 new ByteArrayInputStream(restored), null);
         Assert.equal("stripped width", 31, decoded.width);
         Assert.equal("stripped height", 23, decoded.height);
+    }
+
+    /**
+     * The size of an image, read without decoding it.
+     *
+     * This is what lets the client refuse an avatar decode instead of catching
+     * the OutOfMemoryError afterwards, so the number has to agree with the
+     * decoder on every shape the decoder accepts - and has to be 0, not a guess,
+     * on everything it does not. A wrong answer here is a memory budget computed
+     * for an image that is not the one about to be built.
+     */
+    private static void headerDimensions() throws Exception
+    {
+        String[] names = { "gray", "444", "422", "420", "progressive" };
+        int[][] shapes = { { BufferedImage.TYPE_BYTE_GRAY, 1, 1, 0 },
+                           { BufferedImage.TYPE_INT_RGB, 1, 1, 0 },
+                           { BufferedImage.TYPE_INT_RGB, 2, 1, 0 },
+                           { BufferedImage.TYPE_INT_RGB, 2, 2, 0 },
+                           { BufferedImage.TYPE_INT_RGB, 2, 2, 1 } };
+        for (int i = 0; i < names.length; i++)
+        {
+            byte[] jpeg = encode(pattern(shapes[i][0]), shapes[i][1],
+                    shapes[i][2], shapes[i][3] != 0);
+            JpegDecoder.Decoded decoded = JpegDecoder.decodePixels(
+                    new ByteArrayInputStream(jpeg), null);
+            int size = JpegDecoder.dimensions(jpeg);
+            Assert.equal(names[i] + " header width", decoded.width, size >>> 16);
+            Assert.equal(names[i] + " header height", decoded.height, size & 0xffff);
+        }
+
+        // Restart markers appear before the frame header in some encoders and
+        // carry no length field, so a walk that treated them like a segment
+        // would read the next two bytes as a length and lose the frame.
+        byte[] restarts = encode(pattern(BufferedImage.TYPE_INT_RGB),
+                2, 2, false, 2);
+        JpegDecoder.Decoded viaDecoder = JpegDecoder.decodePixels(
+                new ByteArrayInputStream(restarts), null);
+        int size = JpegDecoder.dimensions(restarts);
+        Assert.equal("restart width", viaDecoder.width, size >>> 16);
+        Assert.equal("restart height", viaDecoder.height, size & 0xffff);
+
+        Assert.equal("null is unreadable", 0, JpegDecoder.dimensions(null));
+        Assert.equal("empty is unreadable", 0,
+                JpegDecoder.dimensions(new byte[0]));
+        Assert.equal("a PNG is unreadable", 0, JpegDecoder.dimensions(
+                new byte[] { (byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10 }));
+
+        // Header cut off mid-frame: no dimensions rather than dimensions read
+        // out of whatever followed in memory.
+        byte[] jpeg = encode(pattern(BufferedImage.TYPE_INT_RGB), 2, 2, false);
+        int sof = marker(jpeg, 0xc0);
+        byte[] cut = new byte[sof + 4];
+        System.arraycopy(jpeg, 0, cut, 0, cut.length);
+        Assert.equal("a truncated frame header is unreadable", 0,
+                JpegDecoder.dimensions(cut));
+
+        // A zero dimension would make photoDecodeCost report a free decode.
+        byte[] zeroed = encode(pattern(BufferedImage.TYPE_INT_RGB), 2, 2, false);
+        sof = marker(zeroed, 0xc0);
+        zeroed[sof + 5] = 0;
+        zeroed[sof + 6] = 0;
+        Assert.equal("a zero width is unreadable", 0,
+                JpegDecoder.dimensions(zeroed));
+    }
+
+    /**
+     * A stripped thumbnail states its own size, so its decode can be priced
+     * without restoring it.
+     */
+    private static void strippedDecodeCost() throws Exception
+    {
+        byte[] jpeg = encode(pattern(BufferedImage.TYPE_INT_RGB), 2, 2, false);
+        int sos = marker(jpeg, 0xda);
+        int length = ((jpeg[sos + 2] & 255) << 8) | (jpeg[sos + 3] & 255);
+        int entropy = sos + 2 + length;
+        int entropyLength = jpeg.length - entropy - 2;
+        byte[] stripped = new byte[3 + entropyLength];
+        stripped[0] = 1;
+        stripped[1] = 23;
+        stripped[2] = 31;
+        System.arraycopy(jpeg, entropy, stripped, 3, entropyLength);
+
+        long cost = StrippedJpeg.decodeCost(stripped);
+        byte[] restored = StrippedJpeg.restore(stripped);
+        Assert.equal("cost priced the image restore() actually builds",
+                MemoryBudget.photoDecodeCost(31, 23, restored.length), cost);
+        Assert.isTrue("a thumbnail costs something", cost > 0);
+
+        // Zero means "no opinion", and the caller admits the decode so that
+        // restore() can report the real fault. It must never mean "free".
+        Assert.equal("null has no price", 0L, StrippedJpeg.decodeCost(null));
+        Assert.equal("a short payload has no price", 0L,
+                StrippedJpeg.decodeCost(new byte[] { 1, 2 }));
+        Assert.equal("a foreign format has no price", 0L,
+                StrippedJpeg.decodeCost(new byte[] { 2, 23, 31, 0 }));
+        Assert.equal("a zero dimension has no price", 0L,
+                StrippedJpeg.decodeCost(new byte[] { 1, 0, 31, 0 }));
     }
 
     private static void truncation() throws Exception

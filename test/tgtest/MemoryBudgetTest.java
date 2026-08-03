@@ -90,6 +90,8 @@ public final class MemoryBudgetTest implements Test
             aProbeThatNeverReturnsStopsBeingTried();
             headroomUsesTheMeasuredCeiling();
             pressureShedsInOrderAndStops();
+            aBoundedShedStopsWhereItIsTold();
+            theAvatarEstimateDoesNotScale();
         }
         finally
         {
@@ -506,6 +508,104 @@ public final class MemoryBudgetTest implements Test
             Assert.equal("the report is two lines", 2, MemoryPressure.lines().length);
         }
         finally { MemoryPressure.setRelief(null); }
+    }
+
+    /**
+     * A bounded shed, for work the user did not ask for.
+     *
+     * The ladder's later levels are the avatar cache and the open conversation's
+     * thumbnails, which are exactly what the avatar and thumbnail decodes are
+     * filling. Unbounded, those two callers clear the cache they are populating
+     * and the client does the work twice; bounded at level one they still get
+     * the collect and may drop the cached full-screen photo, which is the only
+     * level that is pure gain for them.
+     */
+    private static void aBoundedShedStopsWhereItIsTold()
+    {
+        MemoryBudget.reset();
+
+        final java.util.Vector called = new java.util.Vector();
+        MemoryPressure.setRelief(new MemoryRelief()
+        {
+            public int levels() { return 4; }
+            public void release(int level)
+            {
+                called.addElement(new Integer(level));
+            }
+        });
+        try
+        {
+            Assert.isFalse("an unsatisfiable bounded reserve still refuses",
+                    MemoryPressure.reserve(Long.MAX_VALUE / 4, 1));
+            Assert.equal("only level 1 ran", 1, called.size());
+            Assert.equal("and it was level 1", 1,
+                    ((Integer) called.elementAt(0)).intValue());
+
+            called.removeAllElements();
+            Assert.isFalse("a bound of two stops at two",
+                    MemoryPressure.reserve(Long.MAX_VALUE / 4, 2));
+            Assert.equal("two levels ran", 2, called.size());
+
+            // Zero means "collect, but give nothing back". A caller that cannot
+            // afford to disturb any cache still wants the garbage swept.
+            called.removeAllElements();
+            Assert.isFalse("a bound of zero sheds nothing",
+                    MemoryPressure.reserve(Long.MAX_VALUE / 4, 0));
+            Assert.equal("no level ran", 0, called.size());
+
+            // The unbounded form is the one every existing caller uses and it
+            // must not have changed meaning.
+            called.removeAllElements();
+            Assert.isFalse("the unbounded form still runs the whole ladder",
+                    MemoryPressure.reserve(Long.MAX_VALUE / 4));
+            Assert.equal("every level ran", 4, called.size());
+
+            // A bound above the ladder is not an invitation to invent levels.
+            called.removeAllElements();
+            Assert.isFalse("a bound above the ladder is harmless",
+                    MemoryPressure.reserve(Long.MAX_VALUE / 4, 99));
+            Assert.equal("still only four levels exist", 4, called.size());
+
+            called.removeAllElements();
+            Assert.isTrue("a bounded reserve that fits sheds nothing",
+                    MemoryPressure.reserve(1024, 1));
+            Assert.equal("an idle heap sheds nothing", 0, called.size());
+        }
+        finally { MemoryPressure.setRelief(null); }
+    }
+
+    /**
+     * The avatar estimate, which is a measurement rather than a budget.
+     *
+     * Every other number in {@code MemoryBudget} is a share of the heap. This
+     * one describes an object the server produces - the 160x160 small peer photo
+     * - so it must not scale with our heap in either direction, or a small
+     * handset would talk itself into believing avatars are cheap there.
+     */
+    private static void theAvatarEstimateDoesNotScale()
+    {
+        MemoryBudget.reset();
+        long unmeasured = MemoryBudget.avatarDecodeCost();
+        Assert.isTrue("an avatar costs more than its framebuffer",
+                unmeasured > 160L * 160L * 4L);
+
+        install(REFERENCE_HEAP);
+        Assert.equal("the reference heap does not change it", unmeasured,
+                MemoryBudget.avatarDecodeCost());
+        install(512 * 1024);
+        Assert.equal("a tiny heap does not change it", unmeasured,
+                MemoryBudget.avatarDecodeCost());
+        install(64 * 1024 * 1024);
+        Assert.equal("a large heap does not change it", unmeasured,
+                MemoryBudget.avatarDecodeCost());
+        MemoryBudget.reset();
+
+        // The measured blobs: 160x160 at up to 16 129 compressed bytes, read
+        // back out of a real account's tgavatars store. If this ever has to
+        // change, it changes because a new measurement said so.
+        Assert.equal("it prices the measured avatar",
+                MemoryBudget.photoDecodeCost(160, 160, 16 * 1024),
+                MemoryBudget.avatarDecodeCost());
     }
 
     /** Minimal AuthKeyStore double: only the string half is exercised here. */
