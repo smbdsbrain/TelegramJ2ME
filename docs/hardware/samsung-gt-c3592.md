@@ -277,11 +277,23 @@ clock advances across
 launches: spread 347579 s
 ```
 
-**The wall clock does not reset at boot on this handset**, unlike the OT-810D,
-where it contributed nothing across cold boots. Twelve launches, no repeated
-seed. The launch series was not run as a controlled battery-out sequence, so it
-proves nothing about cold-boot behaviour specifically; the clock finding stands
-on its own.
+The series was run the same way as the alcatel's: **battery out between
+launches**. Twelve launches, no repeated seed.
+
+**But the wall clock does not come back at a fixed value here, and that weakens
+the test rather than strengthening it.** On the OT-810D the RTC did not survive
+battery removal, so every cold boot started from the same hand-set `00:00` — two
+launches began at the same millisecond and their digests still diverged, which
+isolated jitter and the allocator as the sources actually carrying the pool. On
+this handset the clock advances monotonically across the whole series, so time is
+restored on boot, whether from an RTC that survives the battery or from the
+operator's network. Every launch therefore started from a *different* clock, and
+the wall clock alone would explain the absence of collisions.
+
+So: twelve cold boots, zero collisions, and no evidence here about the non-clock
+sources. The alcatel's identical-clock result remains the stronger of the two,
+and the corresponding experiment on this device would need the clock pinned by
+hand — which the firmware may simply overwrite from the network.
 
 ### Consequence for the auth-key barrier
 
@@ -294,24 +306,45 @@ among supported devices and only two have been measured.
 
 ### The barrier itself, running on this handset
 
-From the client's own diagnostics, `tg` 0.7.0 build `2b8aa96`:
+A full production sign-in, `tg` 0.7.0 `-Env production` through an MTProxy to
+dc2. First launch, no stored key:
 
 ```
-30.318 I auth-key entropy barrier: 5 gathers in 700 ms
-30.318 I -> req_pq_multi nonce=<redacted>
-38.379 I pq 2227559171334472541 = 1241264909 * 1794588049 in 7723 ms
+66.892 I auth-key entropy barrier: 5 gathers in 713 ms
+66.892 I -> req_pq_multi nonce=<redacted>
+90.891 I two 2048-bit modPow in 19521 ms
+92.577 I handshake complete in 25685 ms, auth_key dc2 prod id=... sha1=6b9a2ef4
+92.771 I persisted auth_key dc2 prod id=... sha1=6b9a2ef4
 ```
 
-**700 ms, against 674 ms for the same five gathers on a desktop JVM.** The
+**713 ms, against 674 ms for the same five gathers on a desktop JVM.** The
 barrier is clock-bound, not CPU-bound — `collectJitter` spends a fixed wall-clock
-budget — so it does not get more expensive on slow hardware. The contrast is the
-line below it: pq factorisation took 7723 ms here against 7 ms on the desktop,
-about 1100× slower. Against a handshake that costs ~24 s on this device, the
-barrier is roughly 3% of it.
+budget rather than doing work — so it does not get more expensive on slow
+hardware. Everything around it does: the two 2048-bit modular exponentiations on
+the line above took 19 521 ms, and on an earlier run pq factorisation took
+7723 ms against 7 ms on the desktop, about 1100× slower. **The barrier is 2.7% of
+the exchange it precedes.**
 
-The `<redacted>` on the nonce is the on-device redaction in `tg.plat.Report`
-doing its job: the barrier's diagnostics carry a count and a duration, and the
-report path strips the nonce before anything leaves the handset.
+Note also that `handshake complete in 25685 ms` excludes the barrier: the seeding
+cost is carried separately in `Handshake.Result.entropyMillis`, so the published
+exchange timing still means the exchange.
+
+Reconnecting later in the same run, after the key had been written to RMS:
+
+```
+207.571 I loaded stored auth_key dc2 prod id=... sha1=6b9a2ef4
+207.571 I resumed with stored key for dc2
+```
+
+Same key id, read back through `RmsAuthKeyStore`, and **no barrier line at all** —
+route to live session in 2.3 s. One barrier per key generated, not per
+connection. (This was a reconnect inside one MIDlet run rather than a relaunch,
+so it exercises the real RMS write and read but not a cold process start.)
+
+The `<redacted>` on the nonce — and on the server salt elsewhere in the same log —
+is the on-device redaction in `tg.plat.Report` doing its job: the barrier's own
+diagnostics carry only a count and a duration, and the report path strips
+everything else before it leaves the handset.
 
 ---
 
@@ -336,10 +369,12 @@ report path strips the nonce before anything leaves the handset.
   OT-810D's 58 on purpose — it is one device's figure, not a fleet minimum — so
   sizing `AuthKeySeeding.GATHERS` against the slowest supported clock is issue
   #2 and not something this measurement should do on its own.
-- **No controlled cold-boot series here.** The twelve launches recorded were not
-  a battery-out sequence with the clock reset by hand, so this device has no
-  equivalent of the OT-810D's cold-boot determinism evidence. The clock finding
-  (it does *not* reset at boot) is independent of that and stands.
+- **Cold-boot determinism is untested against a fixed clock here.** The twelve
+  battery-out launches produced no repeated seed, but this handset restores the
+  time on boot, so each one started from a different wall clock and the result
+  says nothing about the non-clock sources. The OT-810D's identical-clock
+  experiment has no equivalent here yet, and may not be reproducible if the
+  firmware re-syncs time from the network.
 - Key-press timing has not been recorded; `Key timing` was not run. Key codes
   and canvas size likewise.
 - The true RMS record ceiling is above 64 KiB but unmeasured.

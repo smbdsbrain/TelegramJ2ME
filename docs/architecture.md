@@ -367,11 +367,12 @@ RPC errors remain visible until the user retries or deletes them.
   [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Until that
   lands, and on any runtime not yet measured, generated keys are development
   keys.
-* **The barrier costs the same on a handset as on a desktop.** Measured 700 ms
+* **The barrier costs the same on a handset as on a desktop.** Measured 713 ms
   on the GT-C3592 against 674 ms on a desktop JVM, because `collectJitter`
-  spends a fixed wall-clock budget rather than doing work. For scale, pq
-  factorisation on that same handset took 7723 ms against 7 ms on the desktop.
-  The barrier is about 3% of a first-key handshake there.
+  spends a fixed wall-clock budget rather than doing work. Everything around it
+  does not: the two 2048-bit modular exponentiations in the same handshake took
+  19 521 ms there. The barrier is **2.7%** of the exchange it precedes, and a
+  reconnect that resumes the stored key pays none of it.
 * **The wall clock contributes nothing across cold boots on that handset.** It
   loses the RTC when the battery is removed. Seven launches produced no repeated
   seed anyway — two of them started at the same millisecond and still diverged —
