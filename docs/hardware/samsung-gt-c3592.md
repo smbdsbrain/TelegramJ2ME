@@ -295,6 +295,40 @@ sources. The alcatel's identical-clock result remains the stronger of the two,
 and the corresponding experiment on this device would need the clock pinned by
 hand — which the firmware may simply overwrite from the network.
 
+### f. Key-press timing
+
+50 presses over 15 seconds, 16 distinct keys.
+
+```
+n = 50 presses over 15 s
+delta 90..1022 ms
+mean 310 ms
+distinct deltas = 33
+gcd(deltas) = 1 ms
+H_raw = 2.750
+d & 15 -> 2.375
+d & 31 -> 2.750
+distinct keys = 16
+usable = 2.750 bits/press
+256 bits needs 94 presses
+```
+
+**2.750 bits per press against the OT-810D's 3.000** — much closer than the
+jitter figures, because the keyboard does not depend on the clock tick the way
+`gather()` does. As on the alcatel, `gcd = 1 ms` means no single quantum was
+found rather than millisecond resolution: this device's tick alternates 12/13 ms,
+so sums of intervals reach every integer. And with 49 intervals there is no 99%
+bound here either, so this is a point estimate at a deliberate typing pace, not a
+floor.
+
+The economics still land where the alcatel put them, even though jitter is nearly
+three times worse here. A gather costs ~130 ms for 21 bits — about **162 bits per
+second of blocking, with nobody involved**. Key presses at the observed 310 ms
+mean interval yield about **9 bits per second and require the user to sit there**:
+94 presses, roughly half a minute of deliberate typing, for one key. Jitter
+remains the mechanism and key timing remains a supplement to fold in where it is
+free.
+
 ### Consequence for the auth-key barrier
 
 `tg.crypto.AuthKeySeeding` folds in `GATHERS = 5`, sized from the OT-810D's 58
@@ -329,17 +363,27 @@ Note also that `handshake complete in 25685 ms` excludes the barrier: the seedin
 cost is carried separately in `Handshake.Result.entropyMillis`, so the published
 exchange timing still means the exchange.
 
-Reconnecting later in the same run, after the key had been written to RMS:
+Reconnecting later in the same run, after the key had been written to RMS: same
+key id, `resumed with stored key for dc2`, **no barrier line** — route to live
+session in 2.3 s. One barrier per key generated, not per connection.
+
+Then a full relaunch of the MIDlet, which is the case that matters for startup
+cost:
 
 ```
-207.571 I loaded stored auth_key dc2 prod id=... sha1=6b9a2ef4
-207.571 I resumed with stored key for dc2
+ 0.000 I client 0.7.0 build 2b8aa96 env production
+ 0.207 I heap: stored ceiling 5056k, block 4736k
+ 9.151 I connected to dc2 <mtproxy>:8443
+ 9.255 I loaded stored auth_key dc2 prod id=... sha1=6b9a2ef4
+ 9.268 I resumed with stored key for dc2
+12.835 I task connect ok in 8847 ms
 ```
 
-Same key id, read back through `RmsAuthKeyStore`, and **no barrier line at all** —
-route to live session in 2.3 s. One barrier per key generated, not per
-connection. (This was a reconnect inside one MIDlet run rather than a relaunch,
-so it exercises the real RMS write and read but not a cold process start.)
+Cold process start — `heapSource = stored` confirms it was not the first launch —
+and the key came back out of RMS with the same id. **No `entropy barrier` line
+appears anywhere in that run.** Connect completed in 8847 ms against 31 627 ms
+for the launch that had to generate the key. The seeding barrier is paid once
+per key and never again.
 
 The `<redacted>` on the nonce — and on the server salt elsewhere in the same log —
 is the on-device redaction in `tg.plat.Report` doing its job: the barrier's own
@@ -375,6 +419,7 @@ everything else before it leaves the handset.
   says nothing about the non-clock sources. The OT-810D's identical-clock
   experiment has no equivalent here yet, and may not be reproducible if the
   firmware re-syncs time from the network.
-- Key-press timing has not been recorded; `Key timing` was not run. Key codes
-  and canvas size likewise.
+- Key codes and canvas size have not been recorded; `Keys` was not run.
+- The key-timing figure has no confidence bound — 49 intervals, below the
+  256-sample floor — and was taken at a deliberate pace by one person.
 - The true RMS record ceiling is above 64 KiB but unmeasured.

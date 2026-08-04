@@ -371,8 +371,10 @@ RPC errors remain visible until the user retries or deletes them.
   on the GT-C3592 against 674 ms on a desktop JVM, because `collectJitter`
   spends a fixed wall-clock budget rather than doing work. Everything around it
   does not: the two 2048-bit modular exponentiations in the same handshake took
-  19 521 ms there. The barrier is **2.7%** of the exchange it precedes, and a
-  reconnect that resumes the stored key pays none of it.
+  19 521 ms there. The barrier is **2.7%** of the exchange it precedes, and it is
+  paid once per key: a later relaunch of the client on that handset loaded the
+  same key out of RMS and connected in 8847 ms with no barrier at all, against
+  31 627 ms for the launch that generated it.
 * **The wall clock contributes nothing across cold boots on that handset.** It
   loses the RTC when the battery is removed. Seven launches produced no repeated
   seed anyway — two of them started at the same millisecond and still diverged —
@@ -383,9 +385,11 @@ RPC errors remain visible until the user retries or deletes them.
   the same handset that is 3 bits per press - 86 presses for 256 bits, against
   600 ms of busy-looping for the same from jitter. Human motor noise remains the
   easiest source to defend, so fold it in where it is free; just do not build
-  the seeding on it. Nothing currently feeds key timing into the application
-  `Rng` — `Entropy.fromUserInput` is used only by the probe screen — so "where it
-  is free" is a direction, not a shipped behaviour.
+  the seeding on it. The GT-C3592 gives 2.750 bits/press, so 94 presses for one
+  key — while a gather there is worth ~162 bits per second of blocking against
+  the keyboard's ~9, and needs nobody present. Nothing currently feeds key timing
+  into the application `Rng` — `Entropy.fromUserInput` is used only by the probe
+  screen — so "where it is free" is a direction, not a shipped behaviour.
 * Server-provided randomness must never be the sole source of DH secret entropy.
 * DH parameter validation is mandatory before an `auth_key` is accepted; it is
   not a step to skip for a green demo.
