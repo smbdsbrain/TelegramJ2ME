@@ -392,6 +392,40 @@ everything else before it leaves the handset.
 
 ---
 
+## Screen and keys
+
+```
+canvas 240x268 fullscreen=false pointer=false
+```
+
+**The usable canvas is 240×268, not the 240×320 the panel advertises.** The AMS
+keeps 52 pixels of chrome, and nothing in `src/` calls `setFullScreenMode`, so
+this is the height every screen in the client actually gets on this handset —
+not a probe-only figure. Worth holding against `EmulatorSmokeTest`, which drives
+a 240×320 test device.
+
+No pointer: this is a keypad phone and the UI cannot assume otherwise.
+
+Game actions, from the keys that were pressed:
+
+```
+NUM0 (48)  action=none(0)
+NUM1 (49)  action=GAME_A(9)
+NUM3 (51)  action=GAME_B(10)
+NUM4 (52)  action=LEFT(2)
+NUM7 (55)  action=GAME_C(11)
+NUM8 (56)  action=DOWN(6)
+```
+
+Standard MIDP numeric mapping, and key codes are the ASCII digits as the
+specification requires. `NUM0` maps to no game action at all, which is the usual
+arrangement and worth knowing before binding anything to it.
+
+Press and release report the same code, so `keyReleased` carries no extra
+information here.
+
+---
+
 ## What this changes
 
 - Memory budgets sized for ~5 MB are correct for this handset too. No economy
@@ -419,7 +453,10 @@ everything else before it leaves the handset.
   says nothing about the non-clock sources. The OT-810D's identical-clock
   experiment has no equivalent here yet, and may not be reproducible if the
   firmware re-syncs time from the network.
-- Key codes and canvas size have not been recorded; `Keys` was not run.
+- **The navigation cluster and soft keys were not captured.** The `Keys` run
+  covered the canvas size and six numeric keys; the d-pad, the two soft keys, the
+  call/end keys and clear/back — the ones the client's UI actually depends on —
+  are still unrecorded, as is whether any of them are swallowed by the AMS.
 - The key-timing figure has no confidence bound — 49 intervals, below the
   256-sample floor — and was taken at a deliberate pace by one person.
 - The true RMS record ceiling is above 64 KiB but unmeasured.
