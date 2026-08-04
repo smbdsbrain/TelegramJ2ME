@@ -28,6 +28,7 @@ public final class AllTests
             new AesIgeTest(),
             new RngTest(),
             new EntropyTest(),
+            new AuthKeySeedingTest(),
             new BigIntTest(),
             new TlTest(),
             new InflateTest(),
@@ -38,6 +39,7 @@ public final class AllTests
             new ObfuscatedFramingTest(),
             new TransportPhase1Test(),
             new AsyncMtClientTest(),
+            new HandshakeBarrierTest(),
             new Phase2PersistenceTest(),
             new UpdateSyncTest(),
             new ChatScrollStateTest(),
@@ -54,7 +56,8 @@ public final class AllTests
             new ReportTest(),
             new DiagTailTest(),
             new MemoryBudgetTest(),
-            new HeapProbeTest()
+            new HeapProbeTest(),
+            new SourceGuardTest()
         };
     }
 

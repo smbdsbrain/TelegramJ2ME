@@ -18,8 +18,8 @@ import java.util.Random;
  * in with {@code state = SHA-256(state || x)}. Backtracking resistance comes
  * from the counter never repeating and the state never being emitted.
  *
- * <h3>What is NOT yet true</h3>
- * The construction is sound. The <em>seeding</em> has now been measured on one
+ * <h3>What the constructor's seeding is and is not for</h3>
+ * The construction is sound. The <em>seeding</em> has been measured on one
  * handset and found sufficient to avoid repeating, but not sufficient on its
  * own: an Alcatel One Touch 810D yields about 58 bits per
  * {@link Entropy#gather()}, roughly a fifth of what a 2048-bit DH secret needs.
@@ -28,12 +28,14 @@ import java.util.Random;
  * pool.
  *
  * <blockquote>
- * <b>The single {@link Entropy#gather()} in this constructor is not enough for
- * a production auth_key.</b> Before generating one, fold in several further
- * {@link #addEntropy(byte[])} calls and, when the flow exists, key-press
- * timings; and on any runtime other than the one measured, evaluate the sources
- * first. Server-provided randomness (the server_nonce, new_nonce chain) must
- * never be the sole source of DH secret entropy.
+ * <b>The single {@link Entropy#gather()} in this constructor is the right cost
+ * for a nonce, a padding block or an outgoing {@code random_id}, and is not
+ * enough for a permanent auth_key.</b> The auth-key path therefore crosses
+ * {@link AuthKeySeeding} first, which folds in several further separated
+ * gathers; {@code tg.mt.Handshake} calls it, so no other caller has to
+ * remember to. On any runtime other than the one measured, evaluate the sources
+ * before trusting either figure. Server-provided randomness (the server_nonce,
+ * new_nonce chain) must never be the sole source of DH secret entropy.
  * </blockquote>
  *
  * {@link #forTesting(byte[])} gives a fully deterministic instance so crypto
@@ -54,6 +56,7 @@ public class Rng extends Random
     private long counter;
     private int available;          // unused bytes remaining in `buffer`
     private boolean seeded;
+    private final boolean deterministic;
 
     /**
      * Seeded from whatever entropy the platform offers - about 58 bits of it on
@@ -62,12 +65,14 @@ public class Rng extends Random
      */
     public Rng()
     {
+        deterministic = false;
         addEntropy(Entropy.gather());
     }
 
     /** Seeded only from {@code seed}; deliberately skips {@link Entropy#gather()}. */
     private Rng(byte[] seed)
     {
+        deterministic = true;
         addEntropy(seed);
     }
 
@@ -111,6 +116,21 @@ public class Rng extends Random
     public final boolean isSeeded()
     {
         return seeded;
+    }
+
+    /**
+     * True for an instance from {@link #forTesting(byte[])}.
+     *
+     * Not a quality measure - a deterministic pool that later absorbed real
+     * gathers would be perfectly strong. It is there so the two guarantees this
+     * class makes can be enforced rather than documented: that a {@code
+     * forTesting} stream stays reproducible, and that a pool with a published
+     * seed cannot negotiate a key with Telegram. {@code tg.mt.Handshake} refuses
+     * one.
+     */
+    public final boolean isDeterministic()
+    {
+        return deterministic;
     }
 
     /**
@@ -233,7 +253,16 @@ public class Rng extends Random
         }
     }
 
-    /** Best-effort wipe. Call when an auth_key generation is finished. */
+    /**
+     * Best-effort wipe of a pool that is being discarded.
+     *
+     * <b>Not</b> a post-auth_key cleanup step, whatever this comment used to
+     * say. The application owns one shared instance ({@code TgMidlet}), the same
+     * one that supplies every subsequent nonce, {@code random_id} and padding
+     * block, and the generator does not re-seed itself on demand - so wiping it
+     * after a handshake would leave the rest of the session drawing from a
+     * zeroed state. Call it only on an instance nothing will use again.
+     */
     public void wipe()
     {
         synchronized (state)

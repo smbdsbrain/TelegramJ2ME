@@ -26,11 +26,13 @@ package tg.crypto;
  * </ul>
  *
  * <blockquote>
- * <b>Open item:</b> 58 bits is roughly a fifth of what a 2048-bit DH secret
- * needs, so a single {@code gather()} is not a sufficient seed for an auth_key;
- * fold in several, plus the user input below. And one handset is one handset -
- * quantify these sources on every supported physical runtime before declaring
- * the auth_key path secure. Until then, treat generated keys as development
+ * 58 bits is roughly a fifth of what a 2048-bit DH secret needs, so a single
+ * {@code gather()} is not a sufficient seed for an auth_key. Folding in several
+ * is what {@link AuthKeySeeding} does, and {@code tg.mt.Handshake} is the only
+ * caller that needs to. <b>Open item:</b> one handset is one handset - quantify
+ * these sources on every supported physical runtime before declaring the
+ * auth_key path secure, and note that nothing here shows consecutive gathers to
+ * be independent. Until both are settled, treat generated keys as development
  * keys.
  * </blockquote>
  *
@@ -257,7 +259,9 @@ public final class Entropy
      * worse - a clock that does not advance would make it zero.
      *
      * Do not use it to justify a single-call seed: 58 bits is about a fifth of
-     * what a 2048-bit DH secret needs.
+     * what a 2048-bit DH secret needs, which is why {@link AuthKeySeeding}
+     * exists. Nor to justify multiplying it by a gather count - see that class
+     * on why the totals are not summed.
      */
     public static int estimatedBitsPerGather()
     {

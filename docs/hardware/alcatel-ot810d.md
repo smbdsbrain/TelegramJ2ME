@@ -235,11 +235,22 @@ source: five `gather()` calls buy 256 bits in 600 ms with no user involvement,
 where the keyboard needs 86 presses. **The cheap fix is to seed from several
 gathers; keyboard entropy is a supplement, not the mechanism.**
 
+## Acted on
+
+- **Multi-gather seeding shipped in v0.7.1.** `tg.crypto.AuthKeySeeding` folds
+  five separated `gather()` results into the pool, under a domain-separating
+  context, before `tg.mt.Handshake` draws anything for a permanent key; `Rng()`
+  still calls `gather()` once, which is the right cost for nonces and padding.
+  The count is sized from the 58 above against a 256-bit target — a division, not
+  an addition, since these measurements do not establish independence between
+  consecutive gathers.
+
 ## Still open
 
-- **Multi-gather seeding is not implemented.** `Rng()` calls `gather()` once, so
-  a fresh instance carries about 58 bits. Nothing in the code yet folds in the
-  further four-plus gathers an auth_key needs.
+- **Independence between gathers is assumed, not measured.** The sizing rule
+  above treats five gathers as covering 256 bits. The samples come from the same
+  scheduler on the same idle handset seconds apart, and this run says nothing
+  about how much they share. Measuring that needs a probe run built for it.
 - **Identity-hash entropy above 8 bits/call** is unpinned — the measurement is
   capped by its own sample size, and it is charged at zero in the 58.
 - **The keyboard figure has no confidence bound** at 49 intervals, and was taken
