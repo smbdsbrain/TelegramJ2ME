@@ -1,5 +1,6 @@
 package tgtest;
 
+import tg.crypto.AuthKeySeeding;
 import tg.crypto.Rng;
 import tg.diag.Diag;
 import tg.mt.Abridged;
@@ -62,6 +63,10 @@ public final class LiveHandshakeTest
             System.out.println("server_time   : " + result.serverTimeSeconds
                                + " (local offset " + ids.timeOffsetSeconds() + "s)");
             System.out.println("known prime   : " + result.usedKnownGoodPrime);
+            // Reported apart from the exchange: this is the seeding barrier, and
+            // it is the number a device run is meant to record.
+            System.out.println("entropy barrier: " + result.entropyMillis + " ms ("
+                               + AuthKeySeeding.GATHERS + " gathers)");
             System.out.println("elapsed       : " + result.elapsedMillis + " ms");
             System.out.println("bytes rx/tx   : " + transport.bytesRead()
                                + " / " + transport.bytesWritten());

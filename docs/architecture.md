@@ -339,17 +339,40 @@ RPC errors remain visible until the user retries or deletes them.
 * The crypto primitives match published vectors, including through the shipped
   JAR.
 * The `Rng` construction is a standard hash DRBG and is sound.
-* **The seeding is measured, and one gather is not enough.** A Java ME runtime
-  has no hardware RNG, so `tg.crypto.Entropy` scrapes what it can. On the one
-  handset measured — an Alcatel OT-810D, 2026-07-31, full figures in
+* **The seeding is measured, and one gather is not enough — so the auth-key path
+  no longer takes one.** A Java ME runtime has no hardware RNG, so
+  `tg.crypto.Entropy` scrapes what it can. On the one handset measured — an
+  Alcatel OT-810D, 2026-07-31, full figures in
   [docs/hardware/alcatel-ot810d.md](hardware/alcatel-ot810d.md) — that is about
   **58 bits per `gather()`**: jitter only, at a 99% bound, after a
   serial-correlation discount, with identity hashes and heap readings counted at
-  zero. A 2048-bit DH secret needs roughly five times that, and **seeding from
-  several gathers is still unimplemented** - `Rng()` calls `gather()` once.
-  Until it exists, and on any runtime other
-  than the one measured, generated keys are development keys. See
-  [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+  zero. That is the right cost for a nonce, a padding block or a `random_id`, and
+  short of a 2048-bit DH secret. `tg.crypto.AuthKeySeeding` is the barrier every
+  permanent key now crosses: `tg.mt.Handshake` folds in five further separated
+  gathers, under a domain-separating context naming the dc, the environment and
+  the media role, before the first nonce is drawn. Resuming a stored key runs
+  none of it.
+  **This is not a claim of 5 × 58 bits.** Consecutive gathers sample the same
+  scheduler on the same idle handset and nothing here demonstrates that they are
+  independent; five is a sizing rule against a 256-bit target, not an addition.
+  See [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+* **The gather count is sized on the faster of two handsets, and the second one
+  does not reach the target.** A Samsung GT-C3592 ticks its clock at 12 ms
+  against the alcatel's 4 ms, so the fixed 120 ms window inside `gather()`
+  collects 10 jitter samples there instead of 26 — about **21 bits per gather**,
+  so five gathers are worth roughly **105 bits, not 256**
+  ([docs/hardware/samsung-gt-c3592.md](hardware/samsung-gt-c3592.md)). Per-sample
+  entropy is nearly identical on both devices; the clock is the entire
+  difference. Sizing the barrier against the slowest supported clock is
+  [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Until that
+  lands, and on any runtime not yet measured, generated keys are development
+  keys.
+* **The barrier costs the same on a handset as on a desktop.** Measured 713 ms
+  on the GT-C3592 against 674 ms on a desktop JVM, because `collectJitter`
+  spends a fixed wall-clock budget rather than doing work. Everything around it
+  does not: the two 2048-bit modular exponentiations in the same handshake took
+  19 521 ms there. The barrier is **2.7%** of the exchange it precedes, and a
+  reconnect that resumes the stored key pays none of it.
 * **The wall clock contributes nothing across cold boots on that handset.** It
   loses the RTC when the battery is removed. Seven launches produced no repeated
   seed anyway — two of them started at the same millisecond and still diverged —
@@ -360,7 +383,9 @@ RPC errors remain visible until the user retries or deletes them.
   the same handset that is 3 bits per press - 86 presses for 256 bits, against
   600 ms of busy-looping for the same from jitter. Human motor noise remains the
   easiest source to defend, so fold it in where it is free; just do not build
-  the seeding on it.
+  the seeding on it. Nothing currently feeds key timing into the application
+  `Rng` — `Entropy.fromUserInput` is used only by the probe screen — so "where it
+  is free" is a direction, not a shipped behaviour.
 * Server-provided randomness must never be the sole source of DH secret entropy.
 * DH parameter validation is mandatory before an `auth_key` is accepted; it is
   not a step to skip for a green demo.

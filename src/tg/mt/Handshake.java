@@ -3,6 +3,7 @@ package tg.mt;
 import java.io.IOException;
 
 import tg.crypto.AesIge;
+import tg.crypto.AuthKeySeeding;
 import tg.crypto.Pq;
 import tg.crypto.Rng;
 import tg.crypto.Sha1;
@@ -29,11 +30,12 @@ import tg.tl.TlWriter;
  * completes and a key that proves nothing - which is worse than failing.
  *
  * <h3>Cost</h3>
- * Two 2048-bit modular exponentiations (g^b and g_a^b) plus one RSA
- * exponentiation plus the pq factorisation. On the desktop this is milliseconds;
- * on a 208 MHz handset expect seconds to tens of seconds. That is acceptable
- * precisely because the result is persisted and never regenerated - see
- * {@link AuthKeyStore}.
+ * The {@link AuthKeySeeding} barrier - about 600 ms of blocking on the handset
+ * measured - plus two 2048-bit modular exponentiations (g^b and g_a^b) plus one
+ * RSA exponentiation plus the pq factorisation. On the desktop this is
+ * milliseconds; on a 208 MHz handset expect seconds to tens of seconds. That is
+ * acceptable precisely because the result is persisted and never regenerated -
+ * see {@link AuthKeyStore}. Resuming a stored key runs none of it.
  *
  * Run this off the UI thread.
  */
@@ -48,7 +50,10 @@ public final class Handshake
         public AuthKey authKey;
         public long serverSalt;
         public int serverTimeSeconds;
+        /** Exchange only; the seeding barrier is reported separately. */
         public long elapsedMillis;
+        /** Time spent in {@link AuthKeySeeding} before the exchange started. */
+        public long entropyMillis;
         public boolean usedKnownGoodPrime;
     }
 
@@ -83,9 +88,33 @@ public final class Handshake
 
     public Result run() throws IOException
     {
-        long t0 = System.currentTimeMillis();
         Result result = new Result();
 
+        // Everything below draws from the pool: the nonce, new_nonce - which
+        // derives tmp_aes_key and the server salt - and the client DH secret.
+        // The barrier therefore comes before the first of them, not just before
+        // step 7, and before t0 so the published exchange timing keeps meaning
+        // the exchange.
+        if (rng.isDeterministic())
+        {
+            throw new IOException("refusing to generate an auth_key from a "
+                    + "deterministic RNG - Rng.forTesting must not reach Telegram");
+        }
+        try
+        {
+            result.entropyMillis =
+                    AuthKeySeeding.strengthen(rng, dcId, testEnvironment, media);
+        }
+        catch (IllegalStateException e)
+        {
+            // A degraded entropy source is a failed connection attempt, not a
+            // crash: the route loop above us gets to report it like any other.
+            throw new IOException("auth-key seeding failed: " + e.getMessage());
+        }
+        Diag.info("auth-key entropy barrier: " + AuthKeySeeding.GATHERS
+                  + " gathers in " + result.entropyMillis + " ms");
+
+        long t0 = System.currentTimeMillis();
         ResPq res = reqPq();
         Pq.Factors factors = factorPq(res.pq);
         ServerDh serverDh = reqDhParams(res, factors);
