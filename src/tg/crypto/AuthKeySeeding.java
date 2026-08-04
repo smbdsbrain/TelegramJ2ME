@@ -44,8 +44,21 @@ public final class AuthKeySeeding
      * and one gather measured about 58 on an Alcatel OT-810D - see
      * {@code docs/hardware/alcatel-ot810d.md}. The division is a sizing rule,
      * not an addition: see the class note on why the totals are not summed.
-     * {@code AuthKeySeedingTest} fails if a future measurement makes five stop
-     * covering {@link #TARGET_BITS}.
+     *
+     * <b>Five is sized on the faster of the two handsets measured, and does not
+     * reach {@link #TARGET_BITS} on the slower one.</b> A Samsung GT-C3592 has a
+     * 12 ms clock tick against the alcatel's 4 ms, so the fixed 120 ms window in
+     * {@code gather()} collects 10 jitter samples there instead of 26 - about 21
+     * bits per gather, and about 105 for all five. The per-sample entropy is
+     * almost identical on both; the clock is the whole difference. See
+     * {@code docs/hardware/samsung-gt-c3592.md} and issue #2. Raising the count
+     * is deliberately not done here: the right value is a function of the
+     * slowest clock among supported devices, and two devices are not a
+     * distribution.
+     *
+     * {@code AuthKeySeedingTest} fails if a future revision of
+     * {@link Entropy#estimatedBitsPerGather()} makes five stop covering
+     * {@link #TARGET_BITS} by that figure's own arithmetic.
      */
     public static final int GATHERS = 5;
 

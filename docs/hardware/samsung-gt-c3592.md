@@ -194,6 +194,127 @@ retries rather than assumptions.
 
 ---
 
+## RNG seeding: 21 bits per gather, and why
+
+Measured 2026-08-04 by `probe.jar`, menu **Entropy measure**, build `d57b9c9`
+(`-Env test`, unobfuscated — the same build the OT-810D series was read from, so
+the two are directly comparable).
+
+```
+== VERDICT ==
+jitter 2.125 bits/sample
+  x 10 samples per gather()
+LOWER BOUND = 21 bits/gather
+256 bits needs 13 gather(s)
+NOT SUFFICIENT AS ONE GATHER
+```
+
+**The per-sample entropy is fine. The clock is the problem.**
+
+```
+-- a. clock --
+changes = 110 in 1500 ms
+min delta = 12 ms  <- tick
+max delta = 77 ms
+distinct deltas = 4
+top: 13(102) 12(6) 77(1)
+reads per tick = 7111
+COARSE (>= 10 ms)
+```
+
+`Entropy.gather()` samples jitter for a fixed 120 ms. At a 12 ms tick that window
+holds **10 samples**; the OT-810D's 4 ms tick held 26. Per sample the two devices
+are nearly equal — 2.125 bits here against 2.250 there — so the whole 58 → 21
+collapse is the tick, not the quality of the noise.
+
+```
+-- b. jitter spins --
+n = 1545 in 19993 ms
+range 337..8309 step 16
+distinct 111 lvls 8
+p_max = 100 per 1000
+H_raw = 3.250
+H_99% = 3.000
+Hc = 1.875 pair/2 = 1.375
+serial correlation detected;
+discounted by pair/2 over Hc.
+lag1 repeats = 1 per 1000
+headline H = 2.125
+gather() takes 10 samples
+=> 21 bits per gather()
+```
+
+Two ways this figure is more solid than the OT-810D's, and one way it is not.
+There is **no `clamped` line** — every sample landed inside the calibrated range,
+where the alcatel lost 5.9% to an end bucket. Serial correlation is milder
+(`lag1 repeats = 1 per 1000` against 4). Against that, the measurement filled its
+whole 20 s budget to collect 1545 samples and still ran the same MCV estimator,
+which assumes IID; the pair check is a discount, not the full SP 800-90B non-IID
+track.
+
+**Identity hash codes are a real source here, unlike on the OT-810D.**
+
+```
+-- c. hashCode --
+held 256: distinct 256
+ stride -109822092 in 1/255
+ => H 7.875 per allocation
+dropped 256: distinct 256
+ => H 8.000 per call
+```
+
+Allocate-and-discard still yields 256 distinct codes, so the `new Object()`,
+`Thread.currentThread()` and digest hash codes inside `gather()` do contribute.
+On the alcatel the dropped case collapsed to ≤1 distinct and was worth nothing.
+It is still charged at **zero** in the 21 above, deliberately — which is another
+reason to read 21 as a floor.
+
+```
+-- e. cross-restart --
+launches recorded = 12
+digest collisions = 0
+clock advances across
+launches: spread 347579 s
+```
+
+**The wall clock does not reset at boot on this handset**, unlike the OT-810D,
+where it contributed nothing across cold boots. Twelve launches, no repeated
+seed. The launch series was not run as a controlled battery-out sequence, so it
+proves nothing about cold-boot behaviour specifically; the clock finding stands
+on its own.
+
+### Consequence for the auth-key barrier
+
+`tg.crypto.AuthKeySeeding` folds in `GATHERS = 5`, sized from the OT-810D's 58
+bits against a 256-bit target. On this handset five gathers are worth about
+**105 bits, not 256**, and the probe's own verdict says the target needs 13.
+Raising the count is tracked in issue #2; it is not a change this measurement
+alone should make, because the right number is a function of the slowest clock
+among supported devices and only two have been measured.
+
+### The barrier itself, running on this handset
+
+From the client's own diagnostics, `tg` 0.7.0 build `2b8aa96`:
+
+```
+30.318 I auth-key entropy barrier: 5 gathers in 700 ms
+30.318 I -> req_pq_multi nonce=<redacted>
+38.379 I pq 2227559171334472541 = 1241264909 * 1794588049 in 7723 ms
+```
+
+**700 ms, against 674 ms for the same five gathers on a desktop JVM.** The
+barrier is clock-bound, not CPU-bound — `collectJitter` spends a fixed wall-clock
+budget — so it does not get more expensive on slow hardware. The contrast is the
+line below it: pq factorisation took 7723 ms here against 7 ms on the desktop,
+about 1100× slower. Against a handshake that costs ~24 s on this device, the
+barrier is roughly 3% of it.
+
+The `<redacted>` on the nonce is the on-device redaction in `tg.plat.Report`
+doing its job: the barrier's diagnostics carry a count and a duration, and the
+report path strips the nonce before anything leaves the handset.
+
+---
+
 ## What this changes
 
 - Memory budgets sized for ~5 MB are correct for this handset too. No economy
@@ -210,8 +331,15 @@ retries rather than assumptions.
 
 - Largest JAR this device will install has not been measured; use
   `tools/build-size-ladder.ps1`.
-- Entropy has not been measured here. `Entropy.estimatedBitsPerGather` is still
-  pinned to the OT-810D figure and needs a full power-cycle series on this
-  device before anything is claimed for it.
-- Key codes and key-press timing have not been recorded.
+- **The seeding barrier does not reach its 256-bit target here.** 21 bits per
+  gather × 5 gathers ≈ 105. `Entropy.estimatedBitsPerGather` still reports the
+  OT-810D's 58 on purpose — it is one device's figure, not a fleet minimum — so
+  sizing `AuthKeySeeding.GATHERS` against the slowest supported clock is issue
+  #2 and not something this measurement should do on its own.
+- **No controlled cold-boot series here.** The twelve launches recorded were not
+  a battery-out sequence with the clock reset by hand, so this device has no
+  equivalent of the OT-810D's cold-boot determinism evidence. The clock finding
+  (it does *not* reset at boot) is independent of that and stands.
+- Key-press timing has not been recorded; `Key timing` was not run. Key codes
+  and canvas size likewise.
 - The true RMS record ceiling is above 64 KiB but unmeasured.

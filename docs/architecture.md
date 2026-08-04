@@ -355,9 +355,23 @@ RPC errors remain visible until the user retries or deletes them.
   **This is not a claim of 5 × 58 bits.** Consecutive gathers sample the same
   scheduler on the same idle handset and nothing here demonstrates that they are
   independent; five is a sizing rule against a 256-bit target, not an addition.
-  On any runtime other than the one measured the sources are still unquantified,
-  so generated keys there remain development keys. See
-  [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+  See [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+* **The gather count is sized on the faster of two handsets, and the second one
+  does not reach the target.** A Samsung GT-C3592 ticks its clock at 12 ms
+  against the alcatel's 4 ms, so the fixed 120 ms window inside `gather()`
+  collects 10 jitter samples there instead of 26 — about **21 bits per gather**,
+  so five gathers are worth roughly **105 bits, not 256**
+  ([docs/hardware/samsung-gt-c3592.md](hardware/samsung-gt-c3592.md)). Per-sample
+  entropy is nearly identical on both devices; the clock is the entire
+  difference. Sizing the barrier against the slowest supported clock is
+  [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Until that
+  lands, and on any runtime not yet measured, generated keys are development
+  keys.
+* **The barrier costs the same on a handset as on a desktop.** Measured 700 ms
+  on the GT-C3592 against 674 ms on a desktop JVM, because `collectJitter`
+  spends a fixed wall-clock budget rather than doing work. For scale, pq
+  factorisation on that same handset took 7723 ms against 7 ms on the desktop.
+  The barrier is about 3% of a first-key handshake there.
 * **The wall clock contributes nothing across cold boots on that handset.** It
   loses the RTC when the battery is removed. Seven launches produced no repeated
   seed anyway — two of them started at the same millisecond and still diverged —

@@ -159,6 +159,15 @@ public final class AuthKeySeedingTest implements Test
      * A tripwire on the sizing rule, not on arithmetic. If a later device run
      * lowers estimatedBitsPerGather, five gathers stop covering the target, and
      * whoever lowers it has to come through here to find that out.
+     *
+     * What it does <em>not</em> assert is that five gathers reach 256 bits on
+     * every supported handset - they do not. A Samsung GT-C3592 was measured at
+     * about 21 bits per gather, where five are worth ~105, and
+     * estimatedBitsPerGather still reports the alcatel's 58 because it has
+     * always been one device's figure rather than a fleet minimum. Making the
+     * seeding size itself against the slowest supported clock is issue #2; this
+     * test guards the arithmetic that exists, and pins the constants so that
+     * change cannot happen silently.
      */
     private void countStaysSizedForTheTarget()
     {
