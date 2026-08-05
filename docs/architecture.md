@@ -356,14 +356,23 @@ RPC errors remain visible until the user retries or deletes them.
   scheduler on the same idle handset and nothing here demonstrates that they are
   independent; five is a sizing rule against a 256-bit target, not an addition.
   See [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
-* **The gather count is sized on the faster of two handsets, and the second one
-  does not reach the target.** A Samsung GT-C3592 ticks its clock at 12 ms
-  against the alcatel's 4 ms, so the fixed 120 ms window inside `gather()`
-  collects 10 jitter samples there instead of 26 — about **21 bits per gather**,
-  so five gathers are worth roughly **105 bits, not 256**
-  ([docs/hardware/samsung-gt-c3592.md](hardware/samsung-gt-c3592.md)). Per-sample
-  entropy is nearly identical on both devices; the clock is the entire
-  difference. Sizing the barrier against the slowest supported clock is
+* **The gather count is a constant, and it is wrong on two handsets out of
+  three — in opposite directions.** The fixed 120 ms window inside `gather()`
+  collects however many samples the clock tick allows, so the yield tracks the
+  tick:
+
+  | Handset | tick | samples | bits/sample | bits/gather | 5 gathers |
+  |---|---|---|---|---|---|
+  | Alcatel OT-810D | 4 ms | 26 | 2.250 | 58 | ~290 — correct |
+  | Samsung GT-C3592 | 12 ms | 10 | 2.125 | 21 | ~105 — short by 2.6× |
+  | Nokia C3-00 | 1 ms | 120 | 1.125–1.375 | 135–165 | ~675 — 2.5× more than needed |
+
+  Full figures per device under [docs/hardware/](hardware/). Note that
+  per-sample entropy is **not** constant across devices, as the first two
+  suggested: it roughly halves between a 4 ms and a 1 ms tick. A finer clock
+  buys more samples that are each individually less surprising, so the net gain
+  is real but not linear and should not be extrapolated. Sizing the barrier
+  against the measured clock rather than a compiled-in constant is
   [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Until that
   lands, and on any runtime not yet measured, generated keys are development
   keys.

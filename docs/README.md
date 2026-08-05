@@ -7,6 +7,7 @@
 | [toolchain.md](toolchain.md) | Version matrix and pins, why JDK 8 specifically, how preverification works, the two bootclasspath modes, build outputs |
 | [emulator-notes.md](emulator-notes.md) | What an emulator pass does and does not prove, the automated smoke test, the menu-ordering rule it enforces, MicroEmulator and WTK gotchas |
 | [diagnostics.md](diagnostics.md) | Getting measurements and crash tails off a handset that has no console: the report collector, what is redacted before anything is sent, and why published builds cannot upload |
+| [hardware/](hardware/) | What has actually been measured on each physical handset, and what each one broke |
 | [releasing.md](releasing.md) | Repository secrets, cutting a tagged release, what gets published, dry runs |
 | [screenshots/](screenshots/) | How the README screenshots are rendered, and why every name in them is fictional |
 
