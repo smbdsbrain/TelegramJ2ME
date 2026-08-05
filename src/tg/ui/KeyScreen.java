@@ -77,12 +77,19 @@ public class KeyScreen extends Canvas
         record("RP", keyCode);
     }
 
-    /** Report of everything seen, for transcription into the hardware doc. */
+    /**
+     * Report of everything seen, for transcription into the hardware doc.
+     *
+     * The first line used to label hasRepeatEvents() as "fullscreen", which is
+     * a different question entirely and put a wrong figure in a published
+     * hardware note. Both are reported now, under their own names.
+     */
     public String[] snapshot()
     {
         String[] out = new String[count + 1];
         out[0] = "canvas " + getWidth() + "x" + getHeight()
-                 + " fullscreen=" + hasRepeatEvents() + " pointer=" + hasPointerEvents();
+                 + " repeat=" + hasRepeatEvents()
+                 + " pointer=" + hasPointerEvents();
         for (int i = 0; i < count; i++) { out[i + 1] = history[i]; }
         return out;
     }
@@ -104,7 +111,13 @@ public class KeyScreen extends Canvas
         }
         catch (Throwable t) { sb.append('?'); }
 
-        if (keyCode >= 32 && keyCode < 127)
+        // Not just ASCII. A Nokia C3-00 with a Russian keyboard reports 1074 for
+        // the "в" key - the Unicode code point itself - and showing only codes
+        // in 32..126 hid that, leaving a column of bare numbers for exactly the
+        // keys a text client most needs to map. Surrogates are excluded because
+        // half a character is not a character.
+        if (keyCode >= 32 && keyCode < 0xfffe
+                && !(keyCode >= 0xd800 && keyCode <= 0xdfff))
         {
             sb.append(" char='").append((char) keyCode).append('\'');
         }

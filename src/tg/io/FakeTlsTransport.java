@@ -269,11 +269,91 @@ public final class FakeTlsTransport implements Transport
         int len = ((h[3] & 0xff) << 8) | (h[4] & 0xff);
         if ((h[0] & 0xff) != expectedType || h[1] != 3 || h[2] != 3 || len > MAX_RECORD)
         {
-            throw new IOException("invalid FakeTLS handshake record");
+            throw new IOException("invalid FakeTLS handshake record, "
+                    + describeRecord(h, len) + alertBody(h, len)
+                    + ", expected type 0x"
+                    + Integer.toHexString(expectedType));
         }
         byte[] body = new byte[len];
         delegate.readFully(body, 0, len);
         all.bytes(h); all.bytes(body);
+    }
+
+    /**
+     * Name what actually arrived.
+     *
+     * A bare "invalid record" cannot be acted on: a TLS alert from a proxy that
+     * rejected the ClientHello, a truncated read on a slow link and a server
+     * that answered something else entirely all produce the same sentence. This
+     * one distinguishes them, and it is cheap - it only runs on the failure
+     * path. Observed twice on a Nokia C3-00 with no way to tell which it was.
+     */
+    /**
+     * For an alert, read the two bytes that say which alert it was.
+     *
+     * A Nokia C3-00 produced {@code type 0x15 (alert), length 2} against a
+     * working proxy, which established that the proxy was *rejecting* the
+     * ClientHello rather than the read being torn - and then stopped, because
+     * the reason is in the body and the body was never read. Level and
+     * description turn "it refused" into "it refused because".
+     *
+     * Deliberately narrow: only for a well-formed 1-8 byte alert, on a
+     * connection that is about to be abandoned anyway. Anything longer or
+     * malformed is left alone rather than risking a blocking read while
+     * reporting a failure.
+     */
+    private String alertBody(byte[] h, int len)
+    {
+        if ((h[0] & 0xff) != 0x15 || len < 2 || len > 8) { return ""; }
+        try
+        {
+            byte[] body = new byte[len];
+            delegate.readFully(body, 0, len);
+            int level = body[0] & 0xff;
+            int desc = body[1] & 0xff;
+            return " [" + (level == 1 ? "warning" : level == 2 ? "fatal"
+                            : String.valueOf(level))
+                    + " " + alertName(desc) + "(" + desc + ")]";
+        }
+        catch (Throwable t)
+        {
+            return " [alert body unreadable]";
+        }
+    }
+
+    /** The handful of alerts a FakeTLS proxy realistically sends. */
+    private static String alertName(int desc)
+    {
+        switch (desc)
+        {
+            case 0:   return "close_notify";
+            case 10:  return "unexpected_message";
+            case 20:  return "bad_record_mac";
+            case 40:  return "handshake_failure";
+            case 42:  return "bad_certificate";
+            case 47:  return "illegal_parameter";
+            case 48:  return "unknown_ca";
+            case 50:  return "decode_error";
+            case 51:  return "decrypt_error";
+            case 70:  return "protocol_version";
+            case 80:  return "internal_error";
+            case 112: return "unrecognized_name";
+            case 116: return "certificate_required";
+            default:  return "alert";
+        }
+    }
+
+    private static String describeRecord(byte[] h, int len)
+    {
+        int type = h[0] & 0xff;
+        String named = type == 0x15 ? "alert"
+                : type == 0x16 ? "handshake"
+                : type == 0x17 ? "application data"
+                : type == 0x14 ? "change cipher spec"
+                : "unknown";
+        return "type 0x" + Integer.toHexString(type) + " (" + named
+                + "), version " + (h[1] & 0xff) + "." + (h[2] & 0xff)
+                + ", length " + len;
     }
 
     private void readApplicationRecord() throws IOException
@@ -286,7 +366,8 @@ public final class FakeTlsTransport implements Transport
             int len = ((h[3] & 0xff) << 8) | (h[4] & 0xff);
             if (h[1] != 3 || h[2] != 3 || len <= 0 || len > MAX_RECORD)
             {
-                throw new IOException("invalid FakeTLS application record");
+                throw new IOException("invalid FakeTLS application record, "
+                        + describeRecord(h, len));
             }
             byte[] body = new byte[len];
             delegate.readFully(body, 0, len);

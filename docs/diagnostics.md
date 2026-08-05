@@ -28,20 +28,37 @@ over and over.
 | Heap probe | the real ceiling — allocate until the VM refuses, plus the largest single block. The messenger runs a coarser version of the same probe on its first launch; see [architecture.md](architecture.md#memory-discipline) |
 | RMS test | record store limits, whether a record reads back identical, whether it survives exit |
 | Entropy measure | clock granularity, jitter, `hashCode` and heap readings; the RNG seeding evidence |
+| Clock & timers | the clock's tick, whether `Thread.sleep` is a lower bound, and whether the wall clock ever jumps or runs backwards |
+| Text round trip | where non-ASCII text stops surviving — `Utf8`, the platform conversion, RMS, or the upload path |
+| Display caps / Display size | colours, font metrics, and the canvas the AMS actually hands over, with and without full-screen mode |
 | Keys / Key timing | key codes, game actions, and bits per key press |
 | Public TCP echo | whether a raw socket works at all |
-| Telegram DC socket :80/:443/:5222 | which ports an unsigned MIDlet is allowed to open |
+| Telegram DC socket :80/:443/:5222/:8443 | which ports an unsigned MIDlet is allowed to open |
+| Two sockets at once | whether a second socket can be opened, and whether trying breaks the first |
 | PNG / JPEG decode | whether the **platform** can decode each format |
 | Emoji sheet cost | what holding the emoji sprite sheet actually costs in heap |
 | Background socket | whether a socket survives `pauseApp`/`startApp` |
 | Diagnostic log / Crash log | the ring buffer and any recorded crash |
 | **Upload all** | runs every non-interactive item above and uploads each result |
 
-Two of those exist because a device disagreed with an assumption. **Emoji sheet
+Most of those exist because a device disagreed with an assumption. **Emoji sheet
 cost** was added to test a theory that the sprite sheet was exhausting a small
 heap — it measured 48 KB and killed the theory. **PNG / JPEG decode** is a
 platform capability, not a client one: a `FAIL` on JPEG does not mean photos are
-broken, because the client carries its own decoder.
+broken, because the client carries its own decoder. **Two sockets at once** is
+there because one handset refuses the second *and corrupts the first*, which is
+why `Single socket mode` exists. **Clock & timers** is there because every
+network timeout is computed from `System.currentTimeMillis()`, and **Text round
+trip** because `microedition.encoding` is ISO8859-1 on every handset measured,
+so any path that reaches for `String.getBytes()` loses non-Latin text — as one
+crash entry once did. It reports each layer separately, because the useful
+answer is *which* stage failed.
+
+The messenger's Diagnostics upload carries a `-- storage --` section for the
+same reason the probe cannot answer it: record stores are scoped per MIDlet
+suite, so `probe.jar`'s RMS results say nothing about `tg.jar`'s. It reports the
+cross-launch persistence marker, the size of each store, and whether the key
+store has had a write fail.
 
 `crypto.jar` is the second install, once the probe has shown the phone runs
 these JARs at all. It carries the whole crypto stack and answers whether the

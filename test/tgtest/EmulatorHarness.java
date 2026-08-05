@@ -49,6 +49,22 @@ public final class EmulatorHarness
     private final MidletHarness midlet = new MidletHarness();
     private Display display;
 
+    /**
+     * Install only the record store, with no device.
+     *
+     * {@link #install} also registers a {@link TestDevice}, which is right for
+     * a driver that builds screens and unnecessary weight for a test that only
+     * needs {@code RecordStore} to work - and a device pulls in the emulator's
+     * Swing side, which a headless suite should not depend on.
+     */
+    public static void installRecordStore()
+    {
+        if (MIDletBridge.getMicroEmulator() == null)
+        {
+            MIDletBridge.setMicroEmulator(new Emulator());
+        }
+    }
+
     /** Install the device and record store. Call once per JVM. */
     public static void install(String deviceName, int width, int height)
     {

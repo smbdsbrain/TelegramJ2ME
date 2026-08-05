@@ -41,6 +41,8 @@ public final class AllTests
             new AsyncMtClientTest(),
             new HandshakeBarrierTest(),
             new Phase2PersistenceTest(),
+            new RmsAuthKeyStoreTest(),
+            new AuthCheckTest(),
             new UpdateSyncTest(),
             new ChatScrollStateTest(),
             new ChatWindowTest(),
@@ -57,6 +59,7 @@ public final class AllTests
             new DiagTailTest(),
             new MemoryBudgetTest(),
             new HeapProbeTest(),
+            new ProbeExtrasTest(),
             new SourceGuardTest()
         };
     }
