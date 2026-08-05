@@ -14,6 +14,7 @@ import javax.microedition.lcdui.TextField;
 import javax.microedition.midlet.MIDlet;
 import java.io.ByteArrayInputStream;
 
+import tg.api.AuthCheck;
 import tg.api.Dialog;
 import tg.api.DialogPage;
 import tg.api.AppSettings;
@@ -48,6 +49,7 @@ import tg.mt.ConnectionDiagnostics;
 import tg.mt.RpcError;
 import tg.plat.MidpLinkFactory;
 import tg.plat.RmsAuthKeyStore;
+import tg.plat.RmsCheck;
 import tg.plat.RmsAvatarCache;
 import tg.plat.RmsConversationCache;
 import tg.plat.RmsDraftStore;
@@ -190,6 +192,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private SettingsScreen settingsScreen;
     private AppSettings appSettings;
     private TcpLogSink remoteLogSink;
+    /** What the previous launch left in RMS; read once, before any write. */
+    private String startupMarker;
 
     /**
      * Text entry is done with TextBox, not a TextField inside a Form.
@@ -400,6 +404,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         Diag.mem("startup");
 
         store = new RmsAuthKeyStore();
+
+        // Read before anything writes, so it describes the previous launch
+        // rather than this one. "none - this is the first launch" appearing on
+        // every launch is a store that does not survive exit, which presents to
+        // a user as an app that forgot their login.
+        startupMarker = RmsCheck.checkPersistenceMarker();
+        Diag.info("rms " + startupMarker);
 
         // Before anything sized from it is built. A stored measurement is a
         // cheap RMS read; a first launch gets the reference profile now and a
@@ -935,19 +946,39 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 telegram.connect();
-                return telegram.checkAuthorization();
+                return telegram.verifyAuthorization();
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object result)
             {
-                if (result != null)
+                AuthCheck check = (AuthCheck) result;
+                if (check.isYes())
                 {
                     loadDialogs();
                 }
-                else
+                else if (check.isNo())
                 {
                     showPhoneBox();
+                }
+                else
+                {
+                    // The session was not refused, it was never checked. Asking
+                    // for a phone number here would log the user out of an
+                    // account they are still signed in to, and throw away a
+                    // stored auth_key that costs two 2048-bit modPows to
+                    // replace. Offer what an ordinary connection failure
+                    // offers: cached dialogs, or Retry.
+                    if (!showCachedDialogsOffline())
+                    {
+                        showRetryableError("Could not check the session",
+                                           check.error);
+                    }
+                    else
+                    {
+                        Diag.warn("startup using cached dialogs: "
+                                + check.detail);
+                    }
                 }
             }
 
@@ -4569,10 +4600,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         String[] crash = crashLogLines();
 
         String[] budget = MemoryBudget.lines();
+        String[] storage = storageLines();
 
         Runtime rt = Runtime.getRuntime();
         String[] lines = new String[connection.length + ring.length + crash.length
-                                    + budget.length + 10];
+                                    + budget.length + storage.length + 12];
         int at = 0;
         lines[at++] = "heapTotal=" + rt.totalMemory() + " heapFree=" + rt.freeMemory();
         lines[at++] = "";
@@ -4581,6 +4613,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         lines[at++] = "-- memory budget --";
         System.arraycopy(budget, 0, lines, at, budget.length);
         at += budget.length;
+        lines[at++] = "";
+        lines[at++] = "-- storage --";
+        System.arraycopy(storage, 0, lines, at, storage.length);
+        at += storage.length;
         lines[at++] = "";
         lines[at++] = "-- connection --";
         System.arraycopy(connection, 0, lines, at, connection.length);
@@ -4605,6 +4641,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void lines(String[] text) { screen.setLines(text); }
         });
+    }
+
+    /**
+     * Whether this suite's RMS is actually holding what was written to it.
+     *
+     * Record stores are scoped per MIDlet suite, so probe.jar's RMS results say
+     * nothing about the messenger's - which is why "the login does not persist"
+     * could not be investigated from the probe build and had to be guessed at.
+     * The marker is read once at startup, before anything writes, and is the
+     * only direct evidence that storage survives an exit on this handset.
+     */
+    private String[] storageLines()
+    {
+        String[] stores = RmsCheck.storageLines(new String[] {
+            "tgkeys", "tgupdates", "tgdialogcache", "tghistorycache",
+            "tgavatars", "tgoutbox", "tgdrafts", "tgcrash"
+        });
+        String[] out = new String[stores.length + 2];
+        out[0] = "persistence marker: " + String.valueOf(startupMarker);
+        System.arraycopy(stores, 0, out, 1, stores.length);
+        String failures = store == null ? null : store.writeFailureSummary();
+        out[out.length - 1] = "key store: "
+                + (failures == null ? "no write failures" : failures);
+        return out;
     }
 
     private String[] diagnosticLines()

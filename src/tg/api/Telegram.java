@@ -800,8 +800,27 @@ public final class Telegram
      *
      * Cheaper and more definitive than guessing from stored flags: if the key
      * was revoked from another device, this is where we find out.
+     *
+     * @return the peer, or null when the answer was "no" <em>or</em> when there
+     *         was no answer. Callers that act on the difference - anything that
+     *         would send the user back to the login screen - must use
+     *         {@link #verifyAuthorization()} instead.
      */
     public Peer checkAuthorization()
+    {
+        return verifyAuthorization().peer;
+    }
+
+    /**
+     * Confirm a stored session still works, distinguishing a refusal from
+     * silence.
+     *
+     * Only the server can say a session is dead. A timeout, a dropped socket or
+     * an unrecovered resync says nothing at all, and treating it as a refusal
+     * logs the user out of an account they are still signed in to - see
+     * {@link AuthCheck}.
+     */
+    public AuthCheck verifyAuthorization()
     {
         try
         {
@@ -816,9 +835,13 @@ public final class Telegram
                     peers.put(me);
                     authorized = true;
                     updates.activate(me.id);
-                    return me;
+                    return AuthCheck.yes(me);
                 }
             }
+            // A well-formed reply that names nobody. The server answered, so
+            // this is an answer: there is no account behind this key.
+            authorized = false;
+            return AuthCheck.no("users.getSelf returned no user");
         }
         catch (RpcError e)
         {
@@ -828,26 +851,44 @@ public final class Telegram
                 // account attached to it yet. Keeping it is what makes the next
                 // launch fast - regenerating costs two 2048-bit modPows.
                 Diag.info("no account on this key yet - sign-in required");
+                authorized = false;
+                return AuthCheck.no(e.getMessage());
             }
-            else if (e.isAuthKeyInvalid())
+            if (e.isAuthKeyInvalid())
             {
                 Diag.warn("stored session is no longer valid: " + e.getMessage());
                 store.clear(dcId, Dc.isTest());
                 store.saveString("authorized", null);
                 updates.close();
                 updates.deactivate();
+                authorized = false;
+                return AuthCheck.no(e.getMessage());
             }
-            else
-            {
-                Diag.warn("authorization check failed: " + e.getMessage());
-            }
+            return inconclusive(e);
         }
         catch (IOException e)
         {
-            Diag.warn("authorization check failed: " + e.getMessage());
+            return inconclusive(e);
         }
-        authorized = false;
-        return null;
+    }
+
+    /**
+     * The session could not be checked. Leave every piece of stored state
+     * alone, including {@link #authorized}: the previous value is the best
+     * information available, and clearing it is what used to turn one lost
+     * packet into a logout.
+     */
+    private AuthCheck inconclusive(IOException e)
+    {
+        String detail = String.valueOf(e.getMessage());
+        // This flag has been written since sign-in and never read. Read here it
+        // answers the one question the failure raises: was there an account to
+        // lose? A "yes" makes the retry worth offering rather than a login box.
+        boolean signedInBefore = "1".equals(store.loadString("authorized"));
+        Diag.warn("authorization check inconclusive: " + detail
+                  + (signedInBefore ? " (session kept - signed in previously)"
+                                    : " (no previous sign-in recorded)"));
+        return AuthCheck.unknown(e);
     }
 
     public void logOut() throws IOException
