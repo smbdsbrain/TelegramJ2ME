@@ -10,6 +10,8 @@ import javax.microedition.midlet.MIDlet;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
 import tg.plat.Caps;
+import tg.plat.ClockProbe;
+import tg.plat.DisplayProbe;
 import tg.plat.EntropyLog;
 import tg.plat.EntropyProbe;
 import tg.plat.HeapProbe;
@@ -17,13 +19,16 @@ import tg.plat.HttpReportSink;
 import tg.plat.ImageProbe;
 import tg.plat.ReportUpload;
 import tg.plat.RmsCheck;
+import tg.plat.TextProbe;
 import tg.mt.Dc;
 import tg.ui.BackgroundSocketScreen;
+import tg.ui.DisplayScreen;
 import tg.ui.KeyScreen;
 import tg.ui.KeyTimingScreen;
 import tg.ui.NetScreen;
 import tg.ui.SocketConnectScreen;
 import tg.ui.TextScreen;
+import tg.ui.TwoSocketScreen;
 
 /**
  * Hardware reconnaissance MIDlet - the first thing that goes onto an unknown
@@ -45,12 +50,18 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         "Heap probe",
         "RMS test",
         "Entropy measure",
+        "Clock & timers",
+        "Text round trip",
+        "Display caps",
         "Keys",
         "Key timing",
+        "Display size",
         "Public TCP echo",
         "Telegram DC socket :80",
         "Telegram DC socket :443",
         "Telegram DC socket :5222",
+        "Telegram DC socket :8443",
+        "Two sockets at once",
         "PNG / JPEG decode",
         "Emoji sheet cost",
         "Background socket",
@@ -63,18 +74,24 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     private static final int ITEM_HEAP       = 1;
     private static final int ITEM_RMS        = 2;
     private static final int ITEM_ENTROPY    = 3;
-    private static final int ITEM_KEYS       = 4;
-    private static final int ITEM_KEYTIME    = 5;
-    private static final int ITEM_NET        = 6;
-    private static final int ITEM_TG_80      = 7;
-    private static final int ITEM_TG_443     = 8;
-    private static final int ITEM_TG_5222    = 9;
-    private static final int ITEM_IMAGE      = 10;
-    private static final int ITEM_EMOJI      = 11;
-    private static final int ITEM_BG         = 12;
-    private static final int ITEM_LOG        = 13;
-    private static final int ITEM_CRASH      = 14;
-    private static final int ITEM_UPLOAD_ALL = 15;
+    private static final int ITEM_CLOCK      = 4;
+    private static final int ITEM_TEXT       = 5;
+    private static final int ITEM_DISPLAY    = 6;
+    private static final int ITEM_KEYS       = 7;
+    private static final int ITEM_KEYTIME    = 8;
+    private static final int ITEM_CANVAS     = 9;
+    private static final int ITEM_NET        = 10;
+    private static final int ITEM_TG_80      = 11;
+    private static final int ITEM_TG_443     = 12;
+    private static final int ITEM_TG_5222    = 13;
+    private static final int ITEM_TG_8443    = 14;
+    private static final int ITEM_TWO_SOCK   = 15;
+    private static final int ITEM_IMAGE      = 16;
+    private static final int ITEM_EMOJI      = 17;
+    private static final int ITEM_BG         = 18;
+    private static final int ITEM_LOG        = 19;
+    private static final int ITEM_CRASH      = 20;
+    private static final int ITEM_UPLOAD_ALL = 21;
 
     /** Which MIDlet the collector files these reports under. */
     private static final String SINK_TARGET = "probe";
@@ -93,9 +110,11 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
     private KeyScreen keyScreen;
     private KeyTimingScreen keyTimingScreen;
+    private DisplayScreen displayScreen;
     private TextScreen entropyScreen;
     private NetScreen netScreen;
     private SocketConnectScreen telegramScreen;
+    private TwoSocketScreen twoSocketScreen;
     private BackgroundSocketScreen backgroundScreen;
     private TextScreen logScreen;
 
@@ -222,6 +241,32 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             return;
         }
 
+        if (c == TwoSocketScreen.CMD_RUN && twoSocketScreen != null)
+        {
+            twoSocketScreen.start();
+            return;
+        }
+
+        if (c == DisplayScreen.CMD_FULLSCREEN && displayScreen != null)
+        {
+            displayScreen.toggleFullScreen();
+            return;
+        }
+
+        // These two draw their own results rather than going through showText,
+        // so Upload has to be told what is on screen before it can send it.
+        if (c == cmdUpload && d == displayScreen && displayScreen != null)
+        {
+            uploadOne("Display size", displayScreen.snapshot());
+            return;
+        }
+
+        if (c == cmdUpload && d == twoSocketScreen && twoSocketScreen != null)
+        {
+            uploadOne("Two sockets", twoSocketScreen.snapshot());
+            return;
+        }
+
         if (c == cmdRefresh)
         {
             if (d == logScreen && logScreen != null)
@@ -303,6 +348,30 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 runEntropyProbe();
                 break;
 
+            case ITEM_CLOCK:
+                showText("Clock", ClockProbe.run());
+                break;
+
+            case ITEM_TEXT:
+                showText("Text", TextProbe.run());
+                break;
+
+            case ITEM_DISPLAY:
+                showText("Display", DisplayProbe.run(display));
+                break;
+
+            case ITEM_CANVAS:
+                if (displayScreen == null)
+                {
+                    displayScreen = new DisplayScreen();
+                    displayScreen.addCommand(DisplayScreen.CMD_FULLSCREEN);
+                    displayScreen.addCommand(cmdBack);
+                    displayScreen.addCommand(cmdUpload);
+                    displayScreen.setCommandListener(this);
+                }
+                display.setCurrent(displayScreen);
+                break;
+
             case ITEM_KEYS:
                 if (keyScreen == null) { keyScreen = new KeyScreen(); }
                 keyScreen.addCommand(cmdBack);
@@ -343,6 +412,26 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
             case ITEM_TG_5222:
                 showTelegramSocket(5222);
+                break;
+
+            case ITEM_TG_8443:
+                // The port the client actually reaches Telegram on, via an
+                // MTProxy, and the one port never probed here - :80 and :443
+                // are refused to an untrusted MIDlet on every handset measured
+                // so far, so a green row on one of those was never expected.
+                showTelegramSocket(8443);
+                break;
+
+            case ITEM_TWO_SOCK:
+                if (twoSocketScreen == null)
+                {
+                    twoSocketScreen = new TwoSocketScreen("tcpbin.com", 4242);
+                    twoSocketScreen.addCommand(TwoSocketScreen.CMD_RUN);
+                    twoSocketScreen.addCommand(cmdBack);
+                    twoSocketScreen.addCommand(cmdUpload);
+                    twoSocketScreen.setCommandListener(this);
+                }
+                display.setCurrent(twoSocketScreen);
                 break;
 
             case ITEM_IMAGE:
@@ -632,8 +721,9 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 // if the handset dies partway through a sweep those are the two
                 // that must already have arrived.
                 String[] names = {
-                    "Platform", "Heap probe", "RMS", "Image decode",
-                    "Emoji sheet", "Entropy log", "Diagnostic log", "Crash log"
+                    "Platform", "Heap probe", "RMS", "Clock", "Text",
+                    "Display", "Image decode", "Emoji sheet", "Entropy log",
+                    "Diagnostic log", "Crash log"
                 };
 
                 int sent = 0;
@@ -703,10 +793,13 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                     case 0: return Caps.report();
                     case 1: return HeapProbe.run(8 * 1024).lines();
                     case 2: return RmsCheck.run();
-                    case 3: return ImageProbe.run();
-                    case 4: return ImageProbe.emojiSheet();
-                    case 5: return EntropyLog.report();
-                    case 6: return Diag.snapshot();
+                    case 3: return ClockProbe.run();
+                    case 4: return TextProbe.run();
+                    case 5: return DisplayProbe.run(display);
+                    case 6: return ImageProbe.run();
+                    case 7: return ImageProbe.emojiSheet();
+                    case 8: return EntropyLog.report();
+                    case 9: return Diag.snapshot();
                     default: return crashLines();
                 }
             }
