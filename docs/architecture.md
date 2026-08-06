@@ -342,6 +342,20 @@ stores so one corrupt or full queue cannot damage the auth key:
 Outbox is capped at 64 messages and the compose UI at 1000 characters. Permanent
 RPC errors remain visible until the user retries or deletes them.
 
+**Reading the auth key answers with an outcome, not a key or nothing.** A store
+that will not open, a record that will not decode and an entry that was never
+written are three different states, and the connect path answers the third by
+running a handshake and writing the result over whatever is there — so folding
+all three into one null made a transient RMS failure cost the session.
+`tg.mt.AuthKeyLoad` names which it was (`FOUND`, `NOT_FOUND`, `CORRUPT`,
+`IO_ERROR`), and the length and hex form are validated before the value is
+decoded so the answer describes the damage. A damaged record is no longer
+deleted while being read: it is the only description anyone will ever get of
+what the handset did, and destroying it is not the store's decision to make.
+The client still regenerates on a bad read rather than refusing to start — the
+loss is one session, and a handset that cannot start is worse — but it now says
+so in the log and the crash log instead of reporting a first launch.
+
 ## Security posture, stated honestly
 
 * The crypto primitives match published vectors, including through the shipped

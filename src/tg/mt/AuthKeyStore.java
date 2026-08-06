@@ -21,6 +21,12 @@ package tg.mt;
  * lookups are keyed on both. Handing a production key to a test DC produces a
  * bare -404 with no explanation.
  *
+ * <h3>Why loading returns an outcome rather than a key or null</h3>
+ * "Nothing is stored" and "the store would not open" are the same value to a
+ * caller that reads a null, and the connect path answers the first by running a
+ * handshake and overwriting whatever is there. Conflating them turns one
+ * transient storage failure into a lost session. See {@link AuthKeyLoad}.
+ *
  * <h3>Confidentiality</h3>
  * RMS on a feature phone offers no encryption and no meaningful access control
  * beyond "other MIDlet suites cannot read it". Anyone with the handset in hand
@@ -31,9 +37,10 @@ package tg.mt;
 public interface AuthKeyStore
 {
     /**
-     * @return the stored key for this data centre and environment, or null
+     * @return what storage had to say about this data centre and environment;
+     *         never null
      */
-    AuthKey load(int dcId, boolean testEnvironment);
+    AuthKeyLoad load(int dcId, boolean testEnvironment);
 
     void save(AuthKey key);
 

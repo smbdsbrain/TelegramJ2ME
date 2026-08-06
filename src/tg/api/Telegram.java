@@ -7,6 +7,7 @@ import tg.crypto.Rng;
 import tg.diag.Diag;
 import tg.io.Transport;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 import tg.mt.Dc;
 import tg.mt.DcEndpoint;
@@ -302,14 +303,25 @@ public final class Telegram
                 client = candidate;
                 candidate.connect(dc, spec.host, spec.port, 30000, spec.media);
 
-                AuthKey stored = store.load(dc, Dc.isTest());
-                if (stored != null)
+                AuthKeyLoad stored = store.load(dc, Dc.isTest());
+                if (stored.isFound())
                 {
-                    candidate.resume(stored, 0);
+                    candidate.resume(stored.key, 0);
                     Diag.info("resumed with stored key for dc" + dc);
                 }
                 else
                 {
+                    if (!stored.isNotFound())
+                    {
+                        // A damaged record or an unreadable store is not a first
+                        // launch, and the handshake about to run will replace
+                        // whatever is there. Naming which one it was is the only
+                        // way a later report can tell "the app forgot my login"
+                        // apart from "I never signed in".
+                        Diag.error("stored auth_key for dc" + dc
+                                   + " unusable (" + stored.describe()
+                                   + "), generating a new one");
+                    }
                     AuthKey fresh = candidate.authenticate();
                     store.save(fresh);
                     Diag.info("generated a new key for dc" + dc);
@@ -1917,9 +1929,17 @@ public final class Telegram
                 candidate = new MtClient(spec.link, rng);
                 candidate.connect(targetDc, spec.host, spec.port, 30000, spec.media);
                 MtClient primary = client;
-                AuthKey persisted = store.load(targetDc, Dc.isTest());
+                AuthKeyLoad persisted = store.load(targetDc, Dc.isTest());
+                if (persisted.isCorrupt() || persisted.isIoError())
+                {
+                    // Media is decorative; a fresh key for the file DC costs a
+                    // handshake and nothing else. Still say which it was.
+                    Diag.warn("stored media key for dc" + targetDc
+                              + " unusable (" + persisted.describe() + ")");
+                }
                 AuthKey key = MediaAuthorization.select(dcId, targetDc,
-                        primary == null ? null : primary.authKey(), persisted);
+                        primary == null ? null : primary.authKey(),
+                        persisted.key);
                 if (key == null)
                 {
                     key = candidate.authenticate();

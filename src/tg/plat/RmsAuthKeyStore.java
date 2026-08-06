@@ -7,6 +7,7 @@ import tg.diag.CrashLog;
 import tg.diag.Diag;
 import tg.io.Hex;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 import tg.tl.Utf8;
 
@@ -19,8 +20,18 @@ import tg.tl.Utf8;
  * flat key/value layout avoids needing an index or a compaction scheme.
  *
  * Every operation is defensive. A MIDlet that cannot read its stored key must
- * fall back to generating a new one, not fail to start - RMS on an unknown
- * handset is exactly the sort of thing that behaves differently from the spec.
+ * still start - RMS on an unknown handset is exactly the sort of thing that
+ * behaves differently from the spec.
+ *
+ * <h3>A read reports what it found, and never destroys it</h3>
+ * Loading used to answer null for three different states - nothing stored, a
+ * damaged record, a store that would not open - and to {@code clear()} the
+ * record it had just failed to decode. The caller reads "nothing stored" as a
+ * first launch and generates a fresh key over the top, so an unreadable store
+ * cost the session and the evidence in one step. {@link #load} now returns an
+ * {@link AuthKeyLoad} naming which of the four it was, and deletes nothing:
+ * whether to regenerate belongs to the caller, and a corrupt record is the only
+ * description anyone will ever get of what the handset did.
  *
  * <h3>Writes are verified, and say so honestly</h3>
  * This class used to log {@code "persisted ..."} unconditionally, including
@@ -42,37 +53,67 @@ public final class RmsAuthKeyStore implements AuthKeyStore
 {
     private static final String STORE = "tgkeys";
 
+    /** {@link #read} found the entry. */
+    private static final int READ_OK = 0;
+    /** {@link #read} opened the store and the entry was not in it. */
+    private static final int READ_ABSENT = 1;
+    /** {@link #read} could not open or enumerate the store. */
+    private static final int READ_FAILED = 2;
+
     /** Last write failure, for the Diagnostics screen. Null when healthy. */
     private String lastWriteError;
     private int writeFailures;
 
-    public synchronized AuthKey load(int dcId, boolean testEnvironment)
+    /**
+     * Whether a damaged key has already reached the crash log this run.
+     *
+     * The record is no longer deleted when it fails to decode, so every connect
+     * attempt would otherwise append another entry - and the log keeps three,
+     * so a reconnect loop would push out the failure that started it.
+     */
+    private boolean corruptionRecorded;
+
+    public synchronized AuthKeyLoad load(int dcId, boolean testEnvironment)
     {
-        String hex = loadString(keyName(dcId, testEnvironment));
-        if (hex == null)
+        String name = keyName(dcId, testEnvironment);
+        // slot[0] is the value, slot[1] the class of whatever stopped the read;
+        // CLDC has no tuple and this is the same out-parameter shape used by
+        // Session.encrypt.
+        String[] slot = new String[2];
+        int status = read(name, slot);
+        if (status == READ_FAILED)
         {
-            return null;
+            return AuthKeyLoad.ioError(String.valueOf(slot[1]));
         }
+        if (status == READ_ABSENT)
+        {
+            return AuthKeyLoad.notFound();
+        }
+
+        String hex = slot[0];
+        String damage = shapeIfUnusable(hex);
+        if (damage != null)
+        {
+            return corrupt(damage, null);
+        }
+
+        byte[] raw = null;
         try
         {
-            byte[] raw = Hex.decode(hex);
+            raw = Hex.decode(hex);
+            // Binds to this data centre and environment: a key is only valid
+            // for the pair it was negotiated with, and the entry name is what
+            // carries that pair.
             AuthKey key = new AuthKey(raw, dcId, testEnvironment);
             Diag.info("loaded stored " + key.describe());
-            return key;
+            return AuthKeyLoad.found(key);
         }
         catch (Throwable t)
         {
-            // About to delete the only copy of the login, so record its shape
-            // first. A stored key is 512 hex characters; anything else names
-            // its own cause - a truncation points at a per-record cap or a
-            // partial flush, junk at the wrong encoding. Diag is an in-memory
-            // ring that is gone by the next launch, so this goes to the crash
-            // log, which is not.
-            Diag.error("stored auth_key is unusable, discarding: "
-                       + shape(hex), t);
-            CrashLog.save("rms-key-unusable", t);
-            clear(dcId, testEnvironment);
-            return null;
+            // AuthKey owns raw once it is constructed; reaching here means it
+            // never was, so these bytes are ours to wipe.
+            wipe(raw);
+            return corrupt(Diag.className(t), t);
         }
     }
 
@@ -98,7 +139,24 @@ public final class RmsAuthKeyStore implements AuthKeyStore
         saveString(keyName(dcId, testEnvironment), null);
     }
 
+    /**
+     * Settings keep the nullable contract: a missing proxy host and an
+     * unreadable one both mean "use the default", and there is nothing better
+     * for a caller to do about either.
+     */
     public synchronized String loadString(String name)
+    {
+        String[] slot = new String[2];
+        read(name, slot);
+        return slot[0];
+    }
+
+    /**
+     * @param slot receives the value in {@code [0]} and, on failure, the class
+     *             of what went wrong in {@code [1]}
+     * @return {@link #READ_OK}, {@link #READ_ABSENT} or {@link #READ_FAILED}
+     */
+    private int read(String name, String[] slot)
     {
         RecordStore rs = null;
         RecordEnumeration en = null;
@@ -117,12 +175,14 @@ public final class RmsAuthKeyStore implements AuthKeyStore
                 String value = valueOf(rs, id, name);
                 if (value != null) { bestId = id; best = value; }
             }
-            return best;
+            slot[0] = best;
+            return best == null ? READ_ABSENT : READ_OK;
         }
         catch (Throwable t)
         {
             Diag.error("RMS read failed for " + name, t);
-            return null;
+            slot[1] = Diag.className(t);
+            return READ_FAILED;
         }
         finally
         {
@@ -262,12 +322,61 @@ public final class RmsAuthKeyStore implements AuthKeyStore
         }
     }
 
-    /** Describe a bad stored value without disclosing it. */
-    private static String shape(String hex)
+    /**
+     * Record a damaged key and answer with it.
+     *
+     * Diag is an in-memory ring that the next launch discards, and "the app
+     * forgot my login" is reported after that launch, so the first occurrence
+     * also goes to the crash log, which survives.
+     */
+    private AuthKeyLoad corrupt(String detail, Throwable t)
+    {
+        Diag.error("stored auth_key is unusable: " + detail, t);
+        if (!corruptionRecorded)
+        {
+            corruptionRecorded = true;
+            CrashLog.save("rms-key-unusable", t != null ? t
+                    : new RuntimeException("stored auth_key is unusable: "
+                                           + detail));
+        }
+        return AuthKeyLoad.corrupt(detail);
+    }
+
+    /**
+     * Validate the stored form before decoding it.
+     *
+     * A stored key is exactly 512 hex characters; anything else names its own
+     * cause - a short value points at a per-record cap or a partial flush, a
+     * stray character at the wrong encoding on the way in. Checking here rather
+     * than letting {@link Hex#decode} throw keeps the description precise and
+     * keeps the value out of the exception text.
+     *
+     * @return null when the value can be decoded, else its shape
+     */
+    private static String shapeIfUnusable(String hex)
     {
         if (hex == null) { return "absent"; }
-        return "length " + hex.length() + " (expected "
-                + (AuthKey.KEY_SIZE * 2) + ")";
+        if (hex.length() != AuthKey.KEY_SIZE * 2)
+        {
+            return "length " + hex.length() + " (expected "
+                    + (AuthKey.KEY_SIZE * 2) + ")";
+        }
+        for (int i = 0; i < hex.length(); i++)
+        {
+            char c = hex.charAt(i);
+            boolean hexDigit = (c >= '0' && c <= '9')
+                    || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            // The offset, never the character: this string is the session.
+            if (!hexDigit) { return "not hex at offset " + i; }
+        }
+        return null;
+    }
+
+    /** Best effort - see the note in Aes.wipe about what CLDC can promise. */
+    private static void wipe(byte[] raw)
+    {
+        if (raw == null) { return; }
+        for (int i = 0; i < raw.length; i++) { raw[i] = 0; }
     }
 
     private static String keyName(int dcId, boolean test)

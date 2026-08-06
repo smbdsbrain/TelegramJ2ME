@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 import tg.mt.ConnectionConfig;
 
@@ -134,7 +135,10 @@ public final class ConnectionConfigTest implements Test
     private static final class MemoryStore implements AuthKeyStore
     {
         private final Map<String, String> values = new HashMap<String, String>();
-        public AuthKey load(int dc, boolean test) { return null; }
+        public AuthKeyLoad load(int dc, boolean test)
+        {
+            return AuthKeyLoad.notFound();
+        }
         public void save(AuthKey key) { }
         public void clear(int dc, boolean test) { }
         public String loadString(String name) { return values.get(name); }

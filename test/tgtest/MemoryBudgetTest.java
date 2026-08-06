@@ -613,7 +613,10 @@ public final class MemoryBudgetTest implements Test
     {
         private final java.util.Hashtable values = new java.util.Hashtable();
 
-        public AuthKey load(int dcId, boolean testEnvironment) { return null; }
+        public tg.mt.AuthKeyLoad load(int dcId, boolean testEnvironment)
+        {
+            return tg.mt.AuthKeyLoad.notFound();
+        }
         public void save(AuthKey key) { }
         public void clear(int dcId, boolean testEnvironment) { }
 

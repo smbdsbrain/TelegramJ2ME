@@ -7,6 +7,7 @@ import java.util.Properties;
 
 import tg.io.Hex;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 
 /**
@@ -37,22 +38,25 @@ public final class FileAuthKeyStore implements AuthKeyStore
         load();
     }
 
-    public AuthKey load(int dcId, boolean testEnvironment)
+    public AuthKeyLoad load(int dcId, boolean testEnvironment)
     {
         String hex = props.getProperty(keyName(dcId, testEnvironment));
         if (hex == null || hex.length() == 0)
         {
-            return null;
+            return AuthKeyLoad.notFound();
         }
         try
         {
-            return new AuthKey(Hex.decode(hex), dcId, testEnvironment);
+            return AuthKeyLoad.found(
+                    new AuthKey(Hex.decode(hex), dcId, testEnvironment));
         }
         catch (RuntimeException e)
         {
-            System.out.println("stored key unusable (" + e.getMessage() + "), discarding");
-            clear(dcId, testEnvironment);
-            return null;
+            // Kept, not discarded, for the same reason the handset keeps it:
+            // a damaged key is the only description of what damaged it, and
+            // deleting it here would hide a bug in the live path.
+            System.out.println("stored key unusable (" + e.getMessage() + ")");
+            return AuthKeyLoad.corrupt(e.getClass().getName());
         }
     }
 
