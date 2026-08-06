@@ -5,9 +5,9 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.Properties;
 
-import tg.io.Hex;
 import tg.mt.AuthKey;
 import tg.mt.AuthKeyLoad;
+import tg.mt.AuthKeyRecord;
 import tg.mt.AuthKeyStore;
 
 /**
@@ -40,30 +40,29 @@ public final class FileAuthKeyStore implements AuthKeyStore
 
     public AuthKeyLoad load(int dcId, boolean testEnvironment)
     {
-        String hex = props.getProperty(keyName(dcId, testEnvironment));
-        if (hex == null || hex.length() == 0)
+        String value = props.getProperty(keyName(dcId, testEnvironment));
+        if (value == null || value.length() == 0)
         {
             return AuthKeyLoad.notFound();
         }
-        try
-        {
-            return AuthKeyLoad.found(
-                    new AuthKey(Hex.decode(hex), dcId, testEnvironment));
-        }
-        catch (RuntimeException e)
+        // The same record format the handset stores, seeding version included,
+        // so a live run exercises the encoding that ships rather than a second
+        // one that only looks like it.
+        AuthKeyLoad loaded = AuthKeyRecord.decode(value, dcId, testEnvironment);
+        if (loaded.isCorrupt())
         {
             // Kept, not discarded, for the same reason the handset keeps it:
             // a damaged key is the only description of what damaged it, and
             // deleting it here would hide a bug in the live path.
-            System.out.println("stored key unusable (" + e.getMessage() + ")");
-            return AuthKeyLoad.corrupt(e.getClass().getName());
+            System.out.println("stored key unusable (" + loaded.detail + ")");
         }
+        return loaded;
     }
 
     public void save(AuthKey key)
     {
         props.setProperty(keyName(key.dcId(), key.isTestEnvironment()),
-                          Hex.encode(key.bytes()));
+                          AuthKeyRecord.encode(key));
         store();
     }
 

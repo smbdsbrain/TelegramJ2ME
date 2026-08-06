@@ -356,6 +356,51 @@ The client still regenerates on a bad read rather than refusing to start — the
 loss is one session, and a handset that cannot start is worse — but it now says
 so in the log and the crash log instead of reporting a first launch.
 
+**A stored key records how it was seeded.** Strengthening key generation does
+nothing for a key that is already in RMS, and until this field existed the two
+were the same 512 hex characters. `tg.mt.AuthKeyRecord` is the durable value:
+
+```
+<512 hex>          no version recorded  -> AuthKey.SEEDING_UNKNOWN_LEGACY
+p<n>:<512 hex>     seeding version n    -> p1: is the measured barrier
+```
+
+The version lives *inside* the one value rather than in a settings string beside
+it, because it has to fail in the same direction as the key: a half-completed
+pair of writes would otherwise label a key with a path it never took, which is
+worse than no label. It is written, read back and verified by the same operation
+that stores the key.
+
+`AuthKey.fromHandshake` is the only production path allowed to mark a key as
+currently seeded — it is the one that crossed `tg.crypto.AuthKeySeeding` — and
+`tgtest.SourceGuardTest` refuses any other caller in `src/`. The plain
+constructor means *unknown*, so a key that arrives unmarked is never presented as
+current.
+
+**Provenance names the path, not a strength.** A key whose barrier hit a cap
+before reaching its 256-bit target is still `SEEDING_CURRENT`: it took the
+current path, and what the barrier measured is reported separately by
+`Handshake.Result`. Nothing in the UI states an entropy figure.
+
+**Raising the version is how a future improvement is deployed.** Bump
+`AuthKey.SEEDING_CURRENT`, write the new seeding path, and every smaller version
+falls under `AuthKey.seedingNeedsReauth` on its own — existing sessions start
+recommending a re-sign-in without anything else changing. Two rules make that
+safe in both directions:
+
+* a version *larger* than this build's comes from a build that knows more; it is
+  used as it is, reported as neither current nor legacy, and written back
+  unchanged rather than clamped;
+* a legacy key is re-saved in the bare form, never as an explicit `p0:`. The
+  record is already exactly as informative, and a handset downgraded to an older
+  build still finds its session.
+
+**Nothing is deleted on the client's initiative.** A legacy key stays usable and
+stays signed in. The start screen carries one line recommending — not demanding —
+an ordinary log out and sign-in, and `Diagnostics → -- security --` states the
+version permanently, for every outcome including "no key stored". No screen
+claims a key was compromised, because nothing here is evidence that one was.
+
 ## Security posture, stated honestly
 
 * The crypto primitives match published vectors, including through the shipped

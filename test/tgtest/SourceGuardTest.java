@@ -28,6 +28,13 @@ import java.util.List;
  * the on-device reports quote it, and the failure mode is that some later
  * seeding path starts multiplying by it again - which nothing at runtime can
  * notice, because the result would look entirely reasonable.
+ *
+ * The third rule guards the claim rather than the material.
+ * {@code AuthKey.fromHandshake} is the one factory that marks a key as seeded by
+ * the current path, and what earns that mark is the barrier at the top of
+ * {@code Handshake.run()}. Any other production caller would be stamping a key
+ * with a path it did not take - a false reassurance that nothing at runtime can
+ * detect, because a wrongly-marked key works perfectly.
  */
 public final class SourceGuardTest implements Test
 {
@@ -50,6 +57,11 @@ public final class SourceGuardTest implements Test
             "estimatedBitsPerGather(",
             "src/tg/crypto/Entropy.java",       // the declaration itself
             "src/tg/plat/EntropyProbe.java"     // prints it in a report
+        },
+        {
+            "AuthKey.fromHandshake(",
+            "src/tg/mt/AuthKey.java",           // the declaration itself
+            "src/tg/mt/Handshake.java"          // crossed the barrier, may say so
         }
     };
 

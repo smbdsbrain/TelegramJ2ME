@@ -5,9 +5,9 @@ import javax.microedition.rms.RecordStore;
 
 import tg.diag.CrashLog;
 import tg.diag.Diag;
-import tg.io.Hex;
 import tg.mt.AuthKey;
 import tg.mt.AuthKeyLoad;
+import tg.mt.AuthKeyRecord;
 import tg.mt.AuthKeyStore;
 import tg.tl.Utf8;
 
@@ -48,6 +48,12 @@ import tg.tl.Utf8;
  * well as the new one, leaving no key at all. Adding first means the worst case
  * is a duplicate, and {@link #loadString} resolves duplicates by preferring the
  * highest record id, which is the most recently written.
+ *
+ * <h3>What a key record contains</h3>
+ * The bytes and the seeding version that produced them, in one value - see
+ * {@link AuthKeyRecord}. This class owns where a record lives and whether the
+ * write took; it does not own what a key value looks like, which is also what
+ * lets the desktop store speak the same format.
  */
 public final class RmsAuthKeyStore implements AuthKeyStore
 {
@@ -90,37 +96,44 @@ public final class RmsAuthKeyStore implements AuthKeyStore
             return AuthKeyLoad.notFound();
         }
 
-        String hex = slot[0];
-        String damage = shapeIfUnusable(hex);
-        if (damage != null)
+        // Binds to this data centre and environment: a key is only valid for
+        // the pair it was negotiated with, and the entry name is what carries
+        // that pair.
+        AuthKeyLoad loaded = AuthKeyRecord.decode(slot[0], dcId, testEnvironment);
+        if (loaded.isCorrupt())
         {
-            return corrupt(damage, null);
+            return corrupt(loaded.detail, null);
         }
+        if (loaded.isFound())
+        {
+            Diag.info("loaded stored " + loaded.key.describe());
+        }
+        return loaded;
+    }
 
-        byte[] raw = null;
-        try
+    /**
+     * How the stored key for this data centre was seeded, without decoding it.
+     *
+     * The start screen asks on every launch, before anything connects, and has
+     * no use for the bytes. Reading only the prefix keeps 256 bytes of session
+     * out of the heap for a question about one small integer - and an
+     * unreadable store answers {@link AuthKey#SEEDING_NONE}, which claims
+     * nothing about a key it could not see.
+     */
+    public synchronized int storedSeeding(int dcId, boolean testEnvironment)
+    {
+        String[] slot = new String[2];
+        if (read(keyName(dcId, testEnvironment), slot) != READ_OK)
         {
-            raw = Hex.decode(hex);
-            // Binds to this data centre and environment: a key is only valid
-            // for the pair it was negotiated with, and the entry name is what
-            // carries that pair.
-            AuthKey key = new AuthKey(raw, dcId, testEnvironment);
-            Diag.info("loaded stored " + key.describe());
-            return AuthKeyLoad.found(key);
+            return AuthKey.SEEDING_NONE;
         }
-        catch (Throwable t)
-        {
-            // AuthKey owns raw once it is constructed; reaching here means it
-            // never was, so these bytes are ours to wipe.
-            wipe(raw);
-            return corrupt(Diag.className(t), t);
-        }
+        return AuthKeyRecord.seedingOf(slot[0]);
     }
 
     public synchronized void save(AuthKey key)
     {
         if (saveVerified(keyName(key.dcId(), key.isTestEnvironment()),
-                         Hex.encode(key.bytes())))
+                         AuthKeyRecord.encode(key)))
         {
             Diag.info("persisted " + key.describe());
         }
@@ -340,43 +353,6 @@ public final class RmsAuthKeyStore implements AuthKeyStore
                                            + detail));
         }
         return AuthKeyLoad.corrupt(detail);
-    }
-
-    /**
-     * Validate the stored form before decoding it.
-     *
-     * A stored key is exactly 512 hex characters; anything else names its own
-     * cause - a short value points at a per-record cap or a partial flush, a
-     * stray character at the wrong encoding on the way in. Checking here rather
-     * than letting {@link Hex#decode} throw keeps the description precise and
-     * keeps the value out of the exception text.
-     *
-     * @return null when the value can be decoded, else its shape
-     */
-    private static String shapeIfUnusable(String hex)
-    {
-        if (hex == null) { return "absent"; }
-        if (hex.length() != AuthKey.KEY_SIZE * 2)
-        {
-            return "length " + hex.length() + " (expected "
-                    + (AuthKey.KEY_SIZE * 2) + ")";
-        }
-        for (int i = 0; i < hex.length(); i++)
-        {
-            char c = hex.charAt(i);
-            boolean hexDigit = (c >= '0' && c <= '9')
-                    || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-            // The offset, never the character: this string is the session.
-            if (!hexDigit) { return "not hex at offset " + i; }
-        }
-        return null;
-    }
-
-    /** Best effort - see the note in Aes.wipe about what CLDC can promise. */
-    private static void wipe(byte[] raw)
-    {
-        if (raw == null) { return; }
-        for (int i = 0; i < raw.length; i++) { raw[i] = 0; }
     }
 
     private static String keyName(int dcId, boolean test)

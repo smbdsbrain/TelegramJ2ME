@@ -56,6 +56,10 @@ public final class RmsAuthKeyStoreTest implements Test
             aCorruptRecordIsKeptForDiagnosis();
             wrongLengthAndNonHexAreCorrupt();
             anUnreadableStoreIsNotAMissingKey();
+            seedingIsStoredWithTheKey();
+            aLegacyRecordKeepsItsShape();
+            anUnknownFutureVersionSurvivesARewrite();
+            noReadableKeyMeansNoSeedingVersion();
         }
         finally
         {
@@ -331,6 +335,139 @@ public final class RmsAuthKeyStoreTest implements Test
                 store.load(DC, false).isNotFound());
     }
 
+    /**
+     * A key and how it was seeded are one record, written by one write.
+     *
+     * Kept together deliberately: a version stored beside the key, in its own
+     * entry, has a state where one write succeeded and the other did not - and
+     * a key labelled with a seeding path it did not take is worse than a key
+     * with no label at all.
+     */
+    private static void seedingIsStoredWithTheKey()
+    {
+        String name = "authkey.prod." + DC;
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        AuthKey fresh = AuthKey.fromHandshake(rawKey((byte) 21), DC, false);
+
+        store.save(fresh);
+
+        Assert.equal("the record carries the version and the key",
+                "p" + AuthKey.SEEDING_CURRENT + ":" + Hex.encode(fresh.bytes()),
+                store.loadString(name));
+
+        AuthKeyLoad loaded = store.load(DC, false);
+        Assert.isTrue("and it loads: " + loaded.describe(), loaded.isFound());
+        Assert.bytesEqual("with the key intact", fresh.bytes(),
+                loaded.key.bytes());
+        Assert.equal("and marked current", AuthKey.SEEDING_CURRENT,
+                loaded.key.provenance());
+        Assert.equal("the version also reads without decoding the key",
+                AuthKey.SEEDING_CURRENT, store.storedSeeding(DC, false));
+
+        store.clear(DC, false);
+    }
+
+    /**
+     * The upgrade path: a record written by an earlier release.
+     *
+     * It must load, it must not come back marked current, and re-saving that
+     * same key - which was never regenerated - must leave the record exactly as
+     * it was. Rewriting it as an explicit "version 0" would say nothing new and
+     * would stop an older build from finding the session at all.
+     */
+    private static void aLegacyRecordKeepsItsShape() throws Exception
+    {
+        String name = "authkey.prod." + DC;
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        store.saveString(name, null);
+
+        String legacy = Hex.encode(rawKey((byte) 23));
+        plant(name, legacy);
+
+        AuthKeyLoad loaded = store.load(DC, false);
+        Assert.isTrue("a pre-upgrade record still loads: " + loaded.describe(),
+                loaded.isFound());
+        Assert.equal("and is not claimed as current",
+                AuthKey.SEEDING_UNKNOWN_LEGACY, loaded.key.provenance());
+        Assert.equal("the cheap read agrees", AuthKey.SEEDING_UNKNOWN_LEGACY,
+                store.storedSeeding(DC, false));
+
+        store.save(loaded.key);
+        Assert.equal("re-saving does not invent a version", legacy,
+                store.loadString(name));
+        Assert.equal("and the key is still there and still legacy",
+                AuthKey.SEEDING_UNKNOWN_LEGACY,
+                store.load(DC, false).key.provenance());
+
+        store.clear(DC, false);
+    }
+
+    /**
+     * A version from a build that knows more than this one does.
+     *
+     * The failure this guards against is a downgrade quietly relabelling the
+     * record - after which the newer build would have no way to tell what it is
+     * holding, and the number would be a lie rather than a gap.
+     */
+    private static void anUnknownFutureVersionSurvivesARewrite() throws Exception
+    {
+        String name = "authkey.prod." + DC;
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        store.saveString(name, null);
+
+        int future = AuthKey.SEEDING_CURRENT + 8;
+        String value = "p" + future + ":" + Hex.encode(rawKey((byte) 27));
+        plant(name, value);
+
+        AuthKeyLoad loaded = store.load(DC, false);
+        Assert.isTrue("a future record loads: " + loaded.describe(),
+                loaded.isFound());
+        Assert.equal("keeping its version", future, loaded.key.provenance());
+        Assert.equal("which the cheap read also sees", future,
+                store.storedSeeding(DC, false));
+
+        store.save(loaded.key);
+        Assert.equal("and a rewrite does not downgrade it", value,
+                store.loadString(name));
+
+        store.clear(DC, false);
+    }
+
+    /**
+     * No key, a damaged one, or a store that will not open: all three are
+     * "there is no version to report", never a version.
+     *
+     * The start screen turns this number into a sentence, and a sentence about
+     * a key nobody could read would be a claim the client cannot support.
+     */
+    private static void noReadableKeyMeansNoSeedingVersion() throws Exception
+    {
+        String name = "authkey.prod." + DC;
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        store.clear(DC, false);
+
+        Assert.equal("nothing stored is no version", AuthKey.SEEDING_NONE,
+                store.storedSeeding(DC, false));
+
+        plant(name, halfAKey());
+        Assert.equal("a damaged record is no version either",
+                AuthKey.SEEDING_NONE, store.storedSeeding(DC, false));
+        store.saveString(name, null);
+
+        EmulatorRecords.installUnreadable();
+        try
+        {
+            Assert.equal("and neither is a store that will not open",
+                    AuthKey.SEEDING_NONE, store.storedSeeding(DC, false));
+        }
+        finally
+        {
+            EmulatorRecords.restore();
+        }
+
+        store.clear(DC, false);
+    }
+
     // --------------------------------------------------------------- helpers
 
     /** 256 hex characters where 512 are required: a truncated write. */
@@ -374,12 +511,17 @@ public final class RmsAuthKeyStoreTest implements Test
 
     private static AuthKey key(byte seed, boolean testEnvironment)
     {
+        return new AuthKey(rawKey(seed), DC, testEnvironment);
+    }
+
+    private static byte[] rawKey(byte seed)
+    {
         byte[] raw = new byte[AuthKey.KEY_SIZE];
         for (int i = 0; i < raw.length; i++)
         {
             raw[i] = (byte) (i * seed + seed);
         }
-        return new AuthKey(raw, DC, testEnvironment);
+        return raw;
     }
 
     private static int countRecords(String name) throws Exception

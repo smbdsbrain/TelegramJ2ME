@@ -43,6 +43,7 @@ public final class AllTests
             new HandshakeBarrierTest(),
             new Phase2PersistenceTest(),
             new RmsAuthKeyStoreTest(),
+            new AuthKeyProvenanceTest(),
             new AuthCheckTest(),
             new UpdateSyncTest(),
             new ChatScrollStateTest(),

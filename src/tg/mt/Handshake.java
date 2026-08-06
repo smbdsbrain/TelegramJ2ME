@@ -413,7 +413,11 @@ public final class Handshake
             Diag.info("two 2048-bit modPow in " + (System.currentTimeMillis() - t0) + " ms");
 
             byte[] authKeyBytes = RsaKey.toFixed(authKeyValue, AuthKey.KEY_SIZE);
-            AuthKey candidate = new AuthKey(authKeyBytes, dcId, testEnvironment);
+            // The only place in the client entitled to mark a key as currently
+            // seeded: the barrier at the top of run() is what earns it, and
+            // this is the one path that has crossed it.
+            AuthKey candidate =
+                    AuthKey.fromHandshake(authKeyBytes, dcId, testEnvironment);
 
             sendClientDhInner(gB, retryId);
 
