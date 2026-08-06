@@ -64,7 +64,7 @@ public final class Report
     /**
      * One complete report: header, then the redacted body.
      *
-     * @param target  which MIDlet produced it - "probe", "crypto" or "tg"
+     * @param target  which MIDlet produced it - "probe" or "tg"
      * @param section human-readable name of the scenario
      * @param body    the scenario's own output; null entries are skipped
      */

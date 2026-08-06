@@ -49,7 +49,7 @@ public final class SourceGuardTest implements Test
         {
             "estimatedBitsPerGather(",
             "src/tg/crypto/Entropy.java",       // the declaration itself
-            "src/tg/app/CryptoMidlet.java"      // prints it in a report
+            "src/tg/plat/EntropyProbe.java"     // prints it in a report
         }
     };
 

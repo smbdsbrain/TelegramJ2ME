@@ -218,10 +218,16 @@ which would have manufactured a regularity the estimator would have punished.
 Applying the decision rule written before the handset was run: no digest
 collision, the clock is not frozen, and `8 <= B < 128`.
 
-**The caveat is sharpened, not lifted.** `Entropy.estimatedBitsPerGather()` now
+**The caveat is sharpened, not lifted.** `Entropy.estimatedBitsPerGather` now
 returns 58 instead of 0 — a measured figure for this handset, and not a claim
 about any other. A single `gather()` is short of a 2048-bit DH secret by roughly
 a factor of five.
+
+*Later:* two further handsets showed that this number is a property of the
+clock rather than of the code — 21 bits on a Samsung GT-C3592, 135–165 on a
+Nokia C3-00 — so nothing sizes itself from it any more. The barrier measures its
+own yield while collecting (issue #2), which on this handset comes to about ten
+gathers. The 58 remains what it always was: one device's measured floor.
 
 Recorded separately, because it is orthogonal to the bit count: **the wall clock
 contributes 0 bits across cold boots on this handset.** Jitter and the

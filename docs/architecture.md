@@ -50,18 +50,26 @@ Java ME runtimes impose strict JAR-size limits.
 
 ## Build targets
 
-Three MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
+Two MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
 
 | Target | Entry point | Size | Purpose |
 |---|---|---|---|
-| `probe` | `tg.app.ProbeMidlet` | ~110 KB | platform, heap, RMS, entropy, keys, sockets, images, pause/resume |
-| `crypto` | `tg.app.CryptoMidlet` | ~118 KB | crypto vectors, modPow and PBKDF2 benchmarks, entropy |
-| `tg` | `tg.app.TgMidlet` | ~428 KB, ~312 KB with `-Release` | messenger with connection settings/diagnostics |
+| `probe` | `tg.app.ProbeMidlet` | ~172 KB | platform, heap, RMS, entropy, seeding barrier, crypto vectors and benchmarks, keys, sockets, images, pause/resume |
+| `tg` | `tg.app.TgMidlet` | ~464 KB, ~339 KB with `-Release` | messenger with connection settings/diagnostics |
+
+There used to be a third, `crypto`, holding the vectors and the modPow and
+PBKDF2 benchmarks, kept separate so the first install on an unknown handset
+could stay small. It is folded into `probe`: a device session meant installing
+two suites and uploading two sets of reports, and the figures that have to be
+read together — what a gather is worth here, how many gathers the seeding
+barrier then takes, what the modPow it precedes costs — were split across both.
+The probe is correspondingly larger and no longer the smallest artifact this
+project can produce; `tools/build-size-ladder.ps1` can no longer pad it down to
+its 64 KiB and 128 KiB rungs.
 
 `config/proguard-common.pro` deliberately has **no** blanket
 `-keep class * extends MIDlet`: that would keep every entry point in every
-target and drag the crypto stack into `probe.jar`, which exists precisely
-because the first install on an unknown 2011 handset should be tiny.
+target and drag the client into `probe.jar`.
 
 ## Verification chain for crypto
 
@@ -71,7 +79,7 @@ can run at several layers, each answering a different question:
 | Where | Answers |
 |---|---|
 | the desktop harness (`tools/test.sh` / `.ps1`) | is the algorithm right |
-| the shipped `dist/crypto.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
+| the shipped `dist/probe.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
 | MicroEmulator | does it survive a MIDP runtime |
 | a physical device | does it survive a vendor VM and AMS - run once, on one handset, and it did |
 
@@ -341,47 +349,60 @@ RPC errors remain visible until the user retries or deletes them.
 * The `Rng` construction is a standard hash DRBG and is sound.
 * **The seeding is measured, and one gather is not enough — so the auth-key path
   no longer takes one.** A Java ME runtime has no hardware RNG, so
-  `tg.crypto.Entropy` scrapes what it can. On the one handset measured — an
-  Alcatel OT-810D, 2026-07-31, full figures in
-  [docs/hardware/alcatel-ot810d.md](hardware/alcatel-ot810d.md) — that is about
-  **58 bits per `gather()`**: jitter only, at a 99% bound, after a
-  serial-correlation discount, with identity hashes and heap readings counted at
-  zero. That is the right cost for a nonce, a padding block or a `random_id`, and
-  short of a 2048-bit DH secret. `tg.crypto.AuthKeySeeding` is the barrier every
-  permanent key now crosses: `tg.mt.Handshake` folds in five further separated
-  gathers, under a domain-separating context naming the dc, the environment and
-  the media role, before the first nonce is drawn. Resuming a stored key runs
-  none of it.
-  **This is not a claim of 5 × 58 bits.** Consecutive gathers sample the same
-  scheduler on the same idle handset and nothing here demonstrates that they are
-  independent; five is a sizing rule against a 256-bit target, not an addition.
-  See [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
-* **The gather count is a constant, and it is wrong on two handsets out of
-  three — in opposite directions.** The fixed 120 ms window inside `gather()`
-  collects however many samples the clock tick allows, so the yield tracks the
-  tick:
+  `tg.crypto.Entropy` scrapes what it can, and what that is worth is a property
+  of the handset's clock. `tg.crypto.AuthKeySeeding` is the barrier every
+  permanent key crosses: before the first nonce is drawn, `tg.mt.Handshake` folds
+  in a domain-separating context naming the dc, the environment and the media
+  role, then gathers repeatedly until the run has produced its target. Resuming a
+  stored key runs none of it.
+* **How many gathers is measured at run time, not compiled in.** The fixed 120 ms
+  window inside `gather()` collects however many samples the clock tick allows,
+  so the yield tracks the tick — by an order of magnitude across three handsets:
 
-  | Handset | tick | samples | bits/sample | bits/gather | 5 gathers |
+  | Handset | tick | samples | bits/sample | bits/gather | gathers the barrier takes |
   |---|---|---|---|---|---|
-  | Alcatel OT-810D | 4 ms | 26 | 2.250 | 58 | ~290 — correct |
-  | Samsung GT-C3592 | 12 ms | 10 | 2.125 | 21 | ~105 — short by 2.6× |
-  | Nokia C3-00 | 1 ms | 120 | 1.125–1.375 | 135–165 | ~675 — 2.5× more than needed |
+  | Alcatel OT-810D | 4 ms | 26 | 2.250 | 58 | ~10, about 1.3 s |
+  | Samsung GT-C3592 | 12 ms | 10 | 2.125 | 21 | ~26, about 3.4 s |
+  | Nokia C3-00 | 1 ms | 120 | 1.125–1.375 | 135–165 | ~3, about 0.4 s |
 
-  Full figures per device under [docs/hardware/](hardware/). Note that
+  Full figures per device under [docs/hardware/](hardware/). A constant sized
+  from any one of them was wrong on the other two in opposite directions —
+  five gathers is ~290 bits on the first, ~105 on the second and ~675 on the
+  third — which is
+  [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Note that
   per-sample entropy is **not** constant across devices, as the first two
-  suggested: it roughly halves between a 4 ms and a 1 ms tick. A finer clock
-  buys more samples that are each individually less surprising, so the net gain
-  is real but not linear and should not be extrapolated. Sizing the barrier
-  against the measured clock rather than a compiled-in constant is
-  [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Until that
-  lands, and on any runtime not yet measured, generated keys are development
-  keys.
-* **The barrier costs the same on a handset as on a desktop.** Measured 713 ms
-  on the GT-C3592 against 674 ms on a desktop JVM, because `collectJitter`
-  spends a fixed wall-clock budget rather than doing work. Everything around it
-  does not: the two 2048-bit modular exponentiations in the same handshake took
-  19 521 ms there. The barrier is **2.7%** of the exchange it precedes, and it is
-  paid once per key: a later relaunch of the client on that handset loaded the
+  suggested: it roughly halves between a 4 ms and a 1 ms tick, so a tick→bits
+  formula would have been the same mistake one level down.
+
+  `tg.crypto.JitterYield` therefore observes the samples the barrier is folding
+  in — the same ones, through `Entropy.gather(sink)`, not a second measurement —
+  and applies the estimator `tg.plat.EntropyProbe` publishes: most-common-value
+  min-entropy at a 99% confidence bound, discounted when adjacent samples prove
+  dependent, with everything that is not jitter charged at zero. Seeding stops
+  when the run holds **256 samples and 256 credited bits**; the sample floor is
+  `MinEntropy.MIN_SAMPLES_FOR_CONFIDENCE`, below which this project states no
+  bound at all, and on the two coarse-clock handsets it is the floor that decides
+  the count.
+* **What the barrier refuses, and what it only reports.** A gather that comes
+  back empty or short aborts the key, as does a run that credits zero bits —
+  the frozen clock, which the probe calls "seeding is NOT SAFE". A slow clock
+  that never reaches 256 bits inside the caps (64 gathers or 8 s) is different:
+  the key is generated, `Handshake.Result` carries the shortfall, and the log
+  says so at warning level. Refusing there would lock a working handset out of
+  signing in over a bound the client cannot improve.
+  **None of this is a claim of `gathers × bits-per-gather`.** Samples are pooled
+  across gathers into one estimate, so repetition between them raises `p_max` and
+  buys more gathers rather than being summed — but nothing here demonstrates that
+  consecutive gathers are independent, and on any runtime not yet measured,
+  generated keys are development keys. See
+  [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines).
+* **The barrier costs the same on a handset as on a desktop, per gather.**
+  Measured at 713 ms for five gathers on the GT-C3592 against 674 ms on a desktop
+  JVM, because `collectJitter` spends a fixed wall-clock budget rather than doing
+  work. Everything around it does not: the two 2048-bit modular exponentiations
+  in the same handshake took 19 521 ms there. Sized against its own clock that
+  handset now takes ~26 gathers, about **7.7%** of the exchange it precedes,
+  where the Nokia C3-00 pays ~1.3% — and it is paid once per key: a later relaunch of the client on that handset loaded the
   same key out of RMS and connected in 8847 ms with no barrier at all, against
   31 627 ms for the launch that generated it.
 * **The wall clock contributes nothing across cold boots on that handset.** It

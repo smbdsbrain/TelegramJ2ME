@@ -30,7 +30,7 @@ public final class ReportUpload
     /**
      * Upload one section. Returns immediately; progress arrives on a worker.
      *
-     * @param target "probe", "crypto" or "tg"
+     * @param target "probe" or "tg"
      */
     public static void send(final String target, final String section,
                             final String[] body, final Progress progress)

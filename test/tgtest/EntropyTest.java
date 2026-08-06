@@ -611,6 +611,11 @@ public final class EntropyTest implements Test
         checkLines("memoryReport", EntropyProbe.memoryReport(256));
         checkLines("jitterReport", EntropyProbe.jitterReport(
                 EntropyProbe.measuredTickMillis(), 300));
+        // Runs a real barrier, which is the point: its lines carry counts that
+        // are unknown until a device produces them, and a four-digit gather count
+        // or a wrapped refusal message is exactly how this report would stop
+        // lining up on a 34-column screen.
+        checkLines("barrierReport", EntropyProbe.barrierReport());
 
         long[] times = new long[40];
         int[] codes = new int[40];

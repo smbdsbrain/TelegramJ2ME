@@ -7,6 +7,12 @@
     dist/size-ladder. The executable is the normal TgProbe build; a deterministic
     STORED ZIP entry fills each JAR to the exact requested byte size. Every JAD
     contains the matching MIDlet-Jar-Size and a unique URL/name.
+
+    Padding only goes up, so a rung smaller than probe.jar itself cannot be
+    built and is skipped with a warning rather than failing the run. Since the
+    crypto suite was folded into the probe that applies to 64 and 128 KiB: a
+    handset whose install cap is down there has to be measured with an older
+    probe release, from before the merge.
 #>
 [CmdletBinding()]
 param()
@@ -34,10 +40,22 @@ function Write-Padding([string]$Path, [int]$Length, [int]$Seed) {
     [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
+$skipped = @()
+
 foreach ($sizeKiB in @(64, 128, 256, 512, 1024, 1536, 2048)) {
     $targetBytes = $sizeKiB * 1024
     $outJar = Join-Path $outDir ("probe-{0}k.jar" -f $sizeKiB)
     $pad = Join-Path $workDir "ladder.pad"
+
+    # A rung below the base JAR cannot be built: padding only adds bytes. Skip
+    # it and say so - the remaining rungs still measure a cap above this point,
+    # and failing the whole run would leave nothing to install.
+    if ((Get-Item -LiteralPath $baseJar).Length -ge $targetBytes) {
+        Write-Warn2 ("skipping {0} KiB: probe.jar is already {1} bytes" -f `
+                     $sizeKiB, (Get-Item -LiteralPath $baseJar).Length)
+        $skipped += $sizeKiB
+        continue
+    }
 
     # Measure ZIP metadata overhead with the exact entry name and jar tool.
     Copy-Item -LiteralPath $baseJar -Destination $outJar
@@ -86,4 +104,8 @@ MIDlet-Description: Exact-size JAR limit probe (${sizeKiB} KiB)
 
 Remove-Item -LiteralPath $workDir -Recurse -Force
 Write-Host ""
+if ($skipped.Count -gt 0) {
+    Write-Warn2 ("rungs not built: {0} KiB - below the size of probe.jar itself" -f `
+                 ($skipped -join ", "))
+}
 Write-Host "size ladder OK: dist/size-ladder" -ForegroundColor Green

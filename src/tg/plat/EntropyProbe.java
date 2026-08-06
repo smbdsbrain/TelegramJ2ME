@@ -2,9 +2,11 @@ package tg.plat;
 
 import java.util.Vector;
 
+import tg.crypto.AuthKeySeeding;
 import tg.crypto.Entropy;
 import tg.crypto.IntHistogram;
 import tg.crypto.MinEntropy;
+import tg.crypto.Rng;
 import tg.diag.Diag;
 
 /**
@@ -759,7 +761,91 @@ public final class EntropyProbe
         }
     }
 
+    // ------------------------------------------------------ f. seeding barrier
+
+    /**
+     * What the auth-key seeding barrier costs on this handset, by running it.
+     *
+     * Section b answers "what is a gather worth here"; this answers the question
+     * that follows from it - how many gathers this device is asked for, and how
+     * long that takes - by running the real
+     * {@code tg.crypto.AuthKeySeeding.strengthen} rather than deriving it. The
+     * two must agree: the barrier sizes itself with the same estimator this class
+     * publishes, so a device where the verdict says "256 bits needs 13 gather(s)"
+     * and the barrier stops at three has a defect in one of them.
+     *
+     * The pool is a throwaway {@code Rng} that never leaves this method and is
+     * wiped afterwards. Nothing here generates a key, and the report carries
+     * counts only.
+     *
+     * Blocks for as long as the barrier does - up to
+     * {@code AuthKeySeeding.MAX_MILLIS} - so it must not run on the UI thread.
+     */
+    public static String[] barrierReport()
+    {
+        Vector v = new Vector(16);
+        Rng rng = new Rng();
+        try
+        {
+            AuthKeySeeding.Outcome o = AuthKeySeeding.strengthen(rng, 0, false, false);
+            v.addElement("gathers  = " + o.gathers);
+            v.addElement("samples  = " + o.samples);
+            v.addElement("credited = " + o.bits + " / " + o.targetBits + " bits");
+            v.addElement("elapsed  = " + o.millis + " ms");
+            if (o.gathers > 0)
+            {
+                v.addElement("           " + (o.millis / o.gathers) + " ms/gather");
+            }
+            v.addElement(o.shortOfTarget
+                    ? "SHORT OF TARGET - this handset"
+                    : "target reached.");
+            if (o.shortOfTarget)
+            {
+                v.addElement("hit a cap first. keys made");
+                v.addElement("here rest on less than the");
+                v.addElement("project's own target.");
+            }
+        }
+        catch (IllegalStateException refused)
+        {
+            // The barrier refuses a source that credited nothing, which is what a
+            // clock that does not advance produces. That is a finding, not an
+            // error in the probe.
+            v.addElement("REFUSED. seeding is NOT SAFE");
+            v.addElement("on this runtime:");
+            wrapInto(v, String.valueOf(refused.getMessage()));
+        }
+        finally { rng.wipe(); }
+
+        v.addElement("");
+        v.addElement("ref OT-810D = "
+                + Entropy.estimatedBitsPerGather() + " bits/gather");
+        v.addElement("(one handset, measured; the");
+        v.addElement("count above is this one's.)");
+        return toArray(v);
+    }
+
     // --------------------------------------------------------------- helpers
+
+    /** Break a sentence across lines no wider than the screen. */
+    private static void wrapInto(Vector v, String text)
+    {
+        int at = 0;
+        int n = text.length();
+        while (at < n)
+        {
+            int end = at + MAX_LINE;
+            if (end >= n) { end = n; }
+            else
+            {
+                int space = text.lastIndexOf(' ', end);
+                if (space > at) { end = space; }
+            }
+            v.addElement(text.substring(at, end));
+            at = end;
+            while (at < n && text.charAt(at) == ' ') { at++; }
+        }
+    }
 
     private static int clamp(long v)
     {

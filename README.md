@@ -134,11 +134,12 @@ anyone can do for this project right now.
 - The authorization key is generated on the phone and never leaves it
 - SRP-6a for two-step verification
 
-**Two companion MIDlets**
-- **Probe** (~110 KB) — reports what your handset actually supports: platform,
-  heap, RMS, raw sockets, key codes, image decoding, and how much entropy the
-  runtime's clock and allocator actually yield
-- **Crypto** — runs the cryptographic test vectors and benchmarks on the device
+**A companion MIDlet**
+- **Probe** (~172 KB) — reports what your handset actually supports: platform,
+  heap, RMS, raw sockets, key codes, image decoding, how much entropy the
+  runtime's clock and allocator actually yield and how many gathers an auth key
+  therefore costs here, plus the cryptographic test vectors and benchmarks run
+  on the device
 
 ## What is not there yet
 
@@ -187,12 +188,16 @@ big allocation rather than after the crash. Details in
 of heap: 64 queued outgoing messages, 1000 characters per message.
 
 **Two security caveats, stated plainly.** The random number generator's seeding
-has now been **measured on one handset** — an Alcatel OT-810D gives about **58
-bits per entropy gather**, and seven launches produced no repeated seed, six of
-them cold boots from a clock pinned by hand to the same value. That is roughly a
-fifth of what a 2048-bit key exchange needs from a single gather, and one
-handset is one handset, so keys generated on a phone are **still development
-keys** ([the numbers](docs/hardware/alcatel-ot810d.md), [the
+has been **measured on three handsets**, and what one entropy gather is worth
+turns out to be a property of the phone's clock: about 21 bits on a Samsung
+GT-C3592, 58 on an Alcatel OT-810D, 135–165 on a Nokia C3-00. A key exchange
+wants 256, so the client measures its own yield while it collects and keeps
+gathering until it has them — roughly 3 gathers on the fastest clock and 26 on
+the slowest, a fraction of a second either way, once per key and never on
+reconnect. What is still not established is that consecutive gathers are
+independent of each other, and a runtime nobody has measured could be worse than
+all three, so keys generated on a phone are **still development keys** ([the
+numbers](docs/hardware/), [the
 posture](docs/architecture.md#security-posture-stated-honestly)). And **RMS
 offers no encryption**, so anyone holding your phone and the right tools can
 extract the session.
@@ -207,7 +212,7 @@ extract the session.
 |---|---|
 | **MIDP 2.0 and CLDC 1.1** | Both are declared in the manifest. CLDC 1.0 will not run it. |
 | **About 1 MB of free Java heap** | Measured by driving the client against a real account with the heap squeezed in steps: everything works above ~1.7 MB free; near 1.5 MB an avatar decode starts being refused, and from then on avatars and inline previews are drawn as placeholders while the chat itself still opens; below ~1.1 MB the client connects but little after that survives, and near 0.95 MB sign-in itself runs out of memory. Both handsets tested have ~5 MB, so they are nowhere near it. Turning avatars and inline previews off in Settings gives back the ~340 KB those caches retain, and stops the decodes that need room on top of it. |
-| **A JAR size limit above ~300 KB** | The `-min` build is 291 KB and the normal one is 409 KB. |
+| **A JAR size limit above ~350 KB** | The `-min` build is 339 KB and the normal one is 464 KB. |
 | **Raw TCP (`socket://`), or HTTP** | Raw sockets are the good path. There is an MTProto-over-HTTP fallback for handsets that refuse them outright. |
 
 That rules out the early 2000s. A phone with a 64 KB JAR cap and a few hundred
@@ -218,9 +223,9 @@ earlier: the generation with megabytes of heap, a real file manager and no
 meaningful JAR ceiling.
 
 Rather than guess from a spec site — they disagree about exactly these
-numbers — install **`TelegramJ2ME Probe`** first. It is ~91 KB, installs in
-seconds, and reports the heap, the JAR limit, whether raw sockets are permitted
-and whether the phone can decode a JPEG.
+numbers — install **`TelegramJ2ME Probe`** first. It is ~172 KB, installs in
+seconds, and reports the heap, the JAR limit, whether raw sockets are permitted,
+whether the phone can decode a JPEG, and what the cryptography costs on it.
 
 ### Getting the files on
 

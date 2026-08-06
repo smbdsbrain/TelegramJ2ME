@@ -133,26 +133,30 @@ byte-identical on every platform. CI enforces that: after bootstrap,
 
 | Artifact | Size | Contents | Use |
 |---|---|---|---|
-| `dist/probe.jar` | ~110 KB | `ProbeMidlet` + diagnostics | first install on unknown hardware: platform, heap, RMS, keys, network |
-| `dist/crypto.jar` | ~118 KB | + the crypto stack | vectors and benchmarks on the device |
-| `dist/tg.jar` | ~428 KB | full client | the messenger |
-| `dist/tg.jar` with `-Release` | ~312 KB | full client, optimised + obfuscated | when the handset caps install size |
+| `dist/probe.jar` | ~172 KB | `ProbeMidlet` + diagnostics + the crypto stack | first install on unknown hardware: platform, heap, RMS, entropy, seeding barrier, crypto vectors and benchmarks, keys, network |
+| `dist/tg.jar` | ~464 KB | full client | the messenger |
+| `dist/tg.jar` with `-Release` | ~339 KB | full client, optimised + obfuscated | when the handset caps install size |
 
 ```bash
 ./tools/build.sh -Target probe
-./tools/build.sh -Target crypto
 ./tools/build.sh -Target tg -Env production
 ./tools/build.sh -Target tg -Env production -Release   # smaller, obfuscated
 ```
 
 Each JAR also carries the licence texts of the third-party code it actually
-contains — `emoji-OFL.txt` everywhere, plus the Bouncy Castle licence from
-`crypto` on (vendored `BigInteger`) and Apache 2.0 in `tg` (the pdf.js-derived
-`JpegDecoder`). Compiled classes carry no comments, so the attribution in the
-source headers would not otherwise reach anyone who installs the JAR.
+contains — `emoji-OFL.txt` and the Bouncy Castle licence (vendored `BigInteger`)
+in both, plus Apache 2.0 in `tg` (the pdf.js-derived `JpegDecoder`). Compiled
+classes carry no comments, so the attribution in the source headers would not
+otherwise reach anyone who installs the JAR.
 
-`probe.jar` deliberately excludes crypto and Telegram code so ProGuard shrinks
-it to something small enough to sideload and reinstall quickly on a 2011 phone.
+`probe.jar` used to exclude the crypto stack entirely, which kept it around
+110 KB; the vectors and benchmarks lived in a third `crypto` target. They are one
+suite now — one install and one **Upload all** per handset session — and the
+probe carries `BigInteger` as a result. The cost is that it is no longer small
+enough for the lowest rungs of `tools/build-size-ladder.ps1`: a handset with a
+64 KiB or 128 KiB install cap can only be measured with an older probe release.
+`probe.jar` still excludes the client, so nothing above `tg.crypto` and
+`tg.plat` is in it.
 
 Every build preverifies (`-microedition`), so both variants carry the CLDC
 `StackMap` the handset's verifier demands. `-Release` additionally drops
@@ -197,11 +201,11 @@ of every compiled class and rejects anything outside
 ## Test
 
 ```bash
-./tools/test.sh                # all 31 suites
+./tools/test.sh                # all 42 suites
 ./tools/test.sh -Filter bigint # substring match on the suite name
 ```
 
-31 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
+42 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
 serialization, transport, persistence, authorization, content, UI logic and the
 memory budgets.
 There is no JUnit and no reflection — the registry is explicit so the same cases
@@ -216,6 +220,16 @@ MIDP runtime and navigates between screens. It is the only automated check that
 the artifact which actually ships still runs. It is headless, so it needs no
 display, but on a minimal Linux box it does need fonts installed
 (`fontconfig` + e.g. `fonts-dejavu-core`) or AWT font metrics will fail.
+
+```bash
+pwsh -File tools/smoke-emulator.ps1 -ArtifactName probe
+```
+
+drives the probe suite instead, through its own harness: it walks the menu, runs
+the seeding barrier and the crypto vectors out of the packaged JAR and prints
+what the barrier sized itself to on this machine's clock. The gather count is a
+measurement, so nothing asserts a particular value — what is asserted is that it
+terminates inside its own bounds and credits what it claims.
 
 `-JavaArgs` passes JVM options through, which is how the memory budgets get
 exercised against a real artifact:

@@ -7,8 +7,12 @@ import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.List;
 import javax.microedition.midlet.MIDlet;
 
+import tg.crypto.Entropy;
+import tg.crypto.Pbkdf2;
+import tg.crypto.SelfTest;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
+import tg.io.Hex;
 import tg.plat.Caps;
 import tg.plat.ClockProbe;
 import tg.plat.DisplayProbe;
@@ -31,17 +35,32 @@ import tg.ui.TextScreen;
 import tg.ui.TwoSocketScreen;
 
 /**
- * Hardware reconnaissance MIDlet - the first thing that goes onto an unknown
- * handset.
+ * Hardware reconnaissance MIDlet - the one thing that goes onto an unknown
+ * handset before the client does.
  *
  * It answers the questions the handoff lists as unresolved, in the order they
  * block the project: what CLDC/MIDP this firmware really is, how much heap a
  * MIDlet can hold, whether RMS persists across a restart, what the QWERTY keys
- * report, and - the hard gate - whether a raw TCP socket works at all.
+ * report, whether the crypto vectors still hold after this toolchain compiled
+ * and shrank them, what a 2048-bit modPow costs, what the entropy sources are
+ * worth - and, the hard gate, whether a raw TCP socket works at all.
  *
- * Deliberately contains no crypto and no Telegram code, so ProGuard shrinks
- * this JAR down to something small enough to sideload and reinstall quickly on
- * a 2011 phone.
+ * <h3>Why it is one MIDlet and not two</h3>
+ * The crypto vectors and benchmarks used to live in a separate {@code crypto}
+ * target, on the argument that this build had to stay tiny because it is
+ * installed first. That was true and it cost more than it bought: a device
+ * session meant installing two suites, running two menus and uploading two sets
+ * of reports, and the figures that have to be read together - what a gather is
+ * worth here, how many gathers the seeding barrier then takes, and how that
+ * compares to the modPow it precedes - were split across both. One
+ * <b>Upload all</b> that leaves a complete picture of a handset on the collector
+ * is worth more than a smaller first install.
+ *
+ * The cost is real and is recorded in {@code docs/building.md}: this JAR now
+ * carries the crypto stack including the ported BigInteger, so it is no longer
+ * the smallest artifact this project can produce, and
+ * {@code tools/build-size-ladder.ps1} can no longer pad it down to its lowest
+ * rungs.
  */
 public class ProbeMidlet extends MIDlet implements CommandListener
 {
@@ -50,6 +69,10 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         "Heap probe",
         "RMS test",
         "Entropy measure",
+        "Seeding barrier",
+        "Crypto vectors",
+        "Crypto benchmarks",
+        "PBKDF2 x100000",
         "Clock & timers",
         "Text round trip",
         "Display caps",
@@ -74,24 +97,28 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     private static final int ITEM_HEAP       = 1;
     private static final int ITEM_RMS        = 2;
     private static final int ITEM_ENTROPY    = 3;
-    private static final int ITEM_CLOCK      = 4;
-    private static final int ITEM_TEXT       = 5;
-    private static final int ITEM_DISPLAY    = 6;
-    private static final int ITEM_KEYS       = 7;
-    private static final int ITEM_KEYTIME    = 8;
-    private static final int ITEM_CANVAS     = 9;
-    private static final int ITEM_NET        = 10;
-    private static final int ITEM_TG_80      = 11;
-    private static final int ITEM_TG_443     = 12;
-    private static final int ITEM_TG_5222    = 13;
-    private static final int ITEM_TG_8443    = 14;
-    private static final int ITEM_TWO_SOCK   = 15;
-    private static final int ITEM_IMAGE      = 16;
-    private static final int ITEM_EMOJI      = 17;
-    private static final int ITEM_BG         = 18;
-    private static final int ITEM_LOG        = 19;
-    private static final int ITEM_CRASH      = 20;
-    private static final int ITEM_UPLOAD_ALL = 21;
+    private static final int ITEM_BARRIER    = 4;
+    private static final int ITEM_VECTORS    = 5;
+    private static final int ITEM_BENCH      = 6;
+    private static final int ITEM_PBKDF2     = 7;
+    private static final int ITEM_CLOCK      = 8;
+    private static final int ITEM_TEXT       = 9;
+    private static final int ITEM_DISPLAY    = 10;
+    private static final int ITEM_KEYS       = 11;
+    private static final int ITEM_KEYTIME    = 12;
+    private static final int ITEM_CANVAS     = 13;
+    private static final int ITEM_NET        = 14;
+    private static final int ITEM_TG_80      = 15;
+    private static final int ITEM_TG_443     = 16;
+    private static final int ITEM_TG_5222    = 17;
+    private static final int ITEM_TG_8443    = 18;
+    private static final int ITEM_TWO_SOCK   = 19;
+    private static final int ITEM_IMAGE      = 20;
+    private static final int ITEM_EMOJI      = 21;
+    private static final int ITEM_BG         = 22;
+    private static final int ITEM_LOG        = 23;
+    private static final int ITEM_CRASH      = 24;
+    private static final int ITEM_UPLOAD_ALL = 25;
 
     /** Which MIDlet the collector files these reports under. */
     private static final String SINK_TARGET = "probe";
@@ -99,14 +126,18 @@ public class ProbeMidlet extends MIDlet implements CommandListener
     private final Command cmdExit    = new Command("Exit", Command.EXIT, 10);
     private final Command cmdBack    = new Command("Back", Command.BACK, 1);
     private final Command cmdRefresh = new Command("Refresh", Command.SCREEN, 2);
-    // Named to match what KeyTimingScreen tells the user to press, and what
-    // CryptoMidlet calls the same action.
+    // Named to match what KeyTimingScreen tells the user to press.
     private final Command cmdReport  = new Command("Report", Command.SCREEN, 2);
     private final Command cmdClear   = new Command("Clear", Command.SCREEN, 3);
     private final Command cmdUpload  = new Command("Upload", Command.SCREEN, 4);
+    // Only PBKDF2 offers this: it is the one measurement here that runs for
+    // minutes, and a tester who started it by mistake should not have to pull
+    // the battery.
+    private final Command cmdCancel  = new Command("Cancel", Command.CANCEL, 1);
 
     private Display display;
     private List menu;
+    private volatile boolean pbkdf2Cancelled;
 
     private KeyScreen keyScreen;
     private KeyTimingScreen keyTimingScreen;
@@ -214,6 +245,12 @@ public class ProbeMidlet extends MIDlet implements CommandListener
         {
             destroyApp(true);
             notifyDestroyed();
+            return;
+        }
+
+        if (c == cmdCancel)
+        {
+            pbkdf2Cancelled = true;
             return;
         }
 
@@ -346,6 +383,36 @@ public class ProbeMidlet extends MIDlet implements CommandListener
 
             case ITEM_ENTROPY:
                 runEntropyProbe();
+                break;
+
+            case ITEM_BARRIER:
+                runSeedingBarrier();
+                break;
+
+            case ITEM_VECTORS:
+                runCrypto("Crypto vectors", new String[] {
+                    "running FIPS 180-4 / FIPS-197 /",
+                    "OpenSSL IGE vectors...",
+                    "",
+                    "these are the same vectors that",
+                    "pass on the desktop. any FAIL",
+                    "here is a toolchain problem,",
+                    "not an algorithm problem."
+                }, true);
+                break;
+
+            case ITEM_BENCH:
+                runCrypto("Crypto benchmarks", new String[] {
+                    "running benchmarks...",
+                    "",
+                    "the 2048-bit modPow can take",
+                    "a long time on this hardware.",
+                    "please wait - do not exit."
+                }, false);
+                break;
+
+            case ITEM_PBKDF2:
+                runPbkdf2();
                 break;
 
             case ITEM_CLOCK:
@@ -578,7 +645,18 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             {
                 try
                 {
-                    String[] lines = EntropyProbe.run(new EntropyProbe.Progress()
+                    // Kept as the first thing printed: three gathers that must
+                    // differ is a real assertion, it costs nothing, and a failure
+                    // there makes every figure below it moot.
+                    String[] head = new String[5];
+                    head[0] = "three gather() samples;";
+                    head[1] = "they MUST differ.";
+                    for (int i = 0; i < 3; i++)
+                    {
+                        head[2 + i] = Hex.encode(Entropy.gather(), 0, 8);
+                    }
+
+                    String[] body = EntropyProbe.run(new EntropyProbe.Progress()
                     {
                         public void step(String what, int done, int total)
                         {
@@ -590,6 +668,11 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                             });
                         }
                     });
+
+                    String[] lines = new String[head.length + 1 + body.length];
+                    System.arraycopy(head, 0, lines, 0, head.length);
+                    lines[head.length] = "";
+                    System.arraycopy(body, 0, lines, head.length + 1, body.length);
                     publish("Entropy measure", lines);
                     screen.setLines(lines);
                 }
@@ -602,6 +685,194 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                     };
                     publish("Entropy measure", failure);
                     screen.setLines(failure);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * How many gathers the auth-key barrier asks this handset for.
+     *
+     * The number is the finding. It is chosen from what this device's clock
+     * actually yields, so it differs by an order of magnitude across the handsets
+     * measured so far, and it is the answer to the question section b of the
+     * entropy probe only sets up.
+     */
+    private void runSeedingBarrier()
+    {
+        final TextScreen screen = new TextScreen("Seeding barrier", new String[] {
+            "running the real auth-key",
+            "seeding barrier on a throwaway",
+            "pool...",
+            "",
+            "up to 8 s. do not exit."
+        });
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                try
+                {
+                    String[] lines = EntropyProbe.barrierReport();
+                    publish("Seeding barrier", lines);
+                    screen.setLines(lines);
+                }
+                catch (Throwable t)
+                {
+                    Diag.error("seeding barrier failed", t);
+                    CrashLog.save("barrier", t);
+                    String[] failure = new String[] {
+                        "FAILED", Diag.className(t), String.valueOf(t.getMessage())
+                    };
+                    publish("Seeding barrier", failure);
+                    screen.setLines(failure);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * Vectors or benchmarks, both on a worker thread.
+     *
+     * The benchmark can take minutes on a 208 MHz CPU, and blocking the UI thread
+     * that long looks like a hang and can trip the AMS watchdog.
+     *
+     * @param vectors true to run the self-test, false to run the benchmark
+     */
+    private void runCrypto(final String title, String[] placeholder,
+                           final boolean vectors)
+    {
+        final TextScreen screen = new TextScreen(title, placeholder);
+        screen.addCommand(cmdBack);
+        screen.addCommand(cmdUpload);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                try
+                {
+                    long t0 = System.currentTimeMillis();
+                    String[] lines;
+                    if (vectors)
+                    {
+                        SelfTest.Result r = SelfTest.run();
+                        lines = r.lines;
+                        Diag.info("selftest passed=" + r.passed + " failed=" + r.failed);
+                    }
+                    else
+                    {
+                        lines = SelfTest.benchmark();
+                        Diag.info("benchmark complete");
+                    }
+
+                    String[] withTime = new String[lines.length + 1];
+                    System.arraycopy(lines, 0, withTime, 0, lines.length);
+                    withTime[lines.length] =
+                            "total " + (System.currentTimeMillis() - t0) + " ms";
+                    publish(title, withTime);
+                    screen.setLines(withTime);
+                    Diag.mem("after " + (vectors ? "vectors" : "benchmark"));
+                }
+                catch (Throwable t)
+                {
+                    Diag.error("crypto run failed", t);
+                    CrashLog.save(vectors ? "selftest" : "benchmark", t);
+                    String[] failure = new String[] {
+                        "FAILED",
+                        Diag.className(t),
+                        String.valueOf(t.getMessage()),
+                        "",
+                        "recorded in the crash log"
+                    };
+                    publish(title, failure);
+                    screen.setLines(failure);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * Telegram's cloud-password KDF, at the iteration count the protocol uses.
+     *
+     * Four and a half minutes on the slowest handset measured, which is why this
+     * one is cancellable and why it is not in the Upload all sweep.
+     */
+    private void runPbkdf2()
+    {
+        final TextScreen screen = new TextScreen("PBKDF2 x100000", new String[] {
+            "PBKDF2-HMAC-SHA512",
+            "0 / 100000 (0%)",
+            "",
+            "Cancel stops after the current",
+            "1000-iteration batch."
+        });
+        pbkdf2Cancelled = false;
+        screen.addCommand(cmdCancel);
+        screen.setCommandListener(this);
+        display.setCurrent(screen);
+
+        new Thread(new Runnable()
+        {
+            public void run()
+            {
+                final long started = System.currentTimeMillis();
+                try
+                {
+                    String[] lines = SelfTest.benchmarkPbkdf2(new Pbkdf2.Progress()
+                    {
+                        public boolean update(int completed, int total)
+                        {
+                            long elapsed = System.currentTimeMillis() - started;
+                            screen.setLines(new String[] {
+                                "PBKDF2-HMAC-SHA512",
+                                completed + " / " + total + " ("
+                                    + (completed * 100L / total) + "%)",
+                                "elapsed = " + elapsed + " ms",
+                                "",
+                                "Cancel stops after the current",
+                                "1000-iteration batch."
+                            });
+                            return !pbkdf2Cancelled;
+                        }
+                    });
+                    screen.removeCommand(cmdCancel);
+                    screen.addCommand(cmdBack);
+                    screen.addCommand(cmdUpload);
+                    publish("PBKDF2", lines);
+                    screen.setLines(lines);
+                    Diag.info("PBKDF2 benchmark complete in "
+                              + (System.currentTimeMillis() - started) + " ms");
+                    Diag.mem("after PBKDF2");
+                }
+                catch (IllegalStateException cancelled)
+                {
+                    screen.removeCommand(cmdCancel);
+                    screen.addCommand(cmdBack);
+                    screen.setLines(new String[] {
+                        "CANCELLED",
+                        "elapsed = " + (System.currentTimeMillis() - started) + " ms"
+                    });
+                    Diag.info("PBKDF2 benchmark cancelled");
+                }
+                catch (Throwable t)
+                {
+                    screen.removeCommand(cmdCancel);
+                    screen.addCommand(cmdBack);
+                    Diag.error("PBKDF2 benchmark failed", t);
+                    CrashLog.save("pbkdf2", t);
+                    screen.setLines(new String[] {
+                        "FAILED",
+                        Diag.className(t),
+                        String.valueOf(t.getMessage())
+                    });
                 }
             }
         }).start();
@@ -691,6 +962,11 @@ public class ProbeMidlet extends MIDlet implements CommandListener
      * screen and retyped. The interactive scenarios - Keys, Key timing, the
      * socket screens, Background socket - are left out because they need
      * someone pressing buttons.
+     *
+     * PBKDF2 is left out for a different reason: at Telegram's iteration count it
+     * blocks for four and a half minutes on the slowest handset measured, which
+     * is longer than everything else here put together. It stays a deliberate
+     * choice from the menu.
      */
     private void runUploadAll()
     {
@@ -705,8 +981,9 @@ public class ProbeMidlet extends MIDlet implements CommandListener
             "starting...",
             "",
             "runs the heap and entropy probes,",
-            "so allow a couple of minutes.",
-            "do not exit."
+            "the crypto vectors and the modPow",
+            "benchmark, so allow several",
+            "minutes. do not exit."
         });
         screen.addCommand(cmdBack);
         screen.setCommandListener(this);
@@ -719,10 +996,15 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                 // Order matters. Platform and heap come first because they are
                 // what every other number has to be read against, and because
                 // if the handset dies partway through a sweep those are the two
-                // that must already have arrived.
+                // that must already have arrived. The entropy trio is contiguous
+                // and in dependency order - what a gather is worth, then how many
+                // the barrier took, then whether a seed ever repeated - because
+                // the three are read together or not at all.
                 String[] names = {
                     "Platform", "Heap probe", "RMS", "Clock", "Text",
-                    "Display", "Image decode", "Emoji sheet", "Entropy log",
+                    "Display", "Image decode", "Emoji sheet",
+                    "Crypto vectors", "Crypto benchmarks",
+                    "Entropy measure", "Seeding barrier", "Entropy log",
                     "Diagnostic log", "Crash log"
                 };
 
@@ -798,8 +1080,12 @@ public class ProbeMidlet extends MIDlet implements CommandListener
                     case 5: return DisplayProbe.run(display);
                     case 6: return ImageProbe.run();
                     case 7: return ImageProbe.emojiSheet();
-                    case 8: return EntropyLog.report();
-                    case 9: return Diag.snapshot();
+                    case 8: return SelfTest.run().lines;
+                    case 9: return SelfTest.benchmark();
+                    case 10: return EntropyProbe.run(null);
+                    case 11: return EntropyProbe.barrierReport();
+                    case 12: return EntropyLog.report();
+                    case 13: return Diag.snapshot();
                     default: return crashLines();
                 }
             }

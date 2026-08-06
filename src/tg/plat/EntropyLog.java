@@ -31,9 +31,11 @@ import tg.io.Hex;
  *   <li>An app restart proves nothing. The phone must be powered fully off and
  *       on, because a warm restart inherits the running clock.</li>
  *   <li>MIDP record stores are scoped to the MIDlet suite, so {@code probe.jar}
- *       and {@code crypto.jar} keep <em>separate</em> histories and their launch
+ *       and {@code tg.jar} keep <em>separate</em> histories and their launch
  *       numbers are not comparable. The report says so on screen; this is also
- *       true of {@code RmsCheck}'s marker and was documented nowhere.</li>
+ *       true of {@code RmsCheck}'s marker and was documented nowhere. (There
+ *       used to be a third suite, {@code crypto.jar}, with a third history; it
+ *       is folded into the probe.)</li>
  * </ul>
  *
  * Every RMS call is wrapped: a probe that throws during startup would take the

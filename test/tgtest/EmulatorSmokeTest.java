@@ -10,6 +10,8 @@ import javax.microedition.lcdui.Displayable;
 import org.microemu.device.DeviceFactory;
 
 import tg.app.TgMidlet;
+import tg.crypto.AuthKeySeeding;
+import tg.crypto.Rng;
 import tg.mem.MemoryBudget;
 
 /**
@@ -72,6 +74,7 @@ public final class EmulatorSmokeTest
         DeviceFactory.setDevice(new TestDevice("smoke", 240, 320));
 
         budgetsAreRuntimeValues();
+        theSeedingBarrierSizesItself();
 
         Harness midlet = new Harness();
         midlet.start();
@@ -139,6 +142,41 @@ public final class EmulatorSmokeTest
         Assert.equal("resetting restores the shipped history budget", 120,
                 MemoryBudget.maxHistory());
         System.out.println("  budgets respond to a measurement");
+    }
+
+    /**
+     * The auth-key seeding barrier, run against the artifact that ships.
+     *
+     * The count is no longer a constant: the barrier measures what this
+     * runtime's clock yields and keeps gathering until it has 256 credited
+     * bits. That makes it the second thing in this client - after the memory
+     * budgets - whose behaviour a ProGuard pass could plausibly change and no
+     * desktop run would notice, because the desktop suite tests classes
+     * ProGuard never touched. Here the jar answers for itself.
+     *
+     * The figures are a desktop JVM's and mean nothing about a handset; what is
+     * asserted is that the packaged barrier still terminates, still sizes itself
+     * inside its own bounds, and still credits what it claims.
+     */
+    private static void theSeedingBarrierSizesItself()
+    {
+        int before = AuthKeySeeding.completedBarriers();
+        Rng rng = new Rng();
+        try
+        {
+            AuthKeySeeding.Outcome o = AuthKeySeeding.strengthen(rng, 2, false, false);
+            System.out.println("  seeding barrier: " + o.describe());
+
+            Assert.equal("the packaged barrier completed", before + 1,
+                    AuthKeySeeding.completedBarriers());
+            Assert.isTrue("sized within its own bounds: " + o.describe(),
+                    o.gathers >= AuthKeySeeding.MIN_GATHERS
+                            && o.gathers <= AuthKeySeeding.MAX_GATHERS);
+            Assert.isTrue("credited something: " + o.describe(), o.bits > 0);
+            Assert.isTrue("a desktop clock reaches the target: " + o.describe(),
+                    !o.shortOfTarget);
+        }
+        finally { rng.wipe(); }
     }
 
     /**

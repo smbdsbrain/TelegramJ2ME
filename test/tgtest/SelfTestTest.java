@@ -5,7 +5,7 @@ import tg.crypto.SelfTest;
 /**
  * Runs the on-device self-test here, on the desktop.
  *
- * {@link SelfTest} is CLDC-only code that also runs from tg.app.CryptoMidlet in
+ * {@link SelfTest} is CLDC-only code that also runs from tg.app.ProbeMidlet in
  * the emulator and on the handset. Executing it in all three places is what
  * turns "the crypto is correct" into "the crypto is correct after this
  * toolchain compiled, preverified and shrank it, on that VM".

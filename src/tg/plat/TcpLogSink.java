@@ -71,7 +71,7 @@ public final class TcpLogSink implements DiagSink, Runnable
      * Sink aimed at the development collector described by the build, or null
      * when this build has no sink configured.
      *
-     * @param target "probe", "crypto" or "tg"
+     * @param target "probe" or "tg"
      */
     public static TcpLogSink forCollector(String target)
     {

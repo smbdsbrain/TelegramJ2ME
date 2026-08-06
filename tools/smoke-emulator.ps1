@@ -25,6 +25,11 @@
     "tg" and "tg-min", because the obfuscated one is a different ProGuard
     configuration and can break on its own.
 
+    "probe" launches the reconnaissance suite instead, through
+    tgtest.ProbeSmokeTest: it drives the menu, runs the seeding barrier and the
+    crypto vectors, and prints what the barrier sized itself to. Which harness
+    runs is chosen from the name.
+
 .PARAMETER SkipBuild
     Reuse build/desktop/test-classes as it stands.
 
@@ -44,6 +49,7 @@
 .EXAMPLE
     ./tools/smoke-emulator.ps1
     ./tools/smoke-emulator.ps1 -ArtifactName tg-min
+    ./tools/smoke-emulator.ps1 -ArtifactName probe
     ./tools/smoke-emulator.ps1 -ArtifactName tg -JavaArgs -Xmx24m
 #>
 [CmdletBinding()]
@@ -76,8 +82,13 @@ if (-not (Test-Path (Join-Path (Join-Path $tests "tgtest") "EmulatorSmokeTest.cl
 $failed = @()
 foreach ($name in $ArtifactName) {
     $jar = Join-RepoPath "dist" "$name.jar"
+    # The probe is a different MIDlet with a different menu, so it needs its own
+    # driver; everything else is the client under one name or another.
+    $harness = if ($name -like 'probe*') { "tgtest.ProbeSmokeTest" }
+               else { "tgtest.EmulatorSmokeTest" }
     if (-not (Test-Path $jar)) {
-        Write-Bad "dist/$name.jar not found. Build it first:  ./tools/build.ps1 -Target tg -ArtifactName $name"
+        $target = if ($name -like 'probe*') { 'probe' } else { 'tg' }
+        Write-Bad "dist/$name.jar not found. Build it first:  ./tools/build.ps1 -Target $target -ArtifactName $name"
         exit 1
     }
 
@@ -91,7 +102,7 @@ foreach ($name in $ArtifactName) {
     # The -D must be quoted: PowerShell otherwise splits an unquoted
     # -Dfoo.bar=baz at the first dot and java sees two broken arguments.
     $javaInvocation = @("-Djava.awt.headless=true") + $JavaArgs `
-                      + @("-cp", $runtimeCp, "tgtest.EmulatorSmokeTest", $name)
+                      + @("-cp", $runtimeCp, $harness, $name)
     if ($JavaArgs.Count -gt 0) { Write-Host "    jvm: $($JavaArgs -join ' ')" }
     & $Jdk8Java @javaInvocation
     if ($LASTEXITCODE -ne 0) { $failed += $name }
