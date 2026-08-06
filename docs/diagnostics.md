@@ -148,13 +148,28 @@ token: <the same token>
 device: my-handset
 ```
 
-`tools/build.ps1` reads it into `generated/tg/app/DevSink.java`, the same
+Then build **with the flag that asks for it**:
+
+```bash
+./tools/build.sh -Target probe -EmbedDevSecrets
+```
+
+`tools/build.ps1` reads the file into `generated/tg/app/DevSink.java`, the same
 mechanism that already turns `secrets/telegram.yaml` into `Secrets.java`. Both
 `secrets/` and `generated/` are gitignored and both are rejected by
 `tools/audit-public.ps1`, so an endpoint cannot reach a commit by accident.
 
-With no such file the build prints `no report sink configured` and the upload
-commands say so on screen instead of dialling anywhere.
+**Without the flag the file is ignored**, even when it is sitting right there,
+and the build says `report sink present but NOT embedded`. That default is not
+tidiness: the token grants read access to every report the collector holds, and
+a JAR is not a private thing — the string sits in the constant pool for anyone
+who downloads it. It was the default once, and a locally built release was
+published carrying it. After packaging the JAR is scanned for the values it was
+not asked to embed and the build fails if any are present, so the guarantee is
+about the artifact rather than about remembering.
+
+With no such file at all the build prints `no report sink configured` and the
+upload commands say so on screen instead of dialling anywhere.
 
 The messenger build also accepts a destination typed into
 **Settings -> Remote log host/port**, which overrides the compiled-in one.

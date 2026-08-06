@@ -27,6 +27,28 @@
     Turn on ProGuard optimisation and obfuscation. Off by default: readable
     stack traces matter more than bytes until we have hardware results.
 
+.PARAMETER EmbedDevSecrets
+    Bake the development report collector (secrets/dev-sink.yaml) and the default
+    MTProxy (secrets/proxy.yaml) into the artifact.
+
+    Off unless asked for, even when those files exist. They are not build inputs
+    the way api_id/api_hash are: the collector token grants read access to every
+    diagnostic uploaded to it, and the proxy link carries its secret. A JAR is
+    not a private thing - anyone holding it can read both straight out of the
+    constant pool.
+
+    The default used to be "embed whatever is in secrets/", which is invisible
+    when it is right and invisible when it is wrong. CI never has those files, so
+    every published release was clean by accident rather than by design - until a
+    release was built locally and published carrying both. Now the JAR is scanned
+    after packaging and the build fails if anything got in without this flag.
+
+    Use it for handset sessions, which is what it is for:
+
+        ./tools/build.ps1 -Target probe -EmbedDevSecrets
+
+    Never for anything published. A versioned -ArtifactName is refused outright.
+
 .PARAMETER ArtifactName
     Base name for dist/<name>.jar and dist/<name>.jad. Defaults to the target.
     The JAD's MIDlet-Jar-URL is derived from it, so renaming the files after the
@@ -56,6 +78,10 @@ param(
     [switch]$Release,
     [switch]$SkipApiCheck,
     [switch]$Clean,
+    # Bake secrets/dev-sink.yaml and secrets/proxy.yaml into the artifact.
+    # Off by default: see the .PARAMETER block above for why that default is not
+    # a convenience.
+    [switch]$EmbedDevSecrets,
     [string]$ArtifactName = ""
 )
 
@@ -93,6 +119,18 @@ if ($Env -eq 'test' -and $Target -ne 'probe') {
 }
 
 if (-not $ArtifactName) { $ArtifactName = $Target }
+
+# A versioned artifact name is what a release is called - the workflow builds
+# TelegramJ2ME-<version>[-min]. Nothing with a version in its name should ever
+# carry the collector token or the proxy secret, and the one time it did, it was
+# a local build using exactly this naming. Refused rather than warned about: by
+# the time a warning scrolls past, the file exists and is about to be uploaded.
+if ($EmbedDevSecrets -and $ArtifactName -match '^TelegramJ2ME-\d') {
+    Write-Bad "-EmbedDevSecrets cannot be combined with a release artifact name ($ArtifactName)."
+    Write-Host "         Those names are what gets published. Drop the flag, or build" -ForegroundColor Red
+    Write-Host "         under a local name for a handset session." -ForegroundColor Red
+    exit 1
+}
 
 if (-not $Jdk8Home) {
     Write-Bad "JDK 8 not found. Run ./tools/bootstrap.ps1 first."
@@ -193,7 +231,13 @@ public final class Secrets
     # stronger reason: this one points at private infrastructure, so a build
     # without secrets/dev-sink.yaml must produce empty strings rather than fail.
     # That is the normal case - CI, a fresh clone and every published artifact.
-    $sink = Get-DevSink
+    #
+    # Opt-in, and deliberately not "whatever is lying around in secrets/". A
+    # local build that silently absorbs the collector token produced a published
+    # release carrying it; CI never had the file, so nothing upstream noticed.
+    # -EmbedDevSecrets is the whole difference now, and the check after packaging
+    # verifies the result rather than trusting this branch.
+    $sink = if ($EmbedDevSecrets) { Get-DevSink } else { Get-EmptyDevSink }
     $sinkConfigured = if ($sink.host -and $sink.token) { "true" } else { "false" }
     $sinkBase = if ($sinkConfigured -eq "true") {
         "http://$($sink.host):$($sink.httpPort)/r/$($sink.token)"
@@ -238,8 +282,10 @@ public final class DevSink
 "@ | Set-Content -Path (Join-Path $genDir "DevSink.java") -Encoding UTF8
 
     if ($sinkConfigured -eq "true") {
-        Write-Ok ("report sink from {0}: device={1}, token {2}" -f `
-                  $sink.source, $sink.device, (Format-SecretDigest $sink.token))
+        Write-Warn2 ("EMBEDDED report sink from {0}: device={1}, token {2}" -f `
+                     $sink.source, $sink.device, (Format-SecretDigest $sink.token))
+    } elseif ((Test-Path (Join-RepoPath "secrets" "dev-sink.yaml")) -and -not $EmbedDevSecrets) {
+        Write-Ok "report sink present but NOT embedded (pass -EmbedDevSecrets to include it)."
     } else {
         # Not a warning: no sink is the correct state for every public build.
         Write-Ok "no report sink configured - upload commands will be inert."
@@ -248,7 +294,7 @@ public final class DevSink
     # Default MTProxy. Same treatment again: a tg://proxy link carries a secret
     # and names private infrastructure, so it lives in secrets/ and is compiled
     # into generated/, never into src/.
-    $proxy = Get-DevProxy
+    $proxy = if ($EmbedDevSecrets) { Get-DevProxy } else { Get-EmptyDevProxy }
     $proxyConfigured = if ($proxy.link) { "true" } else { "false" }
     $escapedLink = $proxy.link -replace '\\', '\\' -replace '"', '\"'
 
@@ -276,11 +322,81 @@ public final class DevProxy
 "@ | Set-Content -Path (Join-Path $genDir "DevProxy.java") -Encoding UTF8
 
     if ($proxyConfigured -eq "true") {
-        Write-Ok ("default MTProxy from {0}: {1}, secret {2}" -f `
-                  $proxy.source, $proxy.server, (Format-SecretDigest $proxy.link))
+        Write-Warn2 ("EMBEDDED default MTProxy from {0}: {1}, secret {2}" -f `
+                     $proxy.source, $proxy.server, (Format-SecretDigest $proxy.link))
+    } elseif ((Test-Path (Join-RepoPath "secrets" "proxy.yaml")) -and -not $EmbedDevSecrets) {
+        Write-Ok "default MTProxy present but NOT embedded (pass -EmbedDevSecrets to include it)."
     } else {
         Write-Ok "no default MTProxy configured - enter one in Settings on the device."
     }
+}
+
+<#
+.SYNOPSIS
+    The shape Get-DevSink / Get-DevProxy return when there is nothing to read.
+
+.DESCRIPTION
+    Returning an empty record rather than skipping the generation keeps DevSink
+    and DevProxy present with CONFIGURED = false, which is what every public
+    artifact has always contained. The generator below is then identical in both
+    modes and there is one less branch to get wrong.
+#>
+function Get-EmptyDevSink {
+    [PSCustomObject]@{
+        source = "no source (dev secrets not embedded)"
+        host = ""; httpPort = 80; tcpPort = 8443; token = ""; device = ""
+    }
+}
+
+function Get-EmptyDevProxy {
+    [PSCustomObject]@{
+        source = "no source (dev secrets not embedded)"
+        link = ""; server = ""
+    }
+}
+
+<#
+.SYNOPSIS
+    Prove the packaged JAR carries no development secret the build did not embed.
+
+.DESCRIPTION
+    The flag above is a promise about a code path; this is a check on the
+    artifact, and it exists because the failure it guards against has happened:
+    a locally built release was published carrying the collector token and the
+    MTProxy secret, because the build read whatever was in secrets/ and the
+    release workflow - which never has those files - could not see the
+    difference.
+
+    Reads the JAR's entries and looks for the literal values. Constant strings
+    are inlined by javac into every use site and survive ProGuard, obfuscated or
+    not, so a hit here is real and an absence is meaningful.
+#>
+function Assert-NoUnembeddedSecrets ($jarPath) {
+    $wanted = @()
+    if (-not $EmbedDevSecrets) {
+        $sink = Get-DevSink
+        if ($sink.token) { $wanted += @{ What = "collector token"; Value = $sink.token } }
+        if ($sink.host)  { $wanted += @{ What = "collector host";  Value = $sink.host } }
+        $proxy = Get-DevProxy
+        if ($proxy.link) { $wanted += @{ What = "MTProxy link";    Value = $proxy.link } }
+    }
+    if ($wanted.Count -eq 0) { return }
+
+    # One read of the whole archive: these are small JARs and the alternative is
+    # unzipping to disk to grep something that is 400 KB in memory.
+    $bytes = [System.IO.File]::ReadAllBytes($jarPath)
+    $text  = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+
+    $found = @($wanted | Where-Object { $text.Contains($_.Value) })
+    if ($found.Count -gt 0) {
+        Write-Bad ("$(Split-Path -Leaf $jarPath) contains a development secret that " +
+                   "was not asked for: " + (($found | ForEach-Object { $_.What }) -join ", "))
+        Write-Host "         This build ran without -EmbedDevSecrets, so nothing from" -ForegroundColor Red
+        Write-Host "         secrets/dev-sink.yaml or secrets/proxy.yaml should be in it." -ForegroundColor Red
+        Write-Host "         Do not publish this artifact. Report it as a build defect." -ForegroundColor Red
+        exit 1
+    }
+    Write-Ok ("no unembedded development secrets in the JAR ({0} checked)" -f $wanted.Count)
 }
 
 # ==========================================================================
@@ -533,6 +649,9 @@ try {
 
 $jarSize = (Get-Item $jarPath).Length
 
+# The artifact answers for itself before a JAD is written for it.
+Assert-NoUnembeddedSecrets $jarPath
+
 # -- 5. JAD -----------------------------------------------------------------
 # MIDlet-Jar-Size must match the JAR byte-for-byte or the AMS aborts the install.
 #
@@ -556,6 +675,14 @@ MIDlet-Description: Direct MTProto 2.0 client, build $buildId
 
 Write-Ok "dist/$ArtifactName.jar  ($([math]::Round($jarSize / 1KB, 1)) KB)"
 Write-Ok "dist/$ArtifactName.jad  (MIDlet-Jar-Size: $jarSize)"
+
+# Last thing on screen, because the last thing on screen is what gets read
+# before a file is copied somewhere. Only when it is true.
+if ($EmbedDevSecrets) {
+    Write-Host ""
+    Write-Warn2 "this artifact carries development secrets - collector token and/or"
+    Write-Warn2 "MTProxy link. It is for a handset session. DO NOT PUBLISH IT."
+}
 
 Write-Host ""
 $runCmd = if ($OnWindows) { ".\tools\run-emulator.ps1" } else { "pwsh -File tools/run-emulator.ps1" }

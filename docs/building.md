@@ -163,6 +163,33 @@ Every build preverifies (`-microedition`), so both variants carry the CLDC
 [config/proguard-debug.pro](../config/proguard-debug.pro), which is the file
 that otherwise holds `-dontoptimize` / `-dontobfuscate`.
 
+### Development secrets are opt-in
+
+Two files under `secrets/` describe private infrastructure rather than the
+application: `dev-sink.yaml` (the diagnostic collector, whose token also *reads*
+everything already uploaded) and `proxy.yaml` (an MTProxy link, secret
+included). Neither is read unless `-EmbedDevSecrets` is passed, and a build that
+finds them and was not asked says so:
+
+```
+OK   report sink present but NOT embedded (pass -EmbedDevSecrets to include it).
+OK   default MTProxy present but NOT embedded (pass -EmbedDevSecrets to include it).
+```
+
+With the flag, both lines become `WARN EMBEDDED …` and the build ends with a
+`DO NOT PUBLISH IT` banner. Combining the flag with a versioned
+`-ArtifactName` — the shape a release uses — is refused outright.
+
+The check that matters is not the flag but the one after packaging: the JAR is
+read back and searched for the values it was not asked to embed, and the build
+fails if it finds any. `api_id` / `api_hash` are different and stay on by
+default — every third-party client necessarily ships them, and a build without
+them cannot talk to Telegram at all.
+
+This exists because the default was once the other way round. CI never has those
+files, so releases were clean by accident; the day one was built locally, it was
+published carrying the collector token and the proxy secret.
+
 `-ArtifactName` renames the pair and rewrites `MIDlet-Jar-URL` to match, which
 is how releases produce versioned filenames:
 
@@ -359,6 +386,16 @@ workflow. An optional `secrets/proxy.yaml` supplies one at build time:
 ```yaml
 link: tg://proxy?server=...&port=443&secret=...
 ```
+
+Like the report collector, it is only read when the build is told to read it:
+
+```bash
+./tools/build.sh -Target tg -Env production -EmbedDevSecrets
+```
+
+Without `-EmbedDevSecrets` the file is ignored and the artifact ships with no
+default proxy, which is what every published release has always contained. See
+[Development secrets are opt-in](#development-secrets-are-opt-in).
 
 It is used **only when the handset has nothing stored**. Anything entered in
 Settings is persisted and keeps winning, so reinstalling cannot silently

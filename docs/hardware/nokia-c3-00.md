@@ -274,7 +274,7 @@ A full production sign-in, first launch, no stored key, through the MTProxy to
 dc2:
 
 ```
-20.395 I connected to dc2 prv.rus.ebatel.online:8443
+20.395 I connected to dc2 <mtproxy>:8443
 20.948 I auth-key entropy barrier: 3 gathers, 315/256 bits from 360 samples in 409 ms
 20.967 I -> req_pq_multi
 31.495 I pq 2986605143785885507 = 1642857299 * 1817933393 in 10288 ms
