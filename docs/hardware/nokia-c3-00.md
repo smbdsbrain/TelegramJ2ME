@@ -202,6 +202,53 @@ presses and 18 distinct keys — identical to the OT-810D. `gcd(deltas) = 1 ms`,
 and here that genuinely matches the measured tick rather than meaning "no
 quantum found".
 
+## Crypto: the fastest hash and the slowest big integer, on one device
+
+All 22 FIPS 180-4 / FIPS-197 / OpenSSL vectors pass in 500 ms, after this
+toolchain compiled, preverified and shrank the code.
+
+```
+SHA-256, 64 KB             =     68 ms   (941 KB/s)
+AES-IGE encrypt, 16 KB     =    271 ms   (59 KB/s)
+AES-IGE decrypt, 16 KB     =    300 ms   (53 KB/s)
+modPow  256-bit            =     24 ms
+modPow  512-bit            =    192 ms
+modPow 1024-bit            =   1 413 ms
+modPow 2048-bit            =  10 934 ms
+PBKDF2-HMAC-SHA512 ×100000 = 263 235 ms  (4 min 23 s)
+```
+
+| | Alcatel OT-810D | Samsung GT-C3592 | Nokia C3-00 |
+|---|---|---|---|
+| SHA-256 64 KB | 166 ms | 156 ms | **68 ms** |
+| AES-IGE enc 16 KB | 535 ms | 233 ms | 271 ms |
+| AES-IGE dec 16 KB | 323 ms | 156 ms | 300 ms |
+| modPow 2048-bit | 5 944 ms | 9 458 ms | **10 934 ms** |
+| PBKDF2 ×100000 | 189 875 ms | — | **263 235 ms** |
+
+SHA-256 is **2.4× faster** than on either earlier handset, and the 2048-bit
+modPow is the **slowest of the three**. That is a signature, not a
+contradiction: `Sha256` works in `int`, while `Sha512` is written entirely in
+`long` and the big-integer Montgomery inner loop is built on 32×32 → 64 products
+held in `long`. This runtime is quick at 32-bit integer work and expensive at
+64-bit `long` work, and every figure above follows from that. Worth knowing
+before optimising anything here — a `long` is not a free abstraction on this
+device.
+
+modPow scales by a factor of 7.4–8.0 per doubling, which is the O(n³) expected
+of schoolbook multiplication with square-and-multiply. Nothing anomalous in the
+implementation.
+
+**The 2FA path costs four and a half minutes.** Telegram's SRP derives its
+password hash with PBKDF2-HMAC-SHA512 at 100 000 iterations, so an account with
+a cloud password blocks the handset for 263 seconds at sign-in. The OT-810D's
+3 min 10 s was already poor; this is worse, and it is the largest single
+uninterruptible wait anywhere in the client.
+
+A full DH handshake was never run on this device — the client resumed a stored
+key throughout — so unlike the other two there is no measured figure. Two
+2048-bit modPows put a floor of ~22 s on it before any protocol or network cost.
+
 ## Display: 52 pixels the AMS keeps, and gives back on request
 
 ```
@@ -312,10 +359,15 @@ handset falls back to the platform default.
 - **The 52 pixels are still being given away.** Calling `setFullScreenMode` is a
   client-wide UI change and needs checking on the OT-810D first — a handset that
   draws its own soft-key labels in that band would lose them.
-- **No crypto benchmark on this device.** `crypto.jar` was not run, so the
-  2048-bit modPow time, the AES-IGE and SHA-256 throughput and the full
-  handshake cost are all unmeasured — and the seeding barrier has never run
-  here, since the client resumed a stored key throughout.
+- **The full handshake and the seeding barrier have never run here.** The client
+  resumed a stored key throughout, so there is no measured `auth_key` handshake
+  and no `auth-key entropy barrier` line for this device — only the ~22 s floor
+  implied by two 2048-bit modPows. Generating a key against a test DC would
+  close both.
+- **`long` arithmetic is disproportionately expensive here**, and both the
+  big-integer layer and SHA-512 are built on it. Whether a 16-bit-limb big
+  integer would beat the current 32-bit one on this device is an open question,
+  and one that only matters if this class of handset is a target.
 - **Largest installable JAR is unmeasured**, as on both other devices; use
   `tools/build-size-ladder.ps1`.
 - **The true RMS record ceiling is above 64 KiB but unmeasured** — the probe's
