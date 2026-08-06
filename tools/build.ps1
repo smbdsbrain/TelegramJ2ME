@@ -17,7 +17,7 @@
     output is deterministic (no timestamps are baked in).
 
 .PARAMETER Target
-    probe  - small hardware-reconnaissance suite (tg.app.ProbeMidlet)
+    probe  - hardware-reconnaissance and crypto suite (tg.app.ProbeMidlet)
     tg     - full Telegram client (tg.app.TgMidlet)
 
 .PARAMETER Profile
@@ -40,7 +40,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'crypto', 'tg')][string]$Target = 'probe',
+    # 'crypto' was a third target holding the vectors, the modPow benchmark and
+    # PBKDF2. It is folded into 'probe' - one suite to install, one Upload all to
+    # run - see tg.app.ProbeMidlet for what that cost.
+    [ValidateSet('probe', 'tg')][string]$Target = 'probe',
     # Named BuildProfile because PowerShell already defines $Profile as an
     # automatic variable (the profile script path). The -Profile alias keeps the
     # command line reading the way the docs describe it.
@@ -67,13 +70,11 @@ $AppVendor  = "smbdsbrain"
 
 $MidletClass = @{
     probe  = "tg.app.ProbeMidlet"
-    crypto = "tg.app.CryptoMidlet"
     tg     = "tg.app.TgMidlet"
 }[$Target]
 # What the phone's application menu shows under the icon.
 $MidletName = @{
     probe  = "TelegramJ2ME Probe"
-    crypto = "TelegramJ2ME Crypto"
     tg     = "TelegramJ2ME"
 }[$Target]
 
@@ -451,12 +452,11 @@ if (Test-Path $resourceDir) {
 # Which ones apply is a property of the target, because each
 # config/proguard-<target>.pro keeps a different entry point and ProGuard
 # shrinks to what that entry point reaches. Verified against the built JARs:
-# probe draws emoji but has no bigint and no JPEG; crypto adds bigint; only tg
-# decodes photos. The check below re-confirms it on every non-obfuscated build
-# rather than trusting this comment to stay true.
+# probe draws emoji and - since the crypto suite was folded into it - carries
+# bigint; only tg decodes photos. The check below re-confirms it on every
+# non-obfuscated build rather than trusting this comment to stay true.
 $licences = @{
-    probe  = @("noto-emoji")
-    crypto = @("noto-emoji", "bc")
+    probe  = @("noto-emoji", "bc")
     tg     = @("noto-emoji", "bc", "pdfjs")
 }[$Target]
 

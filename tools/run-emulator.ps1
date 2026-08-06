@@ -59,7 +59,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'crypto', 'tg')][string]$Target = 'probe',
+    [ValidateSet('probe', 'tg')][string]$Target = 'probe',
     [switch]$UseWtk,
     [switch]$Ota,
     [switch]$Headless,
@@ -135,7 +135,6 @@ $mainClass = if ($Headless) { "org.microemu.app.Headless" } else { "org.microemu
 
 $midletClass = @{
     probe  = "tg.app.ProbeMidlet"
-    crypto = "tg.app.CryptoMidlet"
     tg     = "tg.app.TgMidlet"
 }[$Target]
 

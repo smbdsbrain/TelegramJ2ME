@@ -1,7 +1,17 @@
-package tg.plat;
+package tg.crypto;
 
 /**
  * Min-entropy estimation in integer arithmetic.
+ *
+ * <h3>Why this lives in tg.crypto</h3>
+ * It began as probe-only code in {@code tg.plat} and moved here when
+ * {@link AuthKeySeeding} started sizing itself from a measurement instead of a
+ * constant. Nothing about it is platform-specific - there are no imports at all
+ * - and the alternative was a second implementation of the same estimator in
+ * the package that seeds keys. Two implementations of one formula is exactly
+ * what {@link Entropy.JitterSink} exists to avoid: they agree until one of them
+ * is edited, and then every published figure quietly stops describing what the
+ * client does.
  *
  * <h3>Why integer</h3>
  * CLDC 1.1's {@code java.lang.Math} has no {@code log}, no {@code pow} and no
@@ -29,9 +39,9 @@ package tg.plat;
  * MCV assumes independent, identically distributed samples. Jitter spin counts
  * are almost certainly serially correlated by clock-tick phase. The full
  * 800-90B non-IID track is out of scope for a feature phone, so
- * {@link EntropyProbe} additionally runs the estimator over adjacent
- * <i>pairs</i> and discounts by the ratio - a correlation check, not a
- * substitute. Reports must say so.
+ * {@link JitterYield} and {@code tg.plat.EntropyProbe} additionally run the
+ * estimator over adjacent <i>pairs</i> and discount by the ratio - a
+ * correlation check, not a substitute. Reports must say so.
  */
 public final class MinEntropy
 {

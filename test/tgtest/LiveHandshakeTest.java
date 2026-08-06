@@ -64,9 +64,14 @@ public final class LiveHandshakeTest
                                + " (local offset " + ids.timeOffsetSeconds() + "s)");
             System.out.println("known prime   : " + result.usedKnownGoodPrime);
             // Reported apart from the exchange: this is the seeding barrier, and
-            // it is the number a device run is meant to record.
+            // it is the number a device run is meant to record. The gather count
+            // is chosen from what this handset's clock actually yielded, so it is
+            // a measurement of the device and not a constant.
             System.out.println("entropy barrier: " + result.entropyMillis + " ms ("
-                               + AuthKeySeeding.GATHERS + " gathers)");
+                               + result.entropyGathers + " gathers, "
+                               + result.entropyBits + "/"
+                               + AuthKeySeeding.TARGET_BITS + " bits"
+                               + (result.entropyShort ? ", SHORT" : "") + ")");
             System.out.println("elapsed       : " + result.elapsedMillis + " ms");
             System.out.println("bytes rx/tx   : " + transport.bytesRead()
                                + " / " + transport.bytesWritten());

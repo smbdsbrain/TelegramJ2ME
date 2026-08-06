@@ -29,11 +29,13 @@ package tg.crypto;
  * 58 bits is roughly a fifth of what a 2048-bit DH secret needs, so a single
  * {@code gather()} is not a sufficient seed for an auth_key. Folding in several
  * is what {@link AuthKeySeeding} does, and {@code tg.mt.Handshake} is the only
- * caller that needs to. <b>Open item:</b> one handset is one handset - quantify
- * these sources on every supported physical runtime before declaring the
- * auth_key path secure, and note that nothing here shows consecutive gathers to
- * be independent. Until both are settled, treat generated keys as development
- * keys.
+ * caller that needs to. <b>How many is several is not a constant:</b> the yield
+ * of this call is set by the handset's clock granularity, which varies by an
+ * order of magnitude across the three devices measured, so the barrier counts
+ * its own bits through {@link JitterYield} and stops when it has enough. See
+ * {@link AuthKeySeeding} and issue #2. <b>Open item:</b> nothing here shows
+ * consecutive gathers to be independent. Until that is settled, treat generated
+ * keys as development keys.
  * </blockquote>
  *
  * <h3>What is collected</h3>
@@ -125,6 +127,23 @@ public final class Entropy
      */
     public static byte[] gather()
     {
+        return gather(null);
+    }
+
+    /**
+     * As {@link #gather()}, additionally reporting this call's jitter samples to
+     * {@code sink}.
+     *
+     * The digest is identical either way, and the samples reported are the ones
+     * that went into it - not a second measurement of something similar. That is
+     * the whole point for {@link AuthKeySeeding}: the bits it counts are the bits
+     * it just folded into the pool, so sizing the barrier costs nothing beyond
+     * the gathers it was going to do anyway.
+     *
+     * @param sink may be null; see {@link JitterSink} for why it is push-only
+     */
+    public static byte[] gather(JitterSink sink)
+    {
         Sha256 d = new Sha256();
 
         appendLong(d, System.currentTimeMillis());
@@ -151,10 +170,22 @@ public final class Entropy
             }
         }
 
-        byte[] jitter = collectJitter(JITTER_MS);
+        byte[] jitter = collectJitter(JITTER_MS, sink);
         d.update(jitter, 0, jitter.length);
 
         return d.digest();
+    }
+
+    /**
+     * The wall-clock window {@link #gather()} spends sampling jitter.
+     *
+     * Exposed because the sample count a gather yields is {@code window / tick}
+     * and both the probe and {@link JitterYield} report against it. A caller
+     * that hardcoded 120 would keep reporting 120 after this constant moved.
+     */
+    public static int jitterWindowMillis()
+    {
+        return JITTER_MS;
     }
 
     /**
@@ -162,8 +193,10 @@ public final class Entropy
      *
      * This is the only source here whose unpredictability is physical rather
      * than merely obscure: it depends on interrupt timing, cache state and
-     * whatever else the phone is doing. Its yield on a single-core 208 MHz CPU
-     * with a coarse clock is exactly what still needs measuring.
+     * whatever else the phone is doing. Its yield is set by the clock tick - the
+     * loop counts reads per tick, so a coarse clock produces fewer, individually
+     * more surprising samples - and measured across three handsets it ranges from
+     * 21 to 165 bits per {@link #gather()}.
      *
      * @param millis how long to sample; blocks for that long
      */
@@ -258,19 +291,19 @@ public final class Entropy
      * contributing at least 8 bits per call. A different runtime could be far
      * worse - a clock that does not advance would make it zero.
      *
-     * Do not use it to justify a single-call seed: 58 bits is about a fifth of
-     * what a 2048-bit DH secret needs, which is why {@link AuthKeySeeding}
-     * exists. Nor to justify multiplying it by a gather count - see that class
-     * on why the totals are not summed.
+     * <b>Nothing sizes itself from this number any more.</b> It used to divide
+     * into 256 to give {@code AuthKeySeeding.GATHERS}, and three handsets showed
+     * why that could not work: the same call is worth about 21 bits on a Samsung
+     * GT-C3592 (12 ms clock tick, 10 samples per window) and 135-165 on a Nokia
+     * C3-00 (1 ms tick, 120 samples). One device's figure divided into a target
+     * overshoots on a good clock and undershoots on a bad one, so the barrier now
+     * measures its own yield as it goes - {@link JitterYield} and
+     * {@link AuthKeySeeding} - and this method survives only as the number the
+     * on-device reports quote. {@code tgtest.SourceGuardTest} fails the build if
+     * a seeding path starts calling it again.
      *
-     * <b>A second handset has since been measured and is far worse.</b> A
-     * Samsung GT-C3592 yields about 21 bits per gather, because its clock ticks
-     * at 12 ms rather than 4 and the fixed 120 ms jitter window therefore holds
-     * 10 samples instead of 26 - see {@code docs/hardware/samsung-gt-c3592.md}.
-     * The number below is deliberately still the alcatel's: it is one device's
-     * measurement, this method has never claimed to be a fleet minimum, and
-     * changing it silently reshapes {@link AuthKeySeeding#GATHERS}. Making the
-     * seeding size itself against the slowest supported clock is issue #2.
+     * See {@code docs/hardware/samsung-gt-c3592.md} and
+     * {@code docs/hardware/nokia-c3-00.md} for the other two measurements.
      */
     public static int estimatedBitsPerGather()
     {

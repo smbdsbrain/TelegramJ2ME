@@ -331,12 +331,20 @@ free.
 
 ### Consequence for the auth-key barrier
 
-`tg.crypto.AuthKeySeeding` folds in `GATHERS = 5`, sized from the OT-810D's 58
-bits against a 256-bit target. On this handset five gathers are worth about
-**105 bits, not 256**, and the probe's own verdict says the target needs 13.
-Raising the count is tracked in issue #2; it is not a change this measurement
-alone should make, because the right number is a function of the slowest clock
-among supported devices and only two have been measured.
+At the time of this session `tg.crypto.AuthKeySeeding` folded in a constant
+`GATHERS = 5`, sized from the OT-810D's 58 bits against a 256-bit target. On this
+handset five gathers are worth about **105 bits, not 256**, and the probe's own
+verdict says the target needs 13. That is what this measurement was for, and it
+was deliberately not fixed by raising the constant: the right number is a
+function of the clock, and this handset is the evidence that no single number
+fits.
+
+**Since resolved** (issue #2): the barrier measures its own yield as it collects
+and stops when it has 256 samples and 256 credited bits, so this handset now
+takes roughly 26 gathers - about 3.4 s against its own 24-second handshake -
+where the Nokia C3-00 takes about 3. Nothing about the figures above changes;
+what changed is that they are now read by the client rather than by a person
+editing a constant.
 
 ### The barrier itself, running on this handset
 
@@ -442,11 +450,11 @@ information here.
 
 - Largest JAR this device will install has not been measured; use
   `tools/build-size-ladder.ps1`.
-- **The seeding barrier does not reach its 256-bit target here.** 21 bits per
-  gather × 5 gathers ≈ 105. `Entropy.estimatedBitsPerGather` still reports the
-  OT-810D's 58 on purpose — it is one device's figure, not a fleet minimum — so
-  sizing `AuthKeySeeding.GATHERS` against the slowest supported clock is issue
-  #2 and not something this measurement should do on its own.
+- ~~**The seeding barrier does not reach its 256-bit target here.**~~ Resolved
+  in issue #2: the barrier is sized from the yield it measures while collecting,
+  not from a constant, and takes about 26 gathers on this handset. The figure
+  that produced the problem — 21 bits per gather, against the OT-810D's 58 —
+  stands as measured.
 - **Cold-boot determinism is untested against a fixed clock here.** The twelve
   battery-out launches produced no repeated seed, but this handset restores the
   time on boot, so each one started from a different wall clock and the result

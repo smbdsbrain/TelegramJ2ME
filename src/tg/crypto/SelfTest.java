@@ -15,7 +15,7 @@ import tg.io.Hex;
  * three places:
  *
  *   1. desktop, from tgtest.SelfTestTest;
- *   2. emulator, from tg.app.CryptoMidlet;
+ *   2. emulator, from tg.app.ProbeMidlet;
  *   3. the phone, from the same MIDlet.
  *
  * A disagreement between any two of those is a toolchain bug, and finding it

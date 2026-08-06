@@ -92,15 +92,11 @@ jobs:
         shell: pwsh
         run: ./tools/test.ps1
 
-      # Each target is a different ProGuard entry-point set, so all three have
-      # to be built to know that shrinking still resolves.
+      # Each target is a different ProGuard entry-point set, so both have to be
+      # built to know that shrinking still resolves.
       - name: Build probe
         shell: pwsh
         run: ./tools/build.ps1 -Target probe
-
-      - name: Build crypto
-        shell: pwsh
-        run: ./tools/build.ps1 -Target crypto
 
       - name: Build tg
         shell: pwsh
@@ -120,6 +116,14 @@ jobs:
       - name: Emulator smoke test
         shell: pwsh
         run: ./tools/smoke-emulator.ps1 -SkipBuild
+
+      # The probe suite, driven the same way. It is the only automated run of the
+      # seeding barrier through a MIDlet - the count it chooses is measured from
+      # the clock it is given, so it cannot be asserted anywhere as a constant -
+      # and it prints what this runner's clock was worth.
+      - name: Emulator smoke test (probe suite)
+        shell: pwsh
+        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName probe
 
       # The same jar under a bounded host heap. MicroEmulator has no heap option
       # of its own but runs the MIDlet on the host JVM, so this is what the

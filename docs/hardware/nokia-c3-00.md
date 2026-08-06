@@ -7,7 +7,9 @@ It reports itself as `NokiaC3-00/08.70`. Everything below was read off the
 device by `probe.jar` and the client's own diagnostics, not from a
 specification sheet.
 
-The session was run over Wi-Fi through an MTProxy.
+The session was run over Wi-Fi through an MTProxy. A later session, on
+2026-08-06, added the seeding-barrier and handshake figures below and is marked
+where it applies.
 
 ```
 microedition.platform      = NokiaC3-00/08.70
@@ -144,10 +146,11 @@ Across a power cycle it does not survive, and does not resync:
 clock went BACKWARDS 5x  =>  CLOCK RESETS AT BOOT
 ```
 
-Every cold boot starts about fifteen years in the past. Two consequences, and
+Every cold boot starts about fifteen years in the past. Three consequences, and
 only one of them is handled.
 
 For seeding, the probe already detects it and charges the wall clock at zero.
+
 For the protocol it is unhandled: `msg_id` carries unix seconds and the server
 rejects anything more than 300 s ahead or 30 s behind, the time offset is
 learned only from a server reply, and **the resume path never runs a
@@ -155,6 +158,26 @@ handshake** — so a restored session on a freshly booted phone sends its first
 encrypted message with a fifteen-year-old `msg_id` and depends on
 `bad_msg_notification` to recover. That recovery gets one retry, which a fresh
 session usually spends on `bad_server_salt`. Not fixed; recorded.
+
+**And it makes the MTProxy route impossible until the clock is set**, which is
+what this handset actually spent an evening demonstrating. A FakeTLS
+`ClientHello` carries the client's unix time XORed into the last four bytes of
+the client random — `tg.io.FakeTlsTransport` — and the proxy checks it against
+its own clock. A hello fifteen years stale is not recognised as the proxy's own
+traffic, so the proxy relays the connection to the real host the secret names
+(`ok.ru` here) and that host answers with a genuine TLS alert:
+
+```
+mtproxy FAIL invalid FakeTLS handshake record, type 0x15 (alert),
+version 3.3, length 2 [fatal illegal_parameter(47)], expected type 0x16
+```
+
+Confirmed by construction, not by inference: hardcoding this handset's own
+timestamp (`1314895348`, 2011-09-01) into the hello on a desktop reproduces the
+alert byte for byte, and setting the phone's clock made the same build connect
+on the first attempt. The message names the alert - which is what the C3-00's
+previous session bought - but not the cause, and the cause is one the client can
+detect. Recorded as open.
 
 ## Entropy: the finest clock measured, and what that costs per sample
 
@@ -201,6 +224,75 @@ Key-press timing is **3.000 bits/press, 86 presses for 256 bits** over 50
 presses and 18 distinct keys — identical to the OT-810D. `gcd(deltas) = 1 ms`,
 and here that genuinely matches the measured tick rather than meaning "no
 quantum found".
+
+## The seeding barrier, measured here
+
+Measured 2026-08-06, `probe.jar` and `tg.jar` 0.7.1 `build 637f97a`, after the
+barrier stopped using a compiled-in gather count and started sizing itself from
+what it measures while collecting (issue #2).
+
+**From the probe**, three runs of the new **Seeding barrier** item, which runs
+the real `tg.crypto.AuthKeySeeding` against a throwaway pool:
+
+```
+gathers  = 3            gathers  = 3            gathers  = 3
+samples  = 330          samples  = 349          samples  = 349
+credited = 371 / 256    credited = 523 / 256    credited = 523 / 256
+elapsed  = 526 ms       elapsed  = 393 ms       elapsed  = 393 ms
+           175 ms/gather          131 ms/gather          131 ms/gather
+```
+
+**From the client**, four handshakes across the same evening, all three gathers
+and all inside 410 ms:
+
+```
+auth-key entropy barrier: 3 gathers, 258/256 bits from 345 samples in 405 ms
+auth-key entropy barrier: 3 gathers, 315/256 bits from 360 samples in 405 ms
+auth-key entropy barrier: 3 gathers, 500/256 bits from 286 samples in 404 ms
+auth-key entropy barrier: 3 gathers, 514/256 bits from 343 samples in 394 ms
+```
+
+Two things are worth reading off that.
+
+**The probe's verdict and the barrier's decision agree, and disagree by exactly
+one gather for a stated reason.** The same session's verdict says
+`jitter 1.500 bits/sample x 120 samples => 180 bits/gather, 256 bits needs 2
+gather(s)`. The barrier takes three, because two gathers are about 230 samples
+and `MinEntropy.MIN_SAMPLES_FOR_CONFIDENCE` is 256 — below which this project
+states no bounded figure at all. On this handset the sample floor decides the
+count, not the bit target; on the GT-C3592 it will decide it even more strongly.
+
+**The credited total varies by a factor of two between runs on one device** —
+258 to 523 bits from a nearly constant sample count. That is the confidence
+bound and the correlation discount reacting to the run, and it is the reason the
+old approach could not have been rescued by measuring more carefully once: there
+is no single number to write down, even for one handset.
+
+### What it costs against the handshake it precedes
+
+A full production sign-in, first launch, no stored key, through the MTProxy to
+dc2:
+
+```
+20.395 I connected to dc2 prv.rus.ebatel.online:8443
+20.948 I auth-key entropy barrier: 3 gathers, 315/256 bits from 360 samples in 409 ms
+20.967 I -> req_pq_multi
+31.495 I pq 2986605143785885507 = 1642857299 * 1817933393 in 10288 ms
+54.323 I two 2048-bit modPow in 21837 ms
+55.492 I handshake complete in 34544 ms, auth_key dc2 prod id=... sha1=a0e8a3d9
+55.532 I persisted auth_key dc2 prod id=... sha1=a0e8a3d9
+56.629 I task connect ok in 41341 ms
+```
+
+**409 ms of seeding against a 34 544 ms exchange: 1.2%.** The earlier estimate
+for this device, derived from two modPows, was ~1.3% of a ~22 s floor; the real
+handshake is half as long again, and the barrier is proportionally cheaper. The
+prediction it replaced — five gathers, unchanged everywhere — would have cost
+about 650 ms here for less than the client now measures it needs.
+
+Note what is *not* in that log: the pq factorisation took 10.3 s and the two
+modular exponentiations 21.8 s. The seeding is the cheapest part of generating a
+key on this handset by a factor of fifty.
 
 ## Crypto: the fastest hash and the slowest big integer, on one device
 
@@ -352,6 +444,11 @@ handset falls back to the platform default.
 
 ## Still open
 
+- **A wrong clock kills the MTProxy route with an unactionable error.** The
+  FakeTLS hello embeds the client's unix time, the proxy refuses it, and what
+  reaches the user is `illegal_parameter(47)`. The client knows its own build
+  date and could say "this phone's clock is fifteen years slow" instead. See
+  above; this is the single most expensive thing to diagnose on this handset.
 - **A restored session never establishes a time offset**, which matters most on
   exactly this device: it boots in 2011 every time. The resume path skips the
   handshake where the offset is normally learned, and the single corrective
@@ -359,11 +456,11 @@ handset falls back to the platform default.
 - **The 52 pixels are still being given away.** Calling `setFullScreenMode` is a
   client-wide UI change and needs checking on the OT-810D first — a handset that
   draws its own soft-key labels in that band would lose them.
-- **The full handshake and the seeding barrier have never run here.** The client
-  resumed a stored key throughout, so there is no measured `auth_key` handshake
-  and no `auth-key entropy barrier` line for this device — only the ~22 s floor
-  implied by two 2048-bit modPows. Generating a key against a test DC would
-  close both.
+- ~~**The full handshake and the seeding barrier have never run here.**~~ Both
+  ran on 2026-08-06: a production sign-in generated a key in 34 544 ms behind a
+  409 ms barrier, and the probe's own barrier item ran three times. See above.
+  What is still unrecorded is the *resume* path on this device — a relaunch that
+  loads the stored key and runs no barrier at all.
 - **`long` arithmetic is disproportionately expensive here**, and both the
   big-integer layer and SHA-512 are built on it. Whether a 16-bit-limb big
   integer would beat the current 32-bit one on this device is an open question,

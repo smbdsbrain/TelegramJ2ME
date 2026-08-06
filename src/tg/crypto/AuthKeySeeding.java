@@ -6,64 +6,93 @@ package tg.crypto;
  * <h3>What this is for</h3>
  * {@link Rng#Rng()} folds in one {@link Entropy#gather()}, which is the right
  * cost for a nonce, a padding block or an outgoing {@code random_id}. It is not
- * the right cost for a 2048-bit DH secret: on the one handset measured a gather
- * is worth about {@link Entropy#estimatedBitsPerGather()} bits, so a pool that
- * has seen one of them is short of what a permanent key needs. Rather than make
- * every {@code Rng()} in the process pay for that, the expensive seeding is
- * named, isolated here, and invoked from the one place that generates a key -
- * {@code tg.mt.Handshake}.
+ * the right cost for a 2048-bit DH secret: a gather is worth between 21 and 165
+ * bits depending on the handset, so a pool that has seen one of them may be far
+ * short of what a permanent key needs. Rather than make every {@code Rng()} in
+ * the process pay for that, the expensive seeding is named, isolated here, and
+ * invoked from the one place that generates a key - {@code tg.mt.Handshake}.
+ *
+ * <h3>The count is measured, not compiled in</h3>
+ * This class used to fold in a constant five gathers, divided out of one
+ * handset's 58 bits per gather. Three handsets later that constant was wrong in
+ * both directions - {@code gather()} spends a fixed wall-clock window, so its
+ * sample count is {@code window / clock tick} and its yield is a property of the
+ * device:
+ *
+ * <pre>
+ *   Alcatel OT-810D    4 ms tick    26 samples    ~58 bits/gather
+ *   Samsung GT-C3592  12 ms tick    10 samples    ~21 bits/gather
+ *   Nokia C3-00        1 ms tick   120 samples  ~135-165 bits/gather
+ * </pre>
+ *
+ * Five gathers are about 290 bits on the first, 105 on the second and 675 on the
+ * third: short by a factor of 2.6 on one device and 2.5x more work than needed on
+ * another. So the barrier now counts what it is collecting - {@link JitterYield}
+ * observes the very samples being folded in - and stops when the measured total
+ * reaches {@link #TARGET_BITS}. A good clock pays less; a bad one pays more; no
+ * number in this file has to be right about a handset nobody has measured. See
+ * issue #2 and {@code docs/hardware/}.
  *
  * <h3>What is and is not claimed</h3>
- * {@link #GATHERS} gathers are folded in. That is <b>not</b> a claim of
- * {@code GATHERS x 58} bits: consecutive gathers are sampled from the same
- * scheduler on the same idle handset seconds apart, and nothing here
- * demonstrates that they are independent. What is claimed is narrower and still
- * worth having - the pool behind a permanent key has seen several separated
- * physical samples instead of one, which is the difference between a seed an
- * attacker might enumerate and one they probably cannot. The one-handset caveat
- * in {@link Entropy} is unchanged by this class.
+ * The credited figure counts jitter only, at a 99% confidence bound, after a
+ * serial-correlation discount, with the heap readings, identity hash codes and
+ * wall clock that {@code gather()} also folds in charged at zero. Samples are
+ * pooled across gathers rather than a per-gather figure being multiplied, so
+ * repetition between gathers lowers the estimate instead of being summed - but
+ * that is a mitigation and not a demonstration that consecutive gathers are
+ * independent. The one-run, one-handset caveats in {@link Entropy} are unchanged
+ * by this class.
  *
- * <h3>Fail closed</h3>
+ * <h3>Fail closed, and be loud when you cannot</h3>
  * {@link Rng#addEntropy(byte[])} returns quietly when handed nothing, so a
  * degraded source would produce a barrier that reports success having folded in
- * no entropy at all. Every gather is checked instead, and a short or absent one
- * aborts the key generation rather than weakening it silently.
+ * no entropy at all. Every gather is checked, and a short or absent one aborts
+ * the key generation. So does a run that credits <b>zero</b> bits, which is what
+ * a handset whose clock does not advance produces.
+ *
+ * A run that credits something but never reaches the target is different: it is
+ * a slow clock, not a dead one, and refusing there would lock a working handset
+ * out of signing in for the sake of a bound nobody can improve from the client.
+ * That case returns with {@link Outcome#shortOfTarget} set, and the caller says
+ * so at warning level.
  *
  * <h3>Diagnostics</h3>
  * Deliberately no dependency on {@code tg.diag}: the rest of {@code tg.crypto}
  * reaches outside the package only for {@code tg.io.Hex}, and a hashing helper
- * should not decide what gets logged. The caller receives the elapsed time and
- * logs the count and the duration - never a sample, never pool state.
+ * should not decide what gets logged. The caller receives an {@link Outcome} and
+ * logs it - never a sample, never pool state.
  */
 public final class AuthKeySeeding
 {
-    /**
-     * Fresh {@link Entropy#gather()} results folded in before a permanent key.
-     *
-     * Five, because a 2048-bit DH secret is conventionally seeded from 256 bits
-     * and one gather measured about 58 on an Alcatel OT-810D - see
-     * {@code docs/hardware/alcatel-ot810d.md}. The division is a sizing rule,
-     * not an addition: see the class note on why the totals are not summed.
-     *
-     * <b>Five is sized on the faster of the two handsets measured, and does not
-     * reach {@link #TARGET_BITS} on the slower one.</b> A Samsung GT-C3592 has a
-     * 12 ms clock tick against the alcatel's 4 ms, so the fixed 120 ms window in
-     * {@code gather()} collects 10 jitter samples there instead of 26 - about 21
-     * bits per gather, and about 105 for all five. The per-sample entropy is
-     * almost identical on both; the clock is the whole difference. See
-     * {@code docs/hardware/samsung-gt-c3592.md} and issue #2. Raising the count
-     * is deliberately not done here: the right value is a function of the
-     * slowest clock among supported devices, and two devices are not a
-     * distribution.
-     *
-     * {@code AuthKeySeedingTest} fails if a future revision of
-     * {@link Entropy#estimatedBitsPerGather()} makes five stop covering
-     * {@link #TARGET_BITS} by that figure's own arithmetic.
-     */
-    public static final int GATHERS = 5;
-
-    /** The seeding target the {@link #GATHERS} count is sized against. */
+    /** The seeding target: what a 2048-bit DH secret is conventionally given. */
     public static final int TARGET_BITS = 256;
+
+    /**
+     * Gathers folded in before the measurement is even consulted.
+     *
+     * Two, not one, because the narrow claim this class can defend is that the
+     * pool behind a permanent key has seen several <em>separated</em> physical
+     * samples rather than one continuous stretch of the same scheduler state. On
+     * every handset measured the estimator asks for more than this anyway; the
+     * floor exists for the device nobody has measured, whose clock might be fine
+     * enough to reach 256 credited bits inside a single window.
+     */
+    public static final int MIN_GATHERS = 2;
+
+    /**
+     * Hard ceiling on rounds, and on wall-clock time.
+     *
+     * A cap is not a target. On the worst handset measured the estimator settles
+     * around 26 gathers (~3.4 s against a 24-second handshake); these bounds sit
+     * well above that so they bind only on a runtime whose jitter is worse than
+     * anything measured. Both exist because {@code gather()} blocks: a barrier
+     * that kept going until an unreachable target would hang the sign-in it is
+     * supposed to protect.
+     */
+    public static final int MAX_GATHERS = 64;
+
+    /** @see #MAX_GATHERS */
+    public static final int MAX_MILLIS = 8000;
 
     /**
      * Pause between gathers.
@@ -89,6 +118,7 @@ public final class AuthKeySeeding
 
     private static final Object COUNTER_LOCK = new Object();
     private static int completed;
+    private static Outcome last;
 
     private AuthKeySeeding() { }
 
@@ -96,48 +126,103 @@ public final class AuthKeySeeding
      * Observer-free injection point for the gather source.
      *
      * The same shape as {@link Entropy.JitterSink} and for the same reason: a
-     * test needs to drive the fold order deterministically, and the only way to
-     * do that without a seam is to reimplement the loop - which then measures
-     * something merely similar to what ships. Production passes null and never
-     * constructs an implementation, so the device build carries the interface
-     * and nothing else.
+     * test needs to drive the fold order and the sizing deterministically, and
+     * the only way to do that without a seam is to reimplement the loop - which
+     * then measures something merely similar to what ships. Production passes
+     * null and never constructs an implementation, so the device build carries
+     * the interface and nothing else.
      *
-     * An implementation must return a freshly allocated array on every call:
-     * {@link #strengthen} zeroes what it is handed.
+     * An implementation must pass its samples to {@code sink} - that is what the
+     * barrier sizes itself from - and must return a freshly allocated array on
+     * every call: {@link #strengthen} zeroes what it is handed.
      */
     public interface GatherSource
     {
-        byte[] gather();
+        byte[] gather(Entropy.JitterSink sink);
+    }
+
+    /**
+     * Narration for a barrier that can now run for seconds.
+     *
+     * Same shape as {@link Pbkdf2.Progress} minus the cancel return: a handshake
+     * has already committed to generating a key by the time this runs, and there
+     * is nothing to cancel back to.
+     */
+    public interface Progress
+    {
+        void update(int gathers, int bits, int targetBits);
+    }
+
+    /** What one barrier did. Counts only - no sample, no pool state. */
+    public static final class Outcome
+    {
+        public final int gathers;
+        public final int samples;
+        public final int bits;
+        public final int targetBits;
+        public final long millis;
+        public final boolean shortOfTarget;
+
+        Outcome(int gathers, int samples, int bits, int targetBits, long millis)
+        {
+            this.gathers = gathers;
+            this.samples = samples;
+            this.bits = bits;
+            this.targetBits = targetBits;
+            this.millis = millis;
+            this.shortOfTarget = bits < targetBits;
+        }
+
+        /** One line for a log or a report: what it cost and what it bought. */
+        public String describe()
+        {
+            return gathers + " gathers, " + bits + "/" + targetBits + " bits from "
+                    + samples + " samples in " + millis + " ms";
+        }
     }
 
     /**
      * Prepare {@code rng} for generating one permanent auth_key.
      *
-     * Blocks for roughly {@code GATHERS * 130} ms - about 600 ms on the handset
-     * measured - and must not be called on the display thread. Call it once per
-     * key, not once per connection.
+     * Blocks until the measured yield reaches {@link #TARGET_BITS} or a cap is
+     * hit - between about 0.4 s and 3.5 s on the handsets measured, up to
+     * {@link #MAX_MILLIS} on one that is worse. Must not be called on the display
+     * thread. Call it once per key, not once per connection.
      *
      * @param dcId           the data centre the key will belong to
      * @param testEnvironment true for the Telegram test environment
      * @param media          true for an auxiliary/media connection
-     * @return elapsed milliseconds, never negative
-     * @throws IllegalStateException if a gather comes back empty or short
+     * @throws IllegalStateException if a gather comes back empty or short, or if
+     *         the run credits no entropy at all
      */
-    public static long strengthen(Rng rng, int dcId, boolean testEnvironment,
-                                  boolean media)
+    public static Outcome strengthen(Rng rng, int dcId, boolean testEnvironment,
+                                     boolean media)
     {
-        return strengthen(rng, dcId, testEnvironment, media, null);
+        return strengthen(rng, dcId, testEnvironment, media, null, null);
+    }
+
+    /**
+     * As {@link #strengthen(Rng, int, boolean, boolean)}, narrating each round.
+     *
+     * @param progress may be null
+     */
+    public static Outcome strengthen(Rng rng, int dcId, boolean testEnvironment,
+                                     boolean media, Progress progress)
+    {
+        return strengthen(rng, dcId, testEnvironment, media, null, progress);
     }
 
     /**
      * As {@link #strengthen(Rng, int, boolean, boolean)}, taking gathers from
      * {@code source}.
      *
-     * @param source null for the real {@link Entropy#gather()}; see
-     *               {@link GatherSource} for the ownership contract
+     * @param source   null for the real {@link Entropy#gather(Entropy.JitterSink)};
+     *                 see {@link GatherSource} for the ownership contract
+     * @param progress may be null
      */
-    public static long strengthen(Rng rng, int dcId, boolean testEnvironment,
-                                  boolean media, GatherSource source)
+    public static Outcome strengthen(Rng rng, int dcId, boolean testEnvironment,
+                                     boolean media, GatherSource source,
+                                     Progress progress)
     {
         if (rng == null) { throw new IllegalArgumentException("rng"); }
 
@@ -147,10 +232,19 @@ public final class AuthKeySeeding
         rng.addEntropy(context);
         wipe(context);
 
-        for (int i = 0; i < GATHERS; i++)
+        // Not named "yield": that is a restricted identifier from Java 14 on, and
+        // this file is also read on toolchains newer than the JDK 8 it is built
+        // with.
+        JitterYield measured = new JitterYield();
+        int gathers = 0;
+
+        while (true)
         {
-            if (i > 0) { pause(); }
-            byte[] sample = source == null ? Entropy.gather() : source.gather();
+            if (gathers > 0) { pause(); }
+
+            measured.startRound();
+            byte[] sample = source == null
+                    ? Entropy.gather(measured) : source.gather(measured);
             if (sample == null || sample.length < Sha256.DIGEST_SIZE)
             {
                 // Refusing here is the point of the class. A key generated from
@@ -164,6 +258,29 @@ public final class AuthKeySeeding
             // Hygiene, not a guarantee: the digest that produced these bytes saw
             // them too, and the pool state derived from them is meant to persist.
             wipe(sample);
+            measured.endRound();
+            gathers++;
+
+            if (progress != null)
+            {
+                progress.update(gathers, measured.creditedBits(), TARGET_BITS);
+            }
+
+            if (gathers >= MIN_GATHERS && measured.enough(TARGET_BITS)) { break; }
+            if (gathers >= MAX_GATHERS) { break; }
+            if (System.currentTimeMillis() - t0 >= MAX_MILLIS) { break; }
+        }
+
+        int bits = measured.creditedBits();
+        if (bits <= 0)
+        {
+            // Not a slow clock - a dead one. collectJitter breaks out when the
+            // clock stops advancing, and a pool seeded from a source that
+            // provably yielded nothing is the failure this whole class exists to
+            // prevent. The probe calls this case "seeding is NOT SAFE".
+            throw new IllegalStateException("jitter credited 0 bits over "
+                    + gathers + " gathers (" + measured.samples()
+                    + " samples); refusing to generate an auth_key");
         }
 
         long elapsed = System.currentTimeMillis() - t0;
@@ -171,8 +288,10 @@ public final class AuthKeySeeding
         // How long the barrier actually took is itself a timing measurement.
         rng.addEntropy(elapsed);
 
-        synchronized (COUNTER_LOCK) { completed++; }
-        return elapsed;
+        Outcome outcome = new Outcome(gathers, measured.samples(), bits,
+                TARGET_BITS, elapsed);
+        synchronized (COUNTER_LOCK) { completed++; last = outcome; }
+        return outcome;
     }
 
     /**
@@ -186,6 +305,18 @@ public final class AuthKeySeeding
     public static int completedBarriers()
     {
         synchronized (COUNTER_LOCK) { return completed; }
+    }
+
+    /**
+     * The most recent completed barrier, or null.
+     *
+     * Exists so {@code tg.plat.Report} can carry the measured sizing off a
+     * handset without the probe MIDlet: on a device nobody has measured, the
+     * gather count this run chose is the finding.
+     */
+    public static Outcome lastOutcome()
+    {
+        synchronized (COUNTER_LOCK) { return last; }
     }
 
     // ------------------------------------------------------------ internal

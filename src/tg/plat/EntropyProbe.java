@@ -2,7 +2,11 @@ package tg.plat;
 
 import java.util.Vector;
 
+import tg.crypto.AuthKeySeeding;
 import tg.crypto.Entropy;
+import tg.crypto.IntHistogram;
+import tg.crypto.MinEntropy;
+import tg.crypto.Rng;
 import tg.diag.Diag;
 
 /**
@@ -11,16 +15,19 @@ import tg.diag.Diag;
  * <h3>Why this exists</h3>
  * {@code Entropy.gather()} returns a SHA-256 digest, so every raw quantity it
  * folds in - spin counts, hash codes, heap readings - is unobservable from
- * outside. The consequence is recorded in the project's own documentation: the
- * seeding "has not been verified on hardware", and
- * {@code Entropy.estimatedBitsPerGather()} returns 0 because claiming a number
- * would be dishonest. A previous run of {@code CryptoMidlet}'s entropy screen on
- * a physical handset produced "no obvious repetition; raw values not recorded",
- * which is not a measurement.
+ * outside. Before this class the project's own documentation said the seeding
+ * "has not been verified on hardware", and an entropy screen that reported "no
+ * obvious repetition; raw values not recorded" was the closest thing to
+ * evidence, which is not a measurement.
  *
  * This class produces the numbers instead, on the device, with no network
  * involved: results are computed here and displayed, because the handsets this
- * targets have no WiFi and metered GPRS.
+ * targets have no WiFi and metered GPRS. Three of them have been measured this
+ * way, and what they showed - that a gather is worth 21 bits on one and 165 on
+ * another - is why {@code tg.crypto.AuthKeySeeding} sizes itself at run time
+ * through {@link tg.crypto.JitterYield} instead of dividing a constant into 256.
+ * The arithmetic below and the arithmetic in the barrier are the same classes,
+ * so a report and a client cannot disagree about what a handset is worth.
  *
  * <h3>The five questions</h3>
  * <ol>
@@ -466,16 +473,14 @@ public final class EntropyProbe
     /**
      * How many jitter samples one {@code gather()} actually collects.
      *
-     * Measured rather than derived, because {@code Entropy}'s sampling window is
-     * private and a figure computed from the tick would drift the moment that
-     * constant changed. This costs one real jitter window.
+     * Measured rather than derived: a figure computed from the tick would be a
+     * model of the sampling loop, and the point of every number in this class is
+     * that it comes from the loop itself. This costs one real jitter window.
      */
     private static int measureSamplesPerGather()
     {
         CountingSink counter = new CountingSink();
-        // Same window Entropy.gather() uses; it is private there, so the honest
-        // way to learn the sample count is to run the real thing and count.
-        Entropy.collectJitter(120, counter);
+        Entropy.collectJitter(Entropy.jitterWindowMillis(), counter);
         return counter.count;
     }
 
@@ -756,7 +761,91 @@ public final class EntropyProbe
         }
     }
 
+    // ------------------------------------------------------ f. seeding barrier
+
+    /**
+     * What the auth-key seeding barrier costs on this handset, by running it.
+     *
+     * Section b answers "what is a gather worth here"; this answers the question
+     * that follows from it - how many gathers this device is asked for, and how
+     * long that takes - by running the real
+     * {@code tg.crypto.AuthKeySeeding.strengthen} rather than deriving it. The
+     * two must agree: the barrier sizes itself with the same estimator this class
+     * publishes, so a device where the verdict says "256 bits needs 13 gather(s)"
+     * and the barrier stops at three has a defect in one of them.
+     *
+     * The pool is a throwaway {@code Rng} that never leaves this method and is
+     * wiped afterwards. Nothing here generates a key, and the report carries
+     * counts only.
+     *
+     * Blocks for as long as the barrier does - up to
+     * {@code AuthKeySeeding.MAX_MILLIS} - so it must not run on the UI thread.
+     */
+    public static String[] barrierReport()
+    {
+        Vector v = new Vector(16);
+        Rng rng = new Rng();
+        try
+        {
+            AuthKeySeeding.Outcome o = AuthKeySeeding.strengthen(rng, 0, false, false);
+            v.addElement("gathers  = " + o.gathers);
+            v.addElement("samples  = " + o.samples);
+            v.addElement("credited = " + o.bits + " / " + o.targetBits + " bits");
+            v.addElement("elapsed  = " + o.millis + " ms");
+            if (o.gathers > 0)
+            {
+                v.addElement("           " + (o.millis / o.gathers) + " ms/gather");
+            }
+            v.addElement(o.shortOfTarget
+                    ? "SHORT OF TARGET - this handset"
+                    : "target reached.");
+            if (o.shortOfTarget)
+            {
+                v.addElement("hit a cap first. keys made");
+                v.addElement("here rest on less than the");
+                v.addElement("project's own target.");
+            }
+        }
+        catch (IllegalStateException refused)
+        {
+            // The barrier refuses a source that credited nothing, which is what a
+            // clock that does not advance produces. That is a finding, not an
+            // error in the probe.
+            v.addElement("REFUSED. seeding is NOT SAFE");
+            v.addElement("on this runtime:");
+            wrapInto(v, String.valueOf(refused.getMessage()));
+        }
+        finally { rng.wipe(); }
+
+        v.addElement("");
+        v.addElement("ref OT-810D = "
+                + Entropy.estimatedBitsPerGather() + " bits/gather");
+        v.addElement("(one handset, measured; the");
+        v.addElement("count above is this one's.)");
+        return toArray(v);
+    }
+
     // --------------------------------------------------------------- helpers
+
+    /** Break a sentence across lines no wider than the screen. */
+    private static void wrapInto(Vector v, String text)
+    {
+        int at = 0;
+        int n = text.length();
+        while (at < n)
+        {
+            int end = at + MAX_LINE;
+            if (end >= n) { end = n; }
+            else
+            {
+                int space = text.lastIndexOf(' ', end);
+                if (space > at) { end = space; }
+            }
+            v.addElement(text.substring(at, end));
+            at = end;
+            while (at < n && text.charAt(at) == ' ') { at++; }
+        }
+    }
 
     private static int clamp(long v)
     {

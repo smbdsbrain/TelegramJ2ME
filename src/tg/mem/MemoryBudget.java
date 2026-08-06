@@ -30,8 +30,8 @@ package tg.mem;
  * Before {@link #init} is called every accessor returns the value that shipped
  * before this class existed. That is the whole safety story: a forgotten or
  * failed measurement degrades to the only configuration ever validated on
- * hardware, and {@code ProbeMidlet} and {@code CryptoMidlet} - which never call
- * {@code init} - behave exactly as they did.
+ * hardware, and {@code ProbeMidlet} - which never calls {@code init} - behaves
+ * exactly as it did.
  *
  * <h3>Never larger than the reference</h3>
  * A measured ceiling above {@link #REFERENCE_HEAP} produces the reference values

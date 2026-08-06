@@ -12,11 +12,18 @@ GitHub issue. That works for one number and fails for a crash tail.
 
 ## The probe
 
-`probe.jar` is the first thing to put on an unknown handset. About 110 KB,
-installs in seconds, and deliberately contains **no crypto and no Telegram
-code** — so it answers "what is this device" without any of the client's own
-behaviour mixed in, and ProGuard can shrink it to something quick to reinstall
-over and over.
+`probe.jar` is the one thing to put on an unknown handset before the client.
+About 172 KB, and it contains everything a device session needs to measure:
+the platform, the crypto stack's own vectors and timings, and the entropy the
+seeding rests on. It does not contain the client, so it still answers "what is
+this device" without the messenger's behaviour mixed in.
+
+It used to be about 110 KB with no crypto at all, and the vectors and benchmarks
+were a second `crypto.jar` installed afterwards. Two installs, two menus and two
+sets of uploads per session — while the figures that have to be read together
+sat on either side of the split. One suite is worth the extra 60 KB; the cost is
+that the lowest rungs of `tools/build-size-ladder.ps1` are out of reach, so a
+handset with a 64 KiB install cap needs an older probe release to measure.
 
 ```
 ./tools/build.ps1 -Target probe
@@ -28,6 +35,10 @@ over and over.
 | Heap probe | the real ceiling — allocate until the VM refuses, plus the largest single block. The messenger runs a coarser version of the same probe on its first launch; see [architecture.md](architecture.md#memory-discipline) |
 | RMS test | record store limits, whether a record reads back identical, whether it survives exit |
 | Entropy measure | clock granularity, jitter, `hashCode` and heap readings; the RNG seeding evidence |
+| Seeding barrier | runs the real auth-key barrier and reports how many gathers **this** handset needs, and what that costs in ms |
+| Crypto vectors | whether the FIPS and OpenSSL vectors still hold after this toolchain compiled, preverified and shrank the code |
+| Crypto benchmarks | SHA-256, AES-IGE and — the number the project's viability rests on — a 2048-bit modular exponentiation |
+| PBKDF2 x100000 | Telegram's cloud-password KDF at its real iteration count. Minutes, cancellable, and deliberately outside **Upload all** |
 | Clock & timers | the clock's tick, whether `Thread.sleep` is a lower bound, and whether the wall clock ever jumps or runs backwards |
 | Text round trip | where non-ASCII text stops surviving — `Utf8`, the platform conversion, RMS, or the upload path |
 | Display caps / Display size | colours, font metrics, and the canvas the AMS actually hands over, with and without full-screen mode |
@@ -39,7 +50,7 @@ over and over.
 | Emoji sheet cost | what holding the emoji sprite sheet actually costs in heap |
 | Background socket | whether a socket survives `pauseApp`/`startApp` |
 | Diagnostic log / Crash log | the ring buffer and any recorded crash |
-| **Upload all** | runs every non-interactive item above and uploads each result |
+| **Upload all** | runs every non-interactive item above and uploads each result. PBKDF2 is excluded: four and a half minutes on the slowest handset measured |
 
 Most of those exist because a device disagreed with an assumption. **Emoji sheet
 cost** was added to test a theory that the sprite sheet was exhausting a small
@@ -60,15 +71,15 @@ suite, so `probe.jar`'s RMS results say nothing about `tg.jar`'s. It reports the
 cross-launch persistence marker, the size of each store, and whether the key
 store has had a write fail.
 
-`crypto.jar` is the second install, once the probe has shown the phone runs
-these JARs at all. It carries the whole crypto stack and answers whether the
-FIPS and OpenSSL vectors still hold after this toolchain compiled, preverified
-and shrank the code — and how long a 2048-bit modular exponentiation takes,
-which is the cost of an `auth_key` handshake and the number the project's
-viability rests on.
+The three entropy items are meant to be read in order and are contiguous in the
+sweep for that reason: **Entropy measure** says what one `gather()` is worth on
+this clock, **Seeding barrier** says how many of them an auth_key therefore
+costs here, and the entropy log says whether a cold boot has ever reproduced a
+seed. The middle one is not a simulation — it runs `tg.crypto.AuthKeySeeding`
+against a throwaway pool, so its gather count is the count a real sign-in on
+this handset would pay.
 
-Results from both are written up per device under
-[`hardware/`](hardware/).
+Results are written up per device under [`hardware/`](hardware/).
 
 ## What it is not
 
@@ -151,14 +162,16 @@ The messenger build also accepts a destination typed into
 ## Using it
 
 **Probe** gains **Upload** on every result screen and **Upload all**, which runs
-Platform, Heap probe, RMS, Image decode, Emoji sheet, Entropy log, Diagnostic
-log and Crash log in that order and uploads each as it completes. Platform and
-heap go first on purpose: every other figure is read against them, and the
-handset may not survive the sweep.
+Platform, Heap probe, RMS, Clock, Text, Display, Image decode, Emoji sheet,
+Crypto vectors, Crypto benchmarks, Entropy measure, Seeding barrier, Entropy
+log, Diagnostic log and Crash log in that order and uploads each as it
+completes. Platform and heap go first on purpose: every other figure is read
+against them, and the handset may not survive the sweep. Allow several minutes -
+the benchmark and the entropy probe are most of it.
 
-**Crypto** gains **Upload** on the vectors, benchmark and PBKDF2 results. The
-number worth carrying off is the 2048-bit modPow timing - it is what an
-`auth_key` handshake costs.
+The two numbers worth carrying off a new handset are the 2048-bit modPow timing,
+which is what an `auth_key` handshake costs, and the gather count the seeding
+barrier chose, which is what precedes it.
 
 **The messenger** gains **Crash log**, which it never had. It has always written
 `tgcrash` and never read it, and `ProbeMidlet` cannot help: MIDP scopes record
@@ -191,7 +204,7 @@ text, contact names or key material.
 | `tools/ingest-server.py` | the collector; stdlib only, no dependencies |
 | `src/tg/plat/Report.java` | header, redaction, chunking |
 | `src/tg/plat/HttpReportSink.java` | upload over `tg.io.HttpExecutor` |
-| `src/tg/plat/ReportUpload.java` | worker thread and progress, shared by all three MIDlets |
+| `src/tg/plat/ReportUpload.java` | worker thread and progress, shared by both MIDlets |
 | `src/tg/plat/TcpLogSink.java` | the pre-existing line-protocol sink |
 
 MIDP's `HttpConnection` has no timeout control, so an upload can block for as

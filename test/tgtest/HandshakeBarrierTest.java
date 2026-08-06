@@ -57,6 +57,16 @@ public final class HandshakeBarrierTest implements Test
         Assert.equal("exactly one barrier for one new key",
                 before + 1, AuthKeySeeding.completedBarriers());
         Assert.equal("the barrier ran before req_pq_multi", 1, link.sends);
+
+        // The count is chosen from what this runtime's clock yielded, so there is
+        // no fixed number to assert - only that it sized itself within its own
+        // bounds and credited what it claims.
+        AuthKeySeeding.Outcome o = AuthKeySeeding.lastOutcome();
+        Assert.isTrue("the barrier published an outcome", o != null);
+        Assert.isTrue("sized within its bounds: " + o.describe(),
+                o.gathers >= AuthKeySeeding.MIN_GATHERS
+                        && o.gathers <= AuthKeySeeding.MAX_GATHERS);
+        Assert.isTrue("credited something: " + o.describe(), o.bits > 0);
         client.close();
     }
 
