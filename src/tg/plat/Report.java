@@ -1,6 +1,7 @@
 package tg.plat;
 
 import tg.app.BuildInfo;
+import tg.crypto.AuthKeySeeding;
 import tg.diag.Diag;
 
 /**
@@ -92,6 +93,20 @@ public final class Report
         // the clock across a power cycle, which is itself one of the things the
         // probe measures. The collector stamps arrival time.
         sb.append("uptimeMs=").append(System.currentTimeMillis()).append('\n');
+
+        // The seeding barrier sizes itself from what this handset's clock
+        // actually yields, so the count it chose is a measurement of the device -
+        // and on a phone nobody has profiled it is the only one that comes back
+        // without running the probe at all. Counts only; no pool state exists
+        // outside AuthKeySeeding to leak here.
+        AuthKeySeeding.Outcome seeding = AuthKeySeeding.lastOutcome();
+        if (seeding != null)
+        {
+            sb.append("seedingBarrier=").append(seeding.describe());
+            if (seeding.shortOfTarget) { sb.append(" SHORT"); }
+            sb.append(" barriers=").append(AuthKeySeeding.completedBarriers());
+            sb.append('\n');
+        }
 
         sb.append("--- ").append(section == null ? "body" : section).append(" ---\n");
 

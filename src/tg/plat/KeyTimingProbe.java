@@ -2,6 +2,9 @@ package tg.plat;
 
 import java.util.Vector;
 
+import tg.crypto.IntHistogram;
+import tg.crypto.MinEntropy;
+
 /**
  * Min-entropy of key-press timing.
  *

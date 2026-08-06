@@ -1,11 +1,11 @@
 package tgtest;
 
 import tg.crypto.Entropy;
+import tg.crypto.IntHistogram;
+import tg.crypto.MinEntropy;
 import tg.crypto.Rng;
 import tg.plat.EntropyProbe;
-import tg.plat.IntHistogram;
 import tg.plat.KeyTimingProbe;
-import tg.plat.MinEntropy;
 
 /**
  * The measurement machinery behind the on-device entropy probe.
@@ -54,6 +54,7 @@ public final class EntropyTest implements Test
         independentInputIsNotFlagged();
         entropyGathers();
         jitterSinkObserves();
+        gatherReportsTheSamplesItFoldedIn();
         jitterDoesNotHangOnEmptyWindow();
         userInputVaries();
         estimateStaysHonest();
@@ -507,6 +508,36 @@ public final class EntropyTest implements Test
     }
 
     /**
+     * The overload the seeding barrier sizes itself from.
+     *
+     * Its value rests entirely on the samples being the ones that went into the
+     * digest returned - not a second, similar measurement. If observing changed
+     * the window, or the sink saw nothing while the digest saw samples, the
+     * barrier would be counting bits that are not in the pool.
+     */
+    private void gatherReportsTheSamplesItFoldedIn()
+    {
+        final int[] count = new int[1];
+        byte[] observed = Entropy.gather(new Entropy.JitterSink()
+        {
+            public void sample(long spins, long nowMillis) { count[0]++; }
+        });
+
+        Assert.equal("observed gather is still a digest", 32, observed.length);
+        Assert.isTrue("the sink saw the window's samples", count[0] >= 1);
+
+        byte[] plain = Entropy.gather();
+        Assert.equal("the no-sink overload still works", 32, plain.length);
+        Assert.isTrue("observing does not make two gathers agree",
+                !sameBytes(observed, plain));
+
+        // The window is public so nothing has to hardcode 120 to reason about
+        // the sample count a handset will get out of one gather.
+        Assert.isTrue("the jitter window is a positive number of ms",
+                Entropy.jitterWindowMillis() > 0);
+    }
+
+    /**
      * A zero or negative window must return immediately. The same guard is what
      * stops a handset with a stopped clock from hanging inside {@code Rng()},
      * which no desktop run can reproduce but every caller depends on.
@@ -549,6 +580,10 @@ public final class EntropyTest implements Test
      * visibly short of the 256 bits a DH secret needs, because the moment this
      * number reaches that, every caller's reason to fold in more entropy
      * quietly disappears.
+     *
+     * Nothing sizes itself from this figure any more - the barrier measures its
+     * own yield - and {@code tgtest.SourceGuardTest} is what holds that. This
+     * stays because the on-device reports quote it.
      */
     private void estimateStaysHonest()
     {

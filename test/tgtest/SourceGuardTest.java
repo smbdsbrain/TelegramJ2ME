@@ -19,22 +19,38 @@ import java.util.List;
  *
  * The one legitimate use inside src/ is the on-device crypto self-test, which
  * needs reproducibility and never negotiates anything.
+ *
+ * The second rule is newer and has the same shape.
+ * {@code Entropy.estimatedBitsPerGather()} is one handset's measured figure, and
+ * it used to divide into 256 to give the seeding barrier a gather count. Three
+ * handsets showed that a per-device yield cannot be a compiled-in constant, so
+ * the barrier measures its own instead (issue #2). The number survives because
+ * the on-device reports quote it, and the failure mode is that some later
+ * seeding path starts multiplying by it again - which nothing at runtime can
+ * notice, because the result would look entirely reasonable.
  */
 public final class SourceGuardTest implements Test
 {
     /**
-     * The call form, not the name.
+     * The call forms, not the names.
      *
-     * Production code is allowed to talk <em>about</em> the deterministic
-     * factory - Handshake's refusal message names it, and a comment that
-     * explains the rule should not trip it. What is forbidden is invoking it.
+     * Production code is allowed to talk <em>about</em> either - Handshake's
+     * refusal message names {@code forTesting}, and the comments that explain
+     * these rules should not trip them. What is forbidden is invoking them, so
+     * prose that means the method rather than the call writes the name without
+     * its parentheses.
      */
-    private static final String FORBIDDEN_CALL = "Rng.forTesting(";
-
-    /** Paths allowed to call it, repo-relative. */
-    private static final String[] ALLOWED = {
-        "src/tg/crypto/Rng.java",           // the declaration itself
-        "src/tg/crypto/SelfTest.java"       // reproducible vectors, no traffic
+    private static final String[][] RULES = {
+        {
+            "Rng.forTesting(",
+            "src/tg/crypto/Rng.java",           // the declaration itself
+            "src/tg/crypto/SelfTest.java"       // reproducible vectors, no traffic
+        },
+        {
+            "estimatedBitsPerGather(",
+            "src/tg/crypto/Entropy.java",       // the declaration itself
+            "src/tg/app/CryptoMidlet.java"      // prints it in a report
+        }
     };
 
     public String name() { return "src/source-guard"; }
@@ -53,35 +69,52 @@ public final class SourceGuardTest implements Test
         Assert.isTrue("found device sources, got " + sources.size(),
                 sources.size() > 100);
 
+        for (int r = 0; r < RULES.length; r++)
+        {
+            check(RULES[r], sources);
+        }
+    }
+
+    private void check(String[] rule, List sources) throws IOException
+    {
+        String call = rule[0];
+
         List offenders = new ArrayList();
         for (int i = 0; i < sources.size(); i++)
         {
             File f = (File) sources.get(i);
             String path = relative(f);
-            if (allowed(path)) { continue; }
-            if (read(f).indexOf(FORBIDDEN_CALL) >= 0) { offenders.add(path); }
+            if (allowed(rule, path)) { continue; }
+            if (read(f).indexOf(call) >= 0) { offenders.add(path); }
         }
 
-        Assert.isTrue(FORBIDDEN_CALL
-                + " must stay out of production paths; found in " + offenders,
-                offenders.isEmpty());
+        Assert.isTrue(call + " must stay out of production paths; found in "
+                + offenders, offenders.isEmpty());
 
         // The allow-list is only meaningful while its entries still exist and
         // still contain what it excuses them for.
-        for (int i = 0; i < ALLOWED.length; i++)
+        for (int i = 1; i < rule.length; i++)
         {
-            File f = new File(ALLOWED[i]);
-            Assert.isTrue("allow-listed file is missing: " + ALLOWED[i], f.isFile());
+            File f = new File(rule[i]);
+            Assert.isTrue("allow-listed file is missing: " + rule[i], f.isFile());
             Assert.isTrue("allow-list entry no longer needs an exemption: "
-                    + ALLOWED[i], read(f).indexOf("forTesting") >= 0);
+                    + rule[i], read(f).indexOf(bareName(call)) >= 0);
         }
     }
 
-    private static boolean allowed(String path)
+    /** "Rng.forTesting(" -> "forTesting"; the name a file must still mention. */
+    private static String bareName(String call)
     {
-        for (int i = 0; i < ALLOWED.length; i++)
+        String name = call.substring(0, call.length() - 1);
+        int dot = name.lastIndexOf('.');
+        return dot < 0 ? name : name.substring(dot + 1);
+    }
+
+    private static boolean allowed(String[] rule, String path)
+    {
+        for (int i = 1; i < rule.length; i++)
         {
-            if (ALLOWED[i].equals(path)) { return true; }
+            if (rule[i].equals(path)) { return true; }
         }
         return false;
     }

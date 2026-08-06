@@ -30,8 +30,10 @@ import tg.tl.TlWriter;
  * completes and a key that proves nothing - which is worse than failing.
  *
  * <h3>Cost</h3>
- * The {@link AuthKeySeeding} barrier - about 600 ms of blocking on the handset
- * measured - plus two 2048-bit modular exponentiations (g^b and g_a^b) plus one
+ * The {@link AuthKeySeeding} barrier - which sizes itself to the handset's clock
+ * and took between 0.4 and 3.5 seconds on the three measured, against handshakes
+ * of 19 to 25 seconds on the same devices - plus two 2048-bit modular
+ * exponentiations (g^b and g_a^b) plus one
  * RSA exponentiation plus the pq factorisation. On the desktop this is
  * milliseconds; on a 208 MHz handset expect seconds to tens of seconds. That is
  * acceptable precisely because the result is persisted and never regenerated -
@@ -54,6 +56,12 @@ public final class Handshake
         public long elapsedMillis;
         /** Time spent in {@link AuthKeySeeding} before the exchange started. */
         public long entropyMillis;
+        /** Gathers the barrier sized itself to on this device. */
+        public int entropyGathers;
+        /** Min-entropy bits the barrier credited, against its 256-bit target. */
+        public int entropyBits;
+        /** True when the barrier hit a cap before reaching its target. */
+        public boolean entropyShort;
         public boolean usedKnownGoodPrime;
     }
 
@@ -100,10 +108,11 @@ public final class Handshake
             throw new IOException("refusing to generate an auth_key from a "
                     + "deterministic RNG - Rng.forTesting must not reach Telegram");
         }
+        AuthKeySeeding.Outcome seeding;
         try
         {
-            result.entropyMillis =
-                    AuthKeySeeding.strengthen(rng, dcId, testEnvironment, media);
+            seeding = AuthKeySeeding.strengthen(rng, dcId, testEnvironment, media,
+                    new BarrierProgress());
         }
         catch (IllegalStateException e)
         {
@@ -111,8 +120,21 @@ public final class Handshake
             // crash: the route loop above us gets to report it like any other.
             throw new IOException("auth-key seeding failed: " + e.getMessage());
         }
-        Diag.info("auth-key entropy barrier: " + AuthKeySeeding.GATHERS
-                  + " gathers in " + result.entropyMillis + " ms");
+        result.entropyMillis = seeding.millis;
+        result.entropyGathers = seeding.gathers;
+        result.entropyBits = seeding.bits;
+        result.entropyShort = seeding.shortOfTarget;
+        if (seeding.shortOfTarget)
+        {
+            // Not a refusal - see AuthKeySeeding on why a slow clock is not a
+            // dead one - but the one line in the log that says this key rests on
+            // less than the project's own target.
+            Diag.warn("auth-key entropy barrier SHORT: " + seeding.describe());
+        }
+        else
+        {
+            Diag.info("auth-key entropy barrier: " + seeding.describe());
+        }
 
         long t0 = System.currentTimeMillis();
         ResPq res = reqPq();
@@ -127,6 +149,36 @@ public final class Handshake
         Diag.info("handshake complete in " + result.elapsedMillis + " ms, "
                   + result.authKey.describe());
         return result;
+    }
+
+    /**
+     * Narrates a barrier that can now run for seconds.
+     *
+     * Throttled, and to the log rather than to a screen. The barrier already runs
+     * on the connect worker, so nothing here is about keeping a UI thread alive -
+     * it is so that a handset which turns out to need forty gathers leaves
+     * evidence of the wait instead of looking like a stall before the first
+     * packet. One line a second is enough to read afterwards and cheap enough not
+     * to matter beside the gathering itself.
+     */
+    private static final class BarrierProgress implements AuthKeySeeding.Progress
+    {
+        private long nextLine;
+
+        public void update(int gathers, int bits, int targetBits)
+        {
+            long now = System.currentTimeMillis();
+            if (now < nextLine) { return; }
+            // Not on the first round: on a fast clock the whole barrier is over
+            // before a second has passed, and a "seeding 1/256" line ahead of the
+            // completion line is noise.
+            if (nextLine != 0)
+            {
+                Diag.info("auth-key entropy barrier: " + gathers + " gathers, "
+                          + bits + "/" + targetBits + " bits so far");
+            }
+            nextLine = now + 1000;
+        }
     }
 
     // ---------------------------------------------------------------- step 1-2

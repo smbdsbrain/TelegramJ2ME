@@ -3,6 +3,8 @@ package tg.plat;
 import java.util.Vector;
 
 import tg.crypto.Entropy;
+import tg.crypto.IntHistogram;
+import tg.crypto.MinEntropy;
 import tg.diag.Diag;
 
 /**
@@ -11,16 +13,19 @@ import tg.diag.Diag;
  * <h3>Why this exists</h3>
  * {@code Entropy.gather()} returns a SHA-256 digest, so every raw quantity it
  * folds in - spin counts, hash codes, heap readings - is unobservable from
- * outside. The consequence is recorded in the project's own documentation: the
- * seeding "has not been verified on hardware", and
- * {@code Entropy.estimatedBitsPerGather()} returns 0 because claiming a number
- * would be dishonest. A previous run of {@code CryptoMidlet}'s entropy screen on
- * a physical handset produced "no obvious repetition; raw values not recorded",
- * which is not a measurement.
+ * outside. Before this class the project's own documentation said the seeding
+ * "has not been verified on hardware", and an entropy screen that reported "no
+ * obvious repetition; raw values not recorded" was the closest thing to
+ * evidence, which is not a measurement.
  *
  * This class produces the numbers instead, on the device, with no network
  * involved: results are computed here and displayed, because the handsets this
- * targets have no WiFi and metered GPRS.
+ * targets have no WiFi and metered GPRS. Three of them have been measured this
+ * way, and what they showed - that a gather is worth 21 bits on one and 165 on
+ * another - is why {@code tg.crypto.AuthKeySeeding} sizes itself at run time
+ * through {@link tg.crypto.JitterYield} instead of dividing a constant into 256.
+ * The arithmetic below and the arithmetic in the barrier are the same classes,
+ * so a report and a client cannot disagree about what a handset is worth.
  *
  * <h3>The five questions</h3>
  * <ol>
@@ -466,16 +471,14 @@ public final class EntropyProbe
     /**
      * How many jitter samples one {@code gather()} actually collects.
      *
-     * Measured rather than derived, because {@code Entropy}'s sampling window is
-     * private and a figure computed from the tick would drift the moment that
-     * constant changed. This costs one real jitter window.
+     * Measured rather than derived: a figure computed from the tick would be a
+     * model of the sampling loop, and the point of every number in this class is
+     * that it comes from the loop itself. This costs one real jitter window.
      */
     private static int measureSamplesPerGather()
     {
         CountingSink counter = new CountingSink();
-        // Same window Entropy.gather() uses; it is private there, so the honest
-        // way to learn the sample count is to run the real thing and count.
-        Entropy.collectJitter(120, counter);
+        Entropy.collectJitter(Entropy.jitterWindowMillis(), counter);
         return counter.count;
     }
 

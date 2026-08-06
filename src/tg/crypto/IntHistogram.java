@@ -1,4 +1,4 @@
-package tg.plat;
+package tg.crypto;
 
 /**
  * Fixed-capacity frequency table for int samples.

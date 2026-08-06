@@ -28,6 +28,7 @@ public final class AllTests
             new AesIgeTest(),
             new RngTest(),
             new EntropyTest(),
+            new JitterYieldTest(),
             new AuthKeySeedingTest(),
             new BigIntTest(),
             new TlTest(),
