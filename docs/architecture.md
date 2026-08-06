@@ -361,9 +361,9 @@ RPC errors remain visible until the user retries or deletes them.
 
   | Handset | tick | samples | bits/sample | bits/gather | gathers the barrier takes |
   |---|---|---|---|---|---|
-  | Alcatel OT-810D | 4 ms | 26 | 2.250 | 58 | ~10, about 1.3 s |
-  | Samsung GT-C3592 | 12 ms | 10 | 2.125 | 21 | ~26, about 3.4 s |
-  | Nokia C3-00 | 1 ms | 120 | 1.125–1.375 | 135–165 | ~3, about 0.4 s |
+  | Alcatel OT-810D | 4 ms | 26 | 2.250 | 58 | ~10, about 1.3 s (projected) |
+  | Samsung GT-C3592 | 12 ms | 10 | 2.125 | 21 | ~26, about 3.4 s (projected) |
+  | Nokia C3-00 | 1 ms | 120 | 1.125–1.375 | 135–165 | **3, 394–526 ms (measured)** |
 
   Full figures per device under [docs/hardware/](hardware/). A constant sized
   from any one of them was wrong on the other two in opposite directions —
@@ -399,10 +399,12 @@ RPC errors remain visible until the user retries or deletes them.
 * **The barrier costs the same on a handset as on a desktop, per gather.**
   Measured at 713 ms for five gathers on the GT-C3592 against 674 ms on a desktop
   JVM, because `collectJitter` spends a fixed wall-clock budget rather than doing
-  work. Everything around it does not: the two 2048-bit modular exponentiations
-  in the same handshake took 19 521 ms there. Sized against its own clock that
-  handset now takes ~26 gathers, about **7.7%** of the exchange it precedes,
-  where the Nokia C3-00 pays ~1.3% — and it is paid once per key: a later relaunch of the client on that handset loaded the
+  work. Everything around it does not. On the Nokia C3-00, where the sizing has
+  been measured end to end, a production sign-in spent **409 ms on seeding inside
+  a 34 544 ms handshake — 1.2%** — of which 10 288 ms went to the pq
+  factorisation and 21 837 ms to the two modular exponentiations. The GT-C3592,
+  sized against its own clock, is projected at ~26 gathers or about 7.7% of its
+  exchange. And it is paid once per key: a later relaunch of the client on that handset loaded the
   same key out of RMS and connected in 8847 ms with no barrier at all, against
   31 627 ms for the launch that generated it.
 * **The wall clock contributes nothing across cold boots on that handset.** It
