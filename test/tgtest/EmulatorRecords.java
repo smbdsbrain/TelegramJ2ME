@@ -3,6 +3,9 @@ package tgtest;
 import java.io.File;
 import java.io.InputStream;
 
+import javax.microedition.rms.RecordStore;
+import javax.microedition.rms.RecordStoreException;
+
 import org.microemu.MIDletBridge;
 import org.microemu.MIDletContext;
 import org.microemu.MicroEmulator;
@@ -10,6 +13,8 @@ import org.microemu.RecordStoreManager;
 import org.microemu.app.Config;
 import org.microemu.app.launcher.Launcher;
 import org.microemu.app.util.FileRecordStoreManager;
+import org.microemu.util.ExtendedRecordListener;
+import org.microemu.util.RecordStoreImpl;
 
 /**
  * A working {@code javax.microedition.rms.RecordStore} for a headless run.
@@ -31,6 +36,9 @@ import org.microemu.app.util.FileRecordStoreManager;
  */
 public final class EmulatorRecords
 {
+    /** The working emulator displaced by {@link #installUnreadable}. */
+    private static MicroEmulator displaced;
+
     private EmulatorRecords() { }
 
     /** Register the record store, once per JVM. */
@@ -38,7 +46,37 @@ public final class EmulatorRecords
     {
         if (MIDletBridge.getMicroEmulator() == null)
         {
-            MIDletBridge.setMicroEmulator(new Emulator());
+            MIDletBridge.setMicroEmulator(new Emulator(new SuiteRecords()));
+        }
+    }
+
+    /**
+     * Swap in a record store that refuses to open, until {@link #restore}.
+     *
+     * A handset whose RMS cannot be read is not a handset with no data, and the
+     * store has to say which one it is looking at. Nothing in the client can
+     * produce that state on demand - {@code RecordStore}'s static methods reach
+     * the manager through {@code MIDletBridge}, and the manager is what a test
+     * can replace. Replacing it here rather than adding an indirection to
+     * {@code tg.plat} keeps the injection out of the JAR entirely.
+     *
+     * Always pair with {@link #restore} in a finally block: the suites share one
+     * JVM, and a store left broken fails every later test for the wrong reason.
+     */
+    public static void installUnreadable()
+    {
+        install();
+        if (displaced == null) { displaced = MIDletBridge.getMicroEmulator(); }
+        MIDletBridge.setMicroEmulator(new Emulator(new Unreadable()));
+    }
+
+    /** Put the working record store back. Safe to call when nothing is broken. */
+    public static void restore()
+    {
+        if (displaced != null)
+        {
+            MIDletBridge.setMicroEmulator(displaced);
+            displaced = null;
         }
     }
 
@@ -70,6 +108,41 @@ public final class EmulatorRecords
     }
 
     /**
+     * A record store that fails at the door.
+     *
+     * Only {@code openRecordStore} needs to throw to reproduce an unreadable
+     * store: every caller in the client opens before it reads or writes.
+     */
+    private static final class Unreadable implements RecordStoreManager
+    {
+        public String getName() { return "unreadable"; }
+
+        public RecordStore openRecordStore(String name, boolean create)
+                throws RecordStoreException
+        {
+            throw new RecordStoreException("injected RMS failure");
+        }
+
+        public void deleteRecordStore(String name) throws RecordStoreException
+        {
+            throw new RecordStoreException("injected RMS failure");
+        }
+
+        public void saveChanges(RecordStoreImpl store)
+                throws RecordStoreException
+        {
+            throw new RecordStoreException("injected RMS failure");
+        }
+
+        public String[] listRecordStores() { return new String[0]; }
+        public int getSizeAvailable(RecordStoreImpl store) { return 0; }
+        public void init(MicroEmulator emulator) { }
+        public void deleteStores() { }
+        public void setRecordListener(ExtendedRecordListener listener) { }
+        public void fireRecordStoreListener(int type, String name) { }
+    }
+
+    /**
      * The eight methods MIDletBridge needs before RecordStore will work.
      *
      * getLauncher() stays null: nothing reaches it once getSuiteFolder is
@@ -77,10 +150,11 @@ public final class EmulatorRecords
      */
     private static final class Emulator implements MicroEmulator
     {
-        private final RecordStoreManager records = new SuiteRecords();
+        private final RecordStoreManager records;
 
-        Emulator()
+        Emulator(RecordStoreManager records)
         {
+            this.records = records;
             records.init(this);
         }
 

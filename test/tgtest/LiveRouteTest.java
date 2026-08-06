@@ -6,6 +6,7 @@ import tg.io.ObfuscatedTransport;
 import tg.io.Transport;
 import tg.mt.AbridgedLink;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.Dc;
 import tg.mt.HttpLink;
 import tg.mt.IntermediateLink;
@@ -97,10 +98,13 @@ public final class LiveRouteTest
             // handshake is the only way to exercise the unencrypted ones, and
             // is worth an env switch rather than moving the secrets file.
             boolean forceHandshake = System.getenv("TG_FORCE_HANDSHAKE") != null;
-            AuthKey key = forceHandshake ? null : store.load(dc, Dc.isTest());
+            AuthKeyLoad stored = forceHandshake ? AuthKeyLoad.notFound()
+                    : store.load(dc, Dc.isTest());
+            AuthKey key = stored.key;
             if (key == null)
             {
-                System.out.println("no stored key; running auth_key handshake");
+                System.out.println(stored.describe()
+                                   + "; running auth_key handshake");
                 key = client.authenticate();
                 // A forced handshake is a throwaway probe; persisting it would
                 // discard the session the store already holds.

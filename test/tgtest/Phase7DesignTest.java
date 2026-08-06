@@ -382,7 +382,10 @@ public final class Phase7DesignTest implements Test
     private static final class MemoryStore implements AuthKeyStore
     {
         private final java.util.Hashtable values = new java.util.Hashtable();
-        public AuthKey load(int dcId, boolean test) { return null; }
+        public tg.mt.AuthKeyLoad load(int dcId, boolean test)
+        {
+            return tg.mt.AuthKeyLoad.notFound();
+        }
         public void save(AuthKey key) { }
         public void clear(int dcId, boolean test) { }
         public String loadString(String name)

@@ -3,6 +3,7 @@ package tgtest;
 import tg.crypto.Rng;
 import tg.diag.Diag;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.Dc;
 import tg.mt.Layer;
 import tg.mt.MtClient;
@@ -47,15 +48,16 @@ public final class LiveConfigTest
         {
             client.connect(dcId);
 
-            AuthKey stored = store.load(dcId, test);
-            if (stored != null)
+            AuthKeyLoad stored = store.load(dcId, test);
+            if (stored.isFound())
             {
-                System.out.println("reusing stored " + stored.describe());
-                client.resume(stored, 0);
+                System.out.println("reusing stored " + stored.key.describe());
+                client.resume(stored.key, 0);
             }
             else
             {
-                System.out.println("no stored key, running the handshake...");
+                System.out.println(stored.describe()
+                                   + ", running the handshake...");
                 AuthKey fresh = client.authenticate();
                 store.save(fresh);
                 System.out.println("generated and stored " + fresh.describe());

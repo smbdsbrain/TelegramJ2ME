@@ -7,6 +7,7 @@ import tg.api.AuthCheck;
 import tg.api.Telegram;
 import tg.crypto.Rng;
 import tg.mt.AuthKey;
+import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 
 /**
@@ -73,7 +74,7 @@ public final class AuthCheckTest implements Test
         Assert.equal("the signed-in flag is not cleared", "1",
                 store.loadString("authorized"));
         Assert.isTrue("the stored key is not discarded",
-                store.load(2, false) != null);
+                store.load(2, false).isFound());
         Assert.isFalse("the client does not claim to be authorized",
                 tg.isAuthorized());
     }
@@ -147,9 +148,11 @@ public final class AuthCheckTest implements Test
         private final Hashtable values = new Hashtable();
         private final Hashtable keys = new Hashtable();
 
-        public AuthKey load(int dcId, boolean test)
+        public AuthKeyLoad load(int dcId, boolean test)
         {
-            return (AuthKey) keys.get(name(dcId, test));
+            AuthKey key = (AuthKey) keys.get(name(dcId, test));
+            return key == null ? AuthKeyLoad.notFound()
+                    : AuthKeyLoad.found(key);
         }
 
         public void save(AuthKey key)
