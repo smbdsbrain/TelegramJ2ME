@@ -65,7 +65,7 @@ $ErrorActionPreference = "Stop"
 # Single source of truth for the released version. .github/workflows/release.yml
 # reads this line and refuses to publish if it disagrees with the git tag, so a
 # mistyped tag cannot ship a JAD whose MIDlet-Version is wrong.
-$AppVersion = "0.7.1"
+$AppVersion = "0.8.0"
 $AppVendor  = "smbdsbrain"
 
 $MidletClass = @{

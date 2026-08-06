@@ -183,16 +183,24 @@ jobs:
 
             Verify downloads against `SHA256SUMS.txt`.
 
-            > **This has run on exactly one physical handset**, where signing in, the
-            > dialog list and sending a message all work. One device on one network
-            > proves nothing about yours: compatibility, performance and permission
+            > **This has run on three physical handsets** — an Alcatel OT-810D, a
+            > Samsung GT-C3592 and a Nokia C3-00 — where signing in, the dialog list
+            > and sending a message all work. Three devices on a handful of networks
+            > prove nothing about yours: compatibility, performance and permission
             > behaviour elsewhere are still unknown, so reports are genuinely useful —
             > especially your handset model and what `TelegramJ2ME Probe` shows.
+            > Per-device measurements are written up under `docs/hardware/`.
             >
             > If the direct routes are refused with `Target port denied to untrusted
             > applications`, that is the handset's policy for unsigned MIDlets on ports
             > 80 and 443, not a bug. Other ports may still be allowed, so configuring an
             > MTProxy in Settings before the first connection attempt is worth trying.
+            >
+            > **Set the phone's clock before connecting through an MTProxy.** A FakeTLS
+            > proxy secret embeds the client's time in its handshake, so a wrong clock
+            > is refused by the proxy and surfaces as an opaque TLS alert. One of the
+            > three handsets resets its clock to 2011 on every power cycle, which is
+            > how this was found.
 
             TelegramJ2ME is an independent project. It is not affiliated with or
             endorsed by Telegram, and it is not a security-audited everyday client.
