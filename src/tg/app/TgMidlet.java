@@ -727,7 +727,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                      + ConnectionConfig.name(connectionConfig.mode) + "...\n\n"
                      + "The first run generates an encryption key, which takes "
                      + "a while on this hardware.");
-            connectAndCheck();
+            if (!connectAndCheck())
+            {
+                showRefused("Not connected", "Try Connect again in a moment.");
+            }
         }
         else if (c == cmdNext)
         {
@@ -1027,9 +1030,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         resetRoot(form);
     }
 
-    private void connectAndCheck()
+    /**
+     * @return false when the worker was busy and nothing was started. The two
+     *         callers recover differently, so the answer is handed to them
+     *         rather than dealt with here.
+     */
+    private boolean connectAndCheck()
     {
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "connect"; }
 
@@ -1085,6 +1093,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
+        return submitted;
     }
 
     private void showPhoneBox()
@@ -1112,7 +1121,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         showBusy("Sign in", "Requesting a code for " + phoneNumber + "...");
 
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.sendCode"; }
 
@@ -1133,6 +1142,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showRetryableError("Could not request a code", error);
             }
         });
+        // Back to the number they typed, which is untouched: nothing was sent,
+        // so nothing about the login flow has moved.
+        if (!submitted)
+        {
+            showRefused("No code requested", "Press Next again in a moment.");
+        }
     }
 
     private void showCodeBox()
@@ -1169,7 +1184,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         showBusy("Sign in", "Signing in...");
 
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.signIn"; }
 
@@ -1196,12 +1211,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Sign-in failed", error, codeBox);
             }
         });
+        // The code is still in the box and still valid - it was never sent.
+        if (!submitted)
+        {
+            showRefused("Not signed in", "Press Sign in again in a moment.",
+                    codeBox);
+        }
     }
 
     private void resendCode()
     {
         showBusy("Sign in", "Requesting another code...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.resendCode"; }
 
@@ -1222,6 +1243,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Could not resend code", error, codeBox);
             }
         });
+        // No second code was asked for, so the first one is still the live one.
+        if (!submitted)
+        {
+            showRefused("No code resent", "Try Resend code again in a moment.",
+                    codeBox);
+        }
     }
 
     private void changeNumber()
@@ -1236,7 +1263,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Sign in", "Cancelling the code for " + oldPhone + "...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.cancelCode"; }
 
@@ -1257,12 +1284,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showPhoneBox();
             }
         });
+        if (!submitted)
+        {
+            // No alert. What the user asked for is the local half - get me back
+            // to the number - and that happens either way; it is what the
+            // failure branch above already does for the same reason. Only the
+            // courtesy cancellation of the old code is lost, and it expires.
+            Diag.warn("old login code not cancelled: worker busy with "
+                    + worker.busyWith());
+            showPhoneBox();
+        }
     }
 
     private void requestPasswordHint()
     {
         showBusy("Two-step verification", "Loading password parameters...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "account.getPassword"; }
 
@@ -1282,6 +1319,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Could not load 2FA", error, codeBox);
             }
         });
+        if (!submitted)
+        {
+            // Reached from the sign-in failure callback, so the code box is
+            // where the user was and pressing Sign in there comes straight back
+            // here with the same SESSION_PASSWORD_NEEDED.
+            showRefused("2FA not loaded", "Press Sign in again in a moment.",
+                    codeBox);
+        }
     }
 
     private void showPasswordBox(String hint)
@@ -1305,12 +1350,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             showAlert("Enter the password first.", AlertType.WARNING, passwordBox);
             return;
         }
-        passwordBox.setString("");
         showBusy("Two-step verification",
                  "Checking the password locally.\n\n"
                  + "This may take several minutes on older hardware. "
                  + "Please keep the app open.");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.checkPassword"; }
 
@@ -1332,6 +1376,19 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("2FA sign-in failed", error, passwordBox);
             }
         });
+        if (submitted)
+        {
+            // Cleared once the check owns a copy, not before. It used to be
+            // cleared on the way in, so a refusal - which touches nothing else -
+            // still cost the user a password they may have spent a minute
+            // typing on a numeric keypad.
+            passwordBox.setString("");
+        }
+        else
+        {
+            showRefused("Password not checked",
+                    "Press Check password again in a moment.", passwordBox);
+        }
     }
 
     private void logOut()
@@ -1427,7 +1484,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         accountActive = true;
         showRetryableError(title, new IllegalStateException(
-                "another operation is still running: " + worker.currentTask()));
+                "still finishing " + worker.busyWith()));
     }
 
     /**
@@ -1668,7 +1725,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.setStatus("refreshing", updateLabel);
         }
         final boolean hasFallback = fallback;
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs"; }
 
@@ -1702,6 +1759,27 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 else { showRetryableError("Could not load chats", error); }
             }
         });
+        if (!submitted)
+        {
+            if (hasFallback && dialogList != null)
+            {
+                // The list on screen is the cached one and stays usable; only
+                // the refresh did not happen, so the status line has to stop
+                // claiming it is happening.
+                dialogList.setStatus(connectionLabel, updateLabel);
+                showRefused("Chats not refreshed",
+                        "Press Refresh again in a moment.", dialogList);
+            }
+            else
+            {
+                // Nothing to fall back to, and the busy screen has no way out.
+                // This is the same form the failure path uses, and its Refresh
+                // command comes straight back here.
+                showRetryableError("Could not load chats",
+                        new IllegalStateException("still finishing "
+                                + worker.busyWith()));
+            }
+        }
     }
 
     private void showDialogList()
@@ -2718,7 +2796,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         chatScreen.setStatus(fallback ? "cached/refreshing"
                 : ("loading... / " + connectionLabel));
         final boolean hasFallback = fallback;
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory"; }
 
@@ -2782,6 +2860,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
+        if (!submitted)
+        {
+            // No in-flight latch on this path, so there is nothing to clear -
+            // only a status line that would otherwise say "loading..." for the
+            // life of the screen. The chat itself stays usable and carries
+            // Refresh, which is the retry.
+            chatScreen.setStatus(hasFallback
+                    ? "cached/not refreshed"
+                    : (connectionLabel + "/" + updateLabel));
+            showRefused("Chat not loaded", "Press Refresh in a moment.",
+                    chatScreen);
+        }
     }
 
     /**
@@ -3825,7 +3915,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Message message = actionMessage;
         final Peer source = actionPeer;
         showBusy("Forward", "Forwarding message...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.forwardMessages"; }
             public Object run() throws Exception
@@ -3845,6 +3935,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Could not forward message", error, forwardList);
             }
         });
+        // The chooser stays up with the same destination selected, and
+        // actionMessage/actionPeer are untouched: Forward here is one keypress.
+        if (!submitted)
+        {
+            showRefused("Not forwarded", "Try Forward here again in a moment.",
+                    forwardList);
+        }
     }
 
     private void confirmDeleteMessage()
@@ -3880,7 +3977,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int messageId = actionMessage.id;
         final Peer peer = actionPeer;
         showBusy("Delete", "Deleting message...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return peer.kind == Peer.CHANNEL
                     ? "channels.deleteMessages" : "messages.deleteMessages"; }
@@ -3904,6 +4001,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Could not delete message", error, deleteConfirm);
             }
         });
+        // Back to the confirmation, which still names the message and still
+        // carries both scopes: nothing was deleted anywhere.
+        if (!submitted)
+        {
+            showRefused("Not deleted", "Choose again in a moment.",
+                    deleteConfirm);
+        }
     }
 
     private void removeOpenMessage(int messageId)
@@ -3982,7 +4086,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Profile", "Loading profile...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "users.getFullUser"; }
             public Object run() throws Exception
@@ -4003,6 +4107,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         navigation.current());
             }
         });
+        // No profile screen was pushed, so the stack still holds the chat or
+        // the chat list this was opened from.
+        if (!submitted)
+        {
+            showRefused("Profile not loaded", "Try Profile again in a moment.");
+        }
     }
 
     private void rebuildProfileScreen()
@@ -4093,7 +4203,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Profile", "Saving profile...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "account.updateProfile"; }
             public Object run() throws Exception
@@ -4115,6 +4225,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         editProfileForm);
             }
         });
+        // The editor is the same Form with the same three TextFields, so what
+        // the user typed is still in them.
+        if (!submitted)
+        {
+            showRefused("Profile not saved", "Press Save again in a moment.",
+                    editProfileForm);
+        }
     }
 
     private void showReactionPalette(int messageId)
@@ -4261,7 +4378,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 new String[] { "Loading..." }, currentTheme());
         reactionActorsScreen.withBack(cmdBack, this);
         pushScreen(reactionActorsScreen);
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getMessageReactionsList"; }
             public Object run() throws Exception
@@ -4308,6 +4425,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
+        if (!submitted)
+        {
+            // This is the one screen pushed before the submission rather than
+            // after it, so the undo is a pop. It stays that way round on
+            // purpose: the callbacks run on the worker thread and one of them
+            // shows an alert, which a push happening afterwards would wipe.
+            restoreScreen(navigation.pop());
+            showRefused("Reactions not loaded",
+                    "Try View reactions again in a moment.");
+        }
     }
 
     private void openForwardSource()
@@ -4319,7 +4446,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final ChatScreen returnChat = chatScreen;
         restoreScreen(navigation.pop());
         returnChat.setStatus("opening forwarded message...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "open forwarded source"; }
             public Object run() throws Exception
@@ -4373,6 +4500,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Cannot open source", error, returnChat);
             }
         });
+        // The reaction screen was already popped, so the chat is what is on
+        // screen; only its status line still claims something is opening.
+        if (!submitted)
+        {
+            returnChat.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Source not opened",
+                    "Open Reactions and try View source again.", returnChat);
+        }
     }
 
     private static final class ForwardOpen
@@ -4408,7 +4543,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         restoreScreen(navigation.pop());
         chatScreen.setStatus("reacting...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.sendReaction"; }
             public Object run() throws Exception
@@ -4443,6 +4578,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
+        // Nothing local was changed - the reaction set is only ever applied from
+        // the server's answer - so saying so and clearing the status is the
+        // whole recovery. The palette is one keypress away.
+        if (!submitted)
+        {
+            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Reaction not sent",
+                    "Open Reactions and choose again in a moment.", chatScreen);
+        }
     }
 
     private void openPhoto(final Message message)
@@ -4491,7 +4635,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 });
             }
         });
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "upload.getFile/photo"; }
 
@@ -4580,6 +4724,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
+        if (!submitted)
+        {
+            // The status line is the recovery here rather than an alert: the
+            // photo screen already carries Retry, and photoReferenceExpired is
+            // false, so Retry comes back through this method rather than
+            // through the reference refresh.
+            photoScreen.setStatus("busy with " + worker.busyWith()
+                    + "; press Retry");
+        }
     }
 
     private void refreshPhotoReferenceAndOpen()
@@ -4594,7 +4747,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (previous == null || peer == null) { return; }
         photoReferenceExpired = false;
         photoScreen.setStatus("refreshing photo reference...");
-        worker.submit(new Worker.Task()
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "refresh expired photo reference"; }
             public Object run() throws Exception
@@ -4624,6 +4777,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 photoScreen.setStatus("refresh failed: " + shortMessage(error));
             }
         });
+        if (!submitted)
+        {
+            // The latch above was cleared before the submission, and it is what
+            // decides which of the two things Retry does. Left false, the next
+            // Retry would download against the reference that is known to have
+            // expired instead of refreshing it.
+            photoReferenceExpired = true;
+            photoScreen.setStatus("reference expired; Retry refreshes it");
+        }
     }
 
     private void sendComposed()
@@ -4704,13 +4866,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (!submitted)
         {
             // Nothing was touched, so the text and the reply target are still
-            // there to press Send on again. Every other refused submission is
-            // PR-007's subject; this one is here because a silently ignored
-            // Send loses a message the user believes they sent.
-            showAlertThen("Still busy",
-                    "Finishing " + worker.currentTask()
-                    + " first. Your message is still here - try Send again.",
-                    composeBox);
+            // there to press Send on again.
+            showRefused("Not queued",
+                    "Your message is still here - try Send again.", composeBox);
         }
     }
 
@@ -5178,7 +5336,19 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             showBusy("Connecting", "Applying "
                     + ConnectionConfig.name(connectionConfig.mode)
                     + " connection settings...");
-            connectAndCheck();
+            if (!connectAndCheck())
+            {
+                // The transport is already closed and the new settings are
+                // already stored, so pressing Save again would compare equal to
+                // itself and simply walk back - leaving the client disconnected
+                // with no route to a connect. The start screen is the one that
+                // offers Connect, and it is also the honest description of where
+                // this left things.
+                showStartScreen();
+                showRefused("Settings saved, not connected",
+                        "The connection was closed to apply them - press"
+                        + " Connect when it finishes.");
+            }
         }
     }
 
@@ -5338,6 +5508,40 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         Alert alert = new Alert(title, message, null, AlertType.ERROR);
         alert.setTimeout(Alert.FOREVER);
         display.setCurrent(alert, next);
+    }
+
+    /**
+     * Say that an action was refused, and land the user on a screen they can
+     * act from.
+     *
+     * {@link Worker} runs one operation at a time and answers false rather than
+     * queueing, so a refusal is an ordinary consequence of pressing a key while
+     * something else is on the wire - not a failure, and deliberately not routed
+     * through the failure callback, which every caller uses to say the server
+     * refused them.
+     *
+     * Only the wording and the landing are shared. What each caller has to undo
+     * first - an in-flight flag, a status line, a screen it pushed itself, a
+     * latch it cleared early - differs at every site, and folding those together
+     * is how a flag ends up wrong in a path nobody looked at.
+     *
+     * @param title what did not happen, in the user's words
+     * @param hint  what they can do about it
+     */
+    private void showRefused(String title, String hint)
+    {
+        // showBusy() sets the display without touching the navigation stack, so
+        // the screen the action was started from is still the top of it, and
+        // putting it back is the whole undo for a busy screen.
+        Displayable back = navigation.current();
+        showRefused(title, hint, back == null ? display.getCurrent() : back);
+    }
+
+    /** The same, for a caller that has already restored where it belongs. */
+    private void showRefused(String title, String hint, Displayable next)
+    {
+        showAlertThen(title, "Finishing " + worker.busyWith() + " first. " + hint,
+                next);
     }
 
     private static String shortMessage(Throwable t)

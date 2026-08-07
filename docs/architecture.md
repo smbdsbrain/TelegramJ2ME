@@ -327,6 +327,30 @@ CLDC has no `java.util.concurrent`. The rules are:
   unsolicited bodies; parsing, difference RPCs and state persistence must never
   run on that reader because it delivers their `rpc_result`.
 
+**A refused submission is an outcome, and every caller handles it.** `Worker`
+runs one operation at a time and answers `false` rather than queueing, because
+Telegram operations share one connection and one session — two of them at once
+would interleave their `msg_id`s and `seq_no`s. That answer used to be discarded
+by eighteen of the twenty-nine call sites, and the shape of the loss was always
+the same: `showBusy` sets the display without touching the navigation stack, so a
+busy screen whose callback never comes has no way out at all; a status line stays
+at `reacting...`; `checkPassword` had already cleared the password box for a
+submission it never made, and `refreshPhotoReferenceAndOpen` had already cleared
+the latch that decides what Retry does.
+
+A refusal is deliberately **not** routed through the failure callback: callers
+use that to tell the user the server refused them, which is a different and
+worse statement. Nor is a queue introduced — an unbounded one is not available on
+this heap, and a bounded one would still have to decide what to drop. Instead
+every call site reads the answer and undoes exactly what it did: pagination and
+background paths clear their in-flight or scheduled flag so the next viewport
+event retries, the avatar worker releases the cache slot it claimed, and a
+foreground action restores its screen and says what did not happen.
+`Worker.busyWith` names the task holding it — never null, because it can finish
+between the refusal and the message — and `TgMidlet.showRefused` supplies only
+the wording and the landing, never the undo. `SourceGuardTest` fails the build if
+a new call site ignores the answer.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate

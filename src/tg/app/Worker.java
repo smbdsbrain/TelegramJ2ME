@@ -58,6 +58,24 @@ public final class Worker
     }
 
     /**
+     * What is holding the worker, in words a refusal message can use.
+     *
+     * Never null, which {@link #currentTask()} is: it is cleared the moment the
+     * running task finishes, and that happens between a refused submission and
+     * the alert the caller builds from it. Reading the field directly there
+     * shows "Finishing null first" to whoever is unlucky with the timing - a
+     * message that is wrong exactly when the operation the user was waiting on
+     * has already ended.
+     *
+     * One read of the field, for the same reason.
+     */
+    public String busyWith()
+    {
+        String task = currentTask;
+        return task == null ? "another operation" : task;
+    }
+
+    /**
      * Start a task unless one is already running.
      *
      * @return false when the worker was busy and nothing was started
