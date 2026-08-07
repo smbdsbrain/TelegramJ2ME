@@ -387,6 +387,26 @@ message's source pushes a second chat over the first. Back out of it and a bare
 and id are captured with the value, `newestKnownIdFor` answers 0 for anyone
 else's, and every peer change goes through one `rebindReadMark`.
 
+**The acknowledgement queue holds one entry per chat, not one in total.** It was
+a single slot, and a producer that found it occupied by another conversation
+replaced the entry. The window for that is not a scheduling accident — it is a
+whole `readHistory` round trip: the drain takes the slot, empties it, and only
+then goes to the network. Read a message in one chat, walk back to the list,
+open another, and the first was still bold on every other device, with nothing
+left to retry it. `tg.app.ReadQueue` coalesces by peer — the cursor is monotonic
+and the server takes the maximum anyway — which is what keeps its bound of eight
+conversations off the common path. The bound is small enough to reach, so
+reaching it drops the oldest, the chat the reader has left rather than the one
+on screen, and counts and logs the drop instead of assuming it away. The drain
+flag lives in the queue because "empty" and "nobody is draining" have to be one
+decision under one lock.
+
+For the same reason a chat that has scrolled out of the retained dialog list is
+no longer skipped wholesale by `mergeMessage`. The missing row means the reader
+scrolled past it, not that they are not sitting in it; the dialog bookkeeping
+has nowhere to go and is still skipped, but the transcript and the
+acknowledgement do not need a row.
+
 **Logging out erases the account, and says what it could not erase.** The
 cleanup used to be split in two, and neither half had the whole list:
 `Telegram.logOut` cleared the auth key of the data centre it happened to be
