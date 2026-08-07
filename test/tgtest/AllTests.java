@@ -51,6 +51,7 @@ public final class AllTests
             new ChatWindowTest(),
             new ChatScreenPhase4Test(),
             new ComposerStateTest(),
+            new WorkerTest(),
             new ReadMarkTest(),
             new ReadQueueTest(),
             new DialogListTest(),

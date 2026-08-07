@@ -35,6 +35,16 @@ import java.util.List;
  * {@code Handshake.run()}. Any other production caller would be stamping a key
  * with a path it did not take - a false reassurance that nothing at runtime can
  * detect, because a wrongly-marked key works perfectly.
+ *
+ * The fourth rule is about an answer nobody read. {@code Worker} runs one
+ * network operation at a time and returns false rather than queueing, and
+ * eighteen of its twenty-nine callers discarded that - so a keypress at the
+ * wrong moment left a busy screen that never came down, a status line stuck at
+ * "reacting...", or a password box cleared for a submission that was never made.
+ * Every one of those is invisible at runtime, because the code that would have
+ * noticed is the code that was not written. What each caller has to undo differs
+ * too much to check mechanically; what can be checked is that the answer is
+ * given a name, which is the line the recovery has to hang off.
  */
 public final class SourceGuardTest implements Test
 {
@@ -85,6 +95,50 @@ public final class SourceGuardTest implements Test
         {
             check(RULES[r], sources);
         }
+        everySubmitAnswerIsRead(sources);
+    }
+
+    /**
+     * The call form again, and again for the reason the rules above give: the
+     * comments that explain this one have to be able to name the method without
+     * tripping it, so prose writes it without its parentheses.
+     */
+    private static final String SUBMIT_CALL = ".submit(";
+
+    /**
+     * Every {@code Worker} submission in production code assigns its answer.
+     *
+     * The receiver is not named, so a third worker added later is covered
+     * without editing this. The declaration in {@code Worker} is not matched at
+     * all - it has no receiver in front of it - which is why there is no
+     * allow-list here to go stale.
+     *
+     * Requiring an assignment rather than any use of the value is deliberate.
+     * The answer decides which of two paths the method takes, and every caller
+     * in the client is a multi-line anonymous {@code Task} whose closing brace
+     * is forty lines below its opening one: a name on the first line is what
+     * makes the {@code if} at the bottom readable as belonging to it.
+     */
+    private static void everySubmitAnswerIsRead(List sources) throws IOException
+    {
+        List offenders = new ArrayList();
+        for (int i = 0; i < sources.size(); i++)
+        {
+            File f = (File) sources.get(i);
+            String path = relative(f);
+            String[] lines = read(f).split("\n", -1);
+            for (int n = 0; n < lines.length; n++)
+            {
+                int call = lines[n].indexOf(SUBMIT_CALL);
+                if (call < 0) { continue; }
+                if (lines[n].lastIndexOf('=', call) >= 0) { continue; }
+                offenders.add(path + ":" + (n + 1));
+            }
+        }
+
+        Assert.isTrue("a refused Worker submission is an ordinary outcome, so"
+                + " every submission must name its answer; unnamed at "
+                + offenders, offenders.isEmpty());
     }
 
     private void check(String[] rule, List sources) throws IOException
