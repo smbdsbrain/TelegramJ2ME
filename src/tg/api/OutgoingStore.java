@@ -3,7 +3,7 @@ package tg.api;
 import java.io.IOException;
 
 /** Durable storage for user-authored messages awaiting confirmed delivery. */
-public interface OutgoingStore
+public interface OutgoingStore extends AccountStore
 {
     OutgoingMessage add(Peer peer, String text, long randomId, long createdAt)
             throws IOException;
@@ -12,5 +12,4 @@ public interface OutgoingStore
     OutgoingMessage[] list() throws IOException;
     void save(OutgoingMessage message) throws IOException;
     void remove(int localId) throws IOException;
-    void clear() throws IOException;
 }

@@ -56,4 +56,28 @@ public interface AuthKeyStore
     String loadString(String name);
 
     void saveString(String name, String value);
+
+    /**
+     * Delete entries by exact name and by name prefix, and say whether they went.
+     *
+     * This exists for logging out. Keys, the account's data centre and the
+     * connection settings share one store, so erasing an account cannot be a
+     * delete of the store - and it cannot be a walk over the data centres this
+     * build knows either, because the authoritative list arrives from
+     * {@code help.getConfig} and a key is written for whichever data centre a
+     * file happened to live in. A prefix sweep removes the ones nobody
+     * enumerated, and naming the environment in the prefix keeps the other one -
+     * a separate account, with its own key - out of it.
+     *
+     * The two forms are kept apart rather than folded into one: an exact name
+     * must not be allowed to take a longer one that merely starts the same way,
+     * or a setting added later disappears at the next logout.
+     *
+     * @param names    entries to delete outright; may be null or hold nulls
+     * @param prefixes every entry whose name starts with one of these goes;
+     *                 may be null or hold nulls
+     * @return true when none of them remain; false when at least one could not
+     *         be removed - which the caller must report rather than swallow
+     */
+    boolean clearEntries(String[] names, String[] prefixes);
 }

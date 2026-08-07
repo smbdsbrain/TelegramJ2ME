@@ -1,13 +1,11 @@
 package tgtest;
 
 import java.io.IOException;
-import java.util.Hashtable;
 
 import tg.api.AuthCheck;
 import tg.api.Telegram;
 import tg.crypto.Rng;
 import tg.mt.AuthKey;
-import tg.mt.AuthKeyLoad;
 import tg.mt.AuthKeyStore;
 
 /**
@@ -42,7 +40,7 @@ public final class AuthCheckTest implements Test
 
     private static void aTransientFailureIsNotARefusal()
     {
-        Telegram tg = offline(new MemoryStore());
+        Telegram tg = offline(new MemoryAuthKeyStore());
 
         AuthCheck check = tg.verifyAuthorization();
 
@@ -63,7 +61,7 @@ public final class AuthCheckTest implements Test
      */
     private static void theStoredFlagSurvivesAFailedCheck()
     {
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
         store.saveString("authorized", "1");
         store.save(key());
 
@@ -86,7 +84,7 @@ public final class AuthCheckTest implements Test
      */
     private static void theOldSignatureStillBehaves()
     {
-        Telegram tg = offline(new MemoryStore());
+        Telegram tg = offline(new MemoryAuthKeyStore());
         Assert.isTrue("the old entry point still returns null on failure",
                 tg.checkAuthorization() == null);
     }
@@ -142,43 +140,4 @@ public final class AuthCheckTest implements Test
         return new AuthKey(raw, 2, false);
     }
 
-    /** In-memory AuthKeyStore, so nothing here touches a real profile. */
-    private static final class MemoryStore implements AuthKeyStore
-    {
-        private final Hashtable values = new Hashtable();
-        private final Hashtable keys = new Hashtable();
-
-        public AuthKeyLoad load(int dcId, boolean test)
-        {
-            AuthKey key = (AuthKey) keys.get(name(dcId, test));
-            return key == null ? AuthKeyLoad.notFound()
-                    : AuthKeyLoad.found(key);
-        }
-
-        public void save(AuthKey key)
-        {
-            keys.put(name(key.dcId(), key.isTestEnvironment()), key);
-        }
-
-        public void clear(int dcId, boolean test)
-        {
-            keys.remove(name(dcId, test));
-        }
-
-        public String loadString(String name)
-        {
-            return (String) values.get(name);
-        }
-
-        public void saveString(String name, String value)
-        {
-            if (value == null) { values.remove(name); }
-            else { values.put(name, value); }
-        }
-
-        private static String name(int dcId, boolean test)
-        {
-            return (test ? "test." : "prod.") + dcId;
-        }
-    }
 }

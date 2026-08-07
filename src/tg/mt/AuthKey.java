@@ -162,6 +162,28 @@ public final class AuthKey
         return provenance;
     }
 
+    /**
+     * The name a store files this key under.
+     *
+     * Three implementations of {@link AuthKeyStore} had written the same
+     * expression out separately, which was harmless while a name was only ever
+     * built to read one key back. Logging out has to delete keys nobody
+     * enumerated - the data centre list arrives from the server, so a key can
+     * exist for a number this build has no address for - and a sweep by
+     * {@link #entryPrefix} is only as complete as its agreement with whatever
+     * wrote the entry. One expression, so the two cannot drift apart.
+     */
+    public static String entryName(int dcId, boolean testEnvironment)
+    {
+        return entryPrefix(testEnvironment) + dcId;
+    }
+
+    /** What every key entry for one environment starts with. */
+    public static String entryPrefix(boolean testEnvironment)
+    {
+        return "authkey." + (testEnvironment ? "test" : "prod") + ".";
+    }
+
     /** True when this key can be used against the given data centre. */
     public boolean matches(int otherDcId, boolean otherTest)
     {

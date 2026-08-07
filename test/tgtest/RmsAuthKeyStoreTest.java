@@ -60,6 +60,9 @@ public final class RmsAuthKeyStoreTest implements Test
             aLegacyRecordKeepsItsShape();
             anUnknownFutureVersionSurvivesARewrite();
             noReadableKeyMeansNoSeedingVersion();
+            theSweepTakesExactNamesAndPrefixes();
+            aKeyIsFiledUnderThePrefixTheSweepMatches();
+            anUnreadableStoreCannotClaimTheSweepWorked();
         }
         finally
         {
@@ -551,13 +554,106 @@ public final class RmsAuthKeyStoreTest implements Test
         }
     }
 
+    /**
+     * The logout sweep, against real RMS, on names that are only this suite's.
+     *
+     * Deliberately not run with the prefixes {@code tg.api.AccountWipe} uses:
+     * this store is the developer's actual emulator profile, and sweeping
+     * {@code authkey.prod.} here would delete the key of whatever account is
+     * signed in on this machine. The agreement between what the store writes
+     * and what the sweep matches is checked by
+     * {@link #aKeyIsFiledUnderThePrefixTheSweepMatches} instead, and the policy
+     * itself by {@code tgtest.AccountWipeTest} against a double.
+     */
+    private static void theSweepTakesExactNamesAndPrefixes()
+    {
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        store.saveVerified("probe.sweep.exact", "go");
+        store.saveVerified("probe.sweep.pre.1", "go");
+        store.saveVerified("probe.sweep.pre.2", "go");
+        store.saveVerified("probe.sweep.keep", "stay");
+        // Starts with the exact name but is not it. A sweep that treated every
+        // name as a prefix would take this, and one day that would be a setting
+        // somebody added next to the account's.
+        store.saveVerified("probe.sweep.exactly", "stay");
+
+        Assert.isTrue("the sweep reports success",
+                store.clearEntries(new String[] { "probe.sweep.exact" },
+                                   new String[] { "probe.sweep.pre." }));
+
+        Assert.isTrue("the exact name went",
+                store.loadString("probe.sweep.exact") == null);
+        Assert.isTrue("both prefixed entries went",
+                store.loadString("probe.sweep.pre.1") == null
+                        && store.loadString("probe.sweep.pre.2") == null);
+        Assert.equal("an unlisted neighbour stays", "stay",
+                store.loadString("probe.sweep.keep"));
+        Assert.equal("and a longer name is not the exact one", "stay",
+                store.loadString("probe.sweep.exactly"));
+
+        Assert.isTrue("sweeping again is still a success",
+                store.clearEntries(new String[] { "probe.sweep.exact" },
+                                   new String[] { "probe.sweep.pre." }));
+        Assert.isTrue("no write failure was recorded",
+                store.writeFailureSummary() == null);
+    }
+
+    /**
+     * The sweep matches on a prefix; this is where that prefix comes from.
+     *
+     * A key stored under a name the prefix does not cover would survive a
+     * logout silently, so the two have to be the same expression -
+     * {@link AuthKey#entryName} - and this is the check that they are.
+     */
+    private static void aKeyIsFiledUnderThePrefixTheSweepMatches()
+    {
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        store.save(key((byte) 5));
+        try
+        {
+            String name = AuthKey.entryName(DC, false);
+            Assert.isTrue("the entry name starts with the sweep's prefix",
+                    name.startsWith(AuthKey.entryPrefix(false)));
+            Assert.isTrue("and the store really filed it there",
+                    store.loadString(name) != null);
+            Assert.isFalse("the other environment's prefix does not match it",
+                    name.startsWith(AuthKey.entryPrefix(true)));
+        }
+        finally
+        {
+            store.clear(DC, false);
+        }
+    }
+
+    /** A store that will not open must not answer "erased". */
+    private static void anUnreadableStoreCannotClaimTheSweepWorked()
+    {
+        RmsAuthKeyStore store = new RmsAuthKeyStore();
+        EmulatorRecords.installUnreadable();
+        try
+        {
+            Assert.isFalse("an unreadable store reports the sweep failed",
+                    store.clearEntries(new String[] { "probe.sweep.exact" },
+                                       new String[] { "probe.sweep.pre." }));
+        }
+        finally
+        {
+            EmulatorRecords.restore();
+        }
+        Assert.isTrue("and the failure is on the diagnostics line",
+                store.writeFailureSummary() != null);
+    }
+
     /** Remove exactly what this suite wrote, and nothing else. */
     private static void cleanUp()
     {
         RmsAuthKeyStore store = new RmsAuthKeyStore();
         store.clear(DC, false);
         store.clear(DC, true);
-        String[] names = { "probe.value", "probe.dup", "probe.text" };
+        String[] names = { "probe.value", "probe.dup", "probe.text",
+                           "probe.sweep.exact", "probe.sweep.exactly",
+                           "probe.sweep.keep", "probe.sweep.pre.1",
+                           "probe.sweep.pre.2" };
         for (int i = 0; i < names.length; i++)
         {
             try { store.saveString(names[i], null); }

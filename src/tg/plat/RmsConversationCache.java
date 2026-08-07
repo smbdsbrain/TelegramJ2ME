@@ -6,6 +6,7 @@ import javax.microedition.rms.RecordEnumeration;
 import javax.microedition.rms.RecordStore;
 import javax.microedition.rms.RecordStoreNotFoundException;
 
+import tg.api.AccountStore;
 import tg.api.AvatarRef;
 import tg.api.Dialog;
 import tg.api.ForwardInfo;
@@ -22,7 +23,7 @@ import tg.tl.TlWriter;
  * Media bodies and full photo references are deliberately excluded. The cache
  * is for readable text during a bad connection, not an offline media archive.
  */
-public final class RmsConversationCache
+public final class RmsConversationCache implements AccountStore
 {
     private static final String DIALOGS = "tgdialogcache";
     private static final String HISTORY = "tghistorycache";

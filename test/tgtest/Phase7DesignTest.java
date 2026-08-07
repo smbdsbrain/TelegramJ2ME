@@ -30,8 +30,6 @@ import tg.api.Message;
 import tg.api.Peer;
 import tg.app.ScreenStack;
 import tg.mem.MemoryBudget;
-import tg.mt.AuthKey;
-import tg.mt.AuthKeyStore;
 import tg.ui.ChatScreen;
 import tg.ui.AvatarCache;
 import tg.ui.DialogListScreen;
@@ -71,7 +69,7 @@ public final class Phase7DesignTest implements Test
         Assert.equal("unknown theme falls back", Theme.LIGHT,
                 Theme.byId(999).id);
 
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
         AppSettings first = new AppSettings();
         first.themeId = Theme.DARK;
         first.save(store);
@@ -377,26 +375,6 @@ public final class Phase7DesignTest implements Test
         ExposedDialogs(Theme theme) { super(theme); }
         public void render(Graphics graphics) { paint(graphics); }
         void press(int keyCode) { keyPressed(keyCode); }
-    }
-
-    private static final class MemoryStore implements AuthKeyStore
-    {
-        private final java.util.Hashtable values = new java.util.Hashtable();
-        public tg.mt.AuthKeyLoad load(int dcId, boolean test)
-        {
-            return tg.mt.AuthKeyLoad.notFound();
-        }
-        public void save(AuthKey key) { }
-        public void clear(int dcId, boolean test) { }
-        public String loadString(String name)
-        {
-            return (String) values.get(name);
-        }
-        public void saveString(String name, String value)
-        {
-            if (value == null) { values.remove(name); }
-            else { values.put(name, value); }
-        }
     }
 
     private static final class SizedDevice implements Device

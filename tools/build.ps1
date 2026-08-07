@@ -610,7 +610,11 @@ if (-not $Release) {
 }
 
 # StackMap is the whole point of -microedition; verify it actually landed.
-$sample = Get-ChildItem $preverDir -Recurse -Filter *.class | Select-Object -First 1
+# Sampled by size rather than by name: preverification only attaches StackMap to
+# methods with code, so an interface carries none and is not evidence either
+# way. The largest class in the build certainly has code.
+$sample = Get-ChildItem $preverDir -Recurse -Filter *.class |
+          Sort-Object Length -Descending | Select-Object -First 1
 if ($sample) {
     $bytes = [System.IO.File]::ReadAllBytes($sample.FullName)
     $text  = [System.Text.Encoding]::ASCII.GetString($bytes)

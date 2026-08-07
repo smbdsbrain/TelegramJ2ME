@@ -1,11 +1,6 @@
 package tgtest;
 
-import java.util.HashMap;
-import java.util.Map;
 
-import tg.mt.AuthKey;
-import tg.mt.AuthKeyLoad;
-import tg.mt.AuthKeyStore;
 import tg.mt.ConnectionConfig;
 
 /** Sticky Auto order and persistence of reachability settings. */
@@ -31,7 +26,7 @@ public final class ConnectionConfigTest implements Test
 
     private static void persistenceAndStickyOrder()
     {
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
         ConnectionConfig saved = new ConnectionConfig();
         saved.mode = ConnectionConfig.AUTO;
         saved.lastSuccessful = ConnectionConfig.HTTP;
@@ -123,7 +118,7 @@ public final class ConnectionConfigTest implements Test
         // The seed has to survive Settings being saved before any route has
         // succeeded, otherwise opening Settings once on a fresh install would
         // silently demote the proxy to fourth.
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
         fresh.save(store);
         ConnectionConfig reloaded = new ConnectionConfig();
         reloaded.load(store);
@@ -132,20 +127,4 @@ public final class ConnectionConfigTest implements Test
         Assert.equal("reload stays on Auto", ConnectionConfig.AUTO, reloaded.mode);
     }
 
-    private static final class MemoryStore implements AuthKeyStore
-    {
-        private final Map<String, String> values = new HashMap<String, String>();
-        public AuthKeyLoad load(int dc, boolean test)
-        {
-            return AuthKeyLoad.notFound();
-        }
-        public void save(AuthKey key) { }
-        public void clear(int dc, boolean test) { }
-        public String loadString(String name) { return values.get(name); }
-        public void saveString(String name, String value)
-        {
-            if (value == null) { values.remove(name); }
-            else { values.put(name, value); }
-        }
-    }
 }

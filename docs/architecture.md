@@ -342,6 +342,60 @@ stores so one corrupt or full queue cannot damage the auth key:
 Outbox is capped at 64 messages and the compose UI at 1000 characters. Permanent
 RPC errors remain visible until the user retries or deletes them.
 
+**Logging out erases the account, and says what it could not erase.** The
+cleanup used to be split in two, and neither half had the whole list:
+`Telegram.logOut` cleared the auth key of the data centre it happened to be
+talking to, and `TgMidlet` cleared three caches in `try`/`catch` blocks that
+logged and carried on. What stayed behind was the auth key of every *other* data
+centre, the media import markers, the home-DC pointer and the stored account id
+— and nothing told the user when a delete had failed. `tg.api.AccountWipe` is
+now the single list of what belongs to an account, `tg.api.WipeReport` is what it
+answers with, and every component is attempted even after one of them refuses.
+
+**The markers are the part that made leftovers a leak.** Downloading a file from
+another data centre imports this account's authorization into it and records
+`imported.<env>.<dc>` so the import is not repeated.
+`MediaAuthorization.needsImport` believes that record. A marker that outlived its
+account therefore told the *next* account not to import its own, and its file
+requests travelled on the previous account's session.
+
+**`tgkeys` is swept by name, never deleted.** The keys share one record store
+with the proxy, the theme, the log level and the measured heap ceiling, so
+`deleteRecordStore` is not available: a logout that costs someone their proxy is
+a logout they will avoid. `AuthKeyStore.clearEntries` takes exact names and name
+prefixes, and answers only after looking again — RMS on an unknown handset is
+exactly where a delete returns without deleting.
+
+**Keys are swept by prefix, not walked by data centre.** The authoritative data
+centre list arrives from `help.getConfig`, and a photo can name one this build
+has no built-in address for; downloading it stores a key under that number. So
+"delete the keys" cannot mean "walk the numbers we know". The sweep matches
+`AuthKey.entryPrefix`, the same expression the store files a key under, and the
+prefix names the environment — so the other environment's key, which belongs to
+a different account on the same handset, is left alone.
+
+**A session ended from another device is the same event.** The
+`AUTH_KEY_INVALID` branch of `verifyAuthorization` used to clear one key and the
+signed-in flag, leaving the drafts and the caches for whoever signed in next. It
+runs the same erasure now.
+
+**What survives on purpose.** Connection and proxy settings, the theme, the log
+level, the measured heap ceiling, the entropy log and the crash log. The crash
+log is the one uncomfortable entry: its tail of the `Diag` ring has been observed
+naming a chat. It stays because it is the only record of an RMS failure that
+survives the restart such a failure presents as — see the open follow-up on
+redacting what reaches it.
+
+**The socket is deliberately left open.** `invoke` refuses when there is no
+client, and the sign-in that follows a logout goes straight to `auth.sendCode`
+without reconnecting, so closing here would answer the user's next keypress with
+"not connected". What has to stop is writing, not talking: `Telegram` carries an
+account epoch that the outbox drain checks under the same lock the erasure takes,
+and `TgMidlet` answers 0 from `cacheAccountId` from the moment a logout starts,
+which turns every dialog-cache, history-cache and avatar-cache write into a
+no-op. The avatar worker is a second `Worker`, and `Worker` clears its busy flag
+before running a callback, so this concurrency is real rather than theoretical.
+
 **Reading the auth key answers with an outcome, not a key or nothing.** A store
 that will not open, a record that will not decode and an entry that was never
 written are three different states, and the connect path answers the third by
