@@ -50,6 +50,7 @@ public final class AllTests
             new ChatScrollStateTest(),
             new ChatWindowTest(),
             new ChatScreenPhase4Test(),
+            new ComposerStateTest(),
             new DialogListTest(),
             new Phase4ContentTest(),
             new Phase5AuthTest(),

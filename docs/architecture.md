@@ -335,12 +335,35 @@ stores so one corrupt or full queue cannot damage the auth key:
 * `tgoutbox`: one versioned, bounded UTF-8 binary record per queued/failed
   message. A successful RPC deletes it; ambiguous transport failures retain it.
 * `tgdrafts`: one UTF-8 record per peer, updated every three seconds while the
-  compose screen is visible and on lifecycle/navigation boundaries.
+  compose screen is visible and on lifecycle/navigation boundaries. Keyed on the
+  chat the composer was *opened for*, not on the chat that is open — see below.
 * `tgupdates`: one versioned account-bound record containing
   `pts/qts/date/seq` and a bounded table of 128 per-channel `pts` cursors.
 
 Outbox is capped at 64 messages and the compose UI at 1000 characters. Permanent
 RPC errors remain visible until the user retries or deletes them.
+
+**A composer belongs to one chat, for one session.** Reply used to be a bare
+`Message replyTarget` field beside the reused compose `TextBox` and the mutable
+`openPeer`, and nothing tied the three together. Pressing Send on an empty box —
+the one exit that cleared nothing — left reply mode armed, so the next Write, in
+whatever chat the user had walked to by then, came up holding the first chat's
+message id and sent it there. `tg.app.ComposerState` captures the peer and the
+message id together when the composer opens, and the send path reads the message
+from it rather than from `openPeer`. Every exit — Back, a blank Send, an accepted
+enqueue, landing on the chat list, logging out — ends at the same `closeComposer`,
+so there is no path left that can forget a field.
+
+The state is an immutable value in a `volatile` field, `null` when no composer is
+open, which makes the reference itself the session token: the outbox callback
+compares by identity before cleaning up, so a composer the user reopened during a
+round trip is not closed — and its draft not erased — by the previous send. That
+is also what keys the draft: `saveDraftNow` reads the session, not `openPeer`,
+because it runs on the autosave thread while a background callback can move the
+open chat under it. Only the id is kept, never the `Message`, so the reply label
+stays correct and short after the message it answers has been evicted from the
+retained history window. A refused `Worker.submit` leaves the text and the reply
+target exactly where they were, and says so.
 
 **Logging out erases the account, and says what it could not erase.** The
 cleanup used to be split in two, and neither half had the whole list:
