@@ -316,7 +316,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * stops asking; it clears the moment anything newer actually turns up.
      */
     private boolean historyForwardStalled;
-    private Message replyTarget;
+
+    /**
+     * The open composer session, or null when no compose screen is up.
+     *
+     * Volatile because three threads touch it: the display thread opens and
+     * closes it, the outbox callback closes it from the worker thread, and the
+     * draft autosave thread reads it every three seconds. A stale read there
+     * would write one chat's text into another chat's draft, which is the
+     * defect {@link ComposerState} exists to end.
+     */
+    private volatile ComposerState composer;
     private List forwardList;
     private Peer[] forwardTargets = new Peer[0];
     private Message actionMessage;
@@ -333,7 +343,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private String connectionLabel = "idle";
     private String updateLabel = "stopped";
     private volatile boolean draftAutosaveRunning;
-    private String lastSavedDraft = "";
+
+    /** What the store already holds for {@link #composer}; same three threads. */
+    private volatile String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
     private volatile int avatarGeneration;
 
@@ -612,6 +624,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (screen == dialogList)
         {
+            // Landing on the chat list is the navigation reset: there is no
+            // conversation any more, so there is nothing a composer could still
+            // belong to. resetRoot(dialogList) arrives here too, which is why
+            // this is the one hook rather than a check at every caller. Leaving
+            // rather than closing, so a reset does not drop what was typed.
+            leaveComposer();
             openPeer = null;
             telegram.setActivePeer(null);
         }
@@ -727,7 +745,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         else if (c == cmdWrite)
         {
-            showCompose();
+            // Explicitly a non-reply session. Write used to inherit whatever
+            // reply state an earlier composer had left behind.
+            openComposer(ComposerState.write(openPeer));
         }
         else if (c == cmdOlder)
         {
@@ -899,9 +919,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (from == composeBox)
         {
-            saveDraftNow();
-            replyTarget = null;
-            composeBox.setTitle("Message");
+            leaveComposer();
         }
         if (from == photoScreen)
         {
@@ -1404,10 +1422,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // more draft into the store that is about to be, or has just been,
         // emptied.
         draftAutosaveRunning = false;
+        // Closed, never left: leaveComposer() would save one last draft into
+        // the store the wipe is about to empty. The state itself is account
+        // data - the retained Peer carries a contact's name.
+        closeComposer();
         composeBox = null;
         openPeer = null;
-        lastSavedDraft = "";
-        replyTarget = null;
         if (photoToken != null) { photoToken.cancel(); }
         synchronized (readLock) { pendingReadPeer = null; pendingReadMaxId = 0; }
 
@@ -3626,8 +3646,24 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     // ------------------------------------------------------------ sending
 
-    private void showCompose()
+    /**
+     * Show the compose screen for one prepared session.
+     *
+     * The session is what the screen is drawn from and what every later step -
+     * the autosave, the send, the cleanup - reads. The screen itself carries no
+     * state beyond the text: the {@code TextBox} is a single reused widget, so
+     * anything left on it belongs to whoever opened it last.
+     *
+     * @param next a state from {@link ComposerState}, or null when the caller
+     *             had no chat to open one for
+     */
+    private void openComposer(ComposerState next)
     {
+        if (next == null)
+        {
+            Diag.warn("compose refused: no chat to compose for");
+            return;
+        }
         if (composeBox == null)
         {
             composeBox = new TextBox("Message", "", 1000, TextField.ANY);
@@ -3636,13 +3672,46 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             composeBox.setCommandListener(this);
         }
         String draft = "";
-        try { if (openPeer != null) { draft = draftStore.load(openPeer); } }
+        try { draft = draftStore.load(next.peer()); }
         catch (Throwable t) { Diag.error("draft load failed", t); }
-        composeBox.setString(draft);
-        composeBox.setTitle(replyTarget == null ? "Message"
-                : ("Reply to #" + replyTarget.id));
+        // Published before the screen goes up, so the autosave thread cannot
+        // see the box current with the previous session still installed.
+        composer = next;
         lastSavedDraft = draft;
+        composeBox.setString(draft);
+        composeBox.setTitle(next.title());
         pushScreen(composeBox);
+    }
+
+    /**
+     * Drop the composer session. Idempotent, and safe with no compose screen.
+     *
+     * This is the one cleanup: Back, a blank Send, an accepted enqueue, landing
+     * on the chat list and logging out all end here, so there is no exit left
+     * that can forget a field.
+     */
+    private void closeComposer()
+    {
+        composer = null;
+        lastSavedDraft = "";
+        if (composeBox != null)
+        {
+            composeBox.setString("");
+            composeBox.setTitle("Message");
+        }
+    }
+
+    /**
+     * Leave the composer the way the user leaving it expects: keep the text,
+     * then drop the session.
+     *
+     * Not used by the send path, which erases the draft instead - the message
+     * is on its way, and a draft of it would come back as a second copy.
+     */
+    private void leaveComposer()
+    {
+        saveDraftNow();
+        closeComposer();
     }
 
     // ------------------------------------------------------- message actions
@@ -3664,8 +3733,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         Message message = chatScreen == null ? null
                 : findOpenMessage(chatScreen.focusedMessageId());
         if (message == null || message.id <= 0) { return; }
-        replyTarget = message;
-        showCompose();
+        // The id, not the Message: the reply travels as an int, and holding the
+        // whole message would keep a body alive past the history window that
+        // evicted it.
+        openComposer(ComposerState.reply(openPeer, message.id));
     }
 
     private void beginForward()
@@ -4509,17 +4580,43 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void sendComposed()
     {
+        // One read of the session, held for the whole send. Everything the
+        // message is - the chat, the reply id - comes from here rather than
+        // from openPeer, which the navigation and a background callback both
+        // move. The reference doubles as the session token below.
+        final ComposerState session = composer;
+        if (composeBox == null || session == null) { return; }
+
         final String text = composeBox.getString();
         if (text.trim().length() == 0)
         {
-            restoreScreen(navigation.pop());
+            // Send on an empty box is how a lot of people close a screen. It
+            // has to mean exactly what Back means, cleanup included; it used to
+            // be the one exit that left reply mode armed.
+            leaveComposer();
+            popComposer();
             return;
         }
-        final Peer peer = openPeer;
-        final int replyToMessageId = replyTarget == null
-                ? 0 : replyTarget.id;
+        if (!session.ownedBy(openPeer))
+        {
+            // Should be unreachable - the composer sits directly on top of its
+            // own chat screen. It is checked because the consequence of being
+            // wrong is a message delivered to a conversation the user was not
+            // looking at when they wrote it.
+            Diag.warn("compose peer no longer open; refusing to send");
+            leaveComposer();
+            popComposer();
+            showAlertThen("Chat changed",
+                    "That message was written for another chat, so it was not"
+                    + " sent. It was kept as a draft there.",
+                    display.getCurrent());
+            return;
+        }
 
-        worker.submit(new Worker.Task()
+        final Peer peer = session.peer();
+        final int replyToMessageId = session.replyToMessageId();
+
+        boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "outbox.enqueue"; }
 
@@ -4531,18 +4628,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The composer may have been closed and reopened while this was
+                // in flight. Clearing then would erase a draft belonging to the
+                // session now on screen and pop a screen nobody asked to leave.
+                if (composer != session) { return; }
+
                 try { draftStore.save(peer, ""); }
                 catch (Throwable t) { Diag.error("draft clear failed", t); }
-                composeBox.setString("");
-                composeBox.setTitle("Message");
-                lastSavedDraft = "";
-                replyTarget = null;
-                restoreScreen(navigation.pop());
-                chatScreen.appendLocal((replyToMessageId > 0
-                        ? ("[reply to #" + replyToMessageId + "] ") : "")
-                        + "[queued] " + text);
-                chatScreen.scrollToEnd();
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                closeComposer();
+                popComposer();
+                if (chatScreen != null && samePeer(openPeer, peer))
+                {
+                    chatScreen.appendLocal((replyToMessageId > 0
+                            ? ("[reply to #" + replyToMessageId + "] ") : "")
+                            + "[queued] " + text);
+                    chatScreen.scrollToEnd();
+                    chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                }
             }
 
             public void onFailure(Throwable error)
@@ -4550,6 +4652,34 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 showAlertThen("Could not queue message", error, composeBox);
             }
         });
+
+        if (!submitted)
+        {
+            // Nothing was touched, so the text and the reply target are still
+            // there to press Send on again. Every other refused submission is
+            // PR-007's subject; this one is here because a silently ignored
+            // Send loses a message the user believes they sent.
+            showAlertThen("Still busy",
+                    "Finishing " + worker.currentTask()
+                    + " first. Your message is still here - try Send again.",
+                    composeBox);
+        }
+    }
+
+    /**
+     * Return from the compose screen, if it is still the screen we are on.
+     *
+     * {@code ScreenStack.pop()} removes whatever is on top without asking what
+     * it is, and the accepted-enqueue path runs after a round trip during which
+     * Back may already have left. Popping then would take the chat screen with
+     * it.
+     */
+    private void popComposer()
+    {
+        if (navigation.current() == composeBox)
+        {
+            restoreScreen(navigation.pop());
+        }
     }
 
     // ----------------------------------------------------- reliability UI
@@ -4691,15 +4821,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }).start();
     }
 
+    /**
+     * Persist what is in the compose box against the chat it was written for.
+     *
+     * Keyed on the composer session, not on {@code openPeer}: this runs on the
+     * autosave thread, and the chat that is open can change under it.
+     *
+     * The session is read once, and read again after the text, because a close
+     * and reopen in between would otherwise file one chat's typing under
+     * another chat's name. A blank box is written blank - which deletes the
+     * record - only when the user cleared a draft themselves; {@code
+     * lastSavedDraft} is set from the store at open, so an untouched box never
+     * writes at all.
+     */
     private void saveDraftNow()
     {
-        if (draftStore == null || composeBox == null || openPeer == null) { return; }
+        final ComposerState session = composer;
+        if (draftStore == null || composeBox == null || session == null) { return; }
         try
         {
             String text = composeBox.getString();
+            if (composer != session) { return; }
             if (!text.equals(lastSavedDraft))
             {
-                draftStore.save(openPeer, text);
+                draftStore.save(session.peer(), text);
                 lastSavedDraft = text;
             }
         }
@@ -5133,7 +5278,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showAlertThen(String title, Throwable t, Displayable next)
     {
-        Alert alert = new Alert(title, shortMessage(t), null, AlertType.ERROR);
+        showAlertThen(title, shortMessage(t), next);
+    }
+
+    /**
+     * The same alert for a condition that is not an exception - a refusal the
+     * user can act on, where a class name would say nothing.
+     */
+    private void showAlertThen(String title, String message, Displayable next)
+    {
+        Alert alert = new Alert(title, message, null, AlertType.ERROR);
         alert.setTimeout(Alert.FOREVER);
         display.setCurrent(alert, next);
     }
