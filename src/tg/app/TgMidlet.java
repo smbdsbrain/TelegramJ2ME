@@ -420,10 +420,32 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private volatile boolean heapMeasured;
     private boolean heapProbeRunning;
 
-    private final Object readLock = new Object();
-    private Peer pendingReadPeer;
-    private int pendingReadMaxId;
-    private boolean readDrainRunning;
+    /**
+     * Read acknowledgements waiting for their round trip.
+     *
+     * One entry per conversation rather than one slot in total: the drain is on
+     * the network for the length of a {@code readHistory}, and a chat read
+     * during that used to be overwritten by the next one - see {@link ReadQueue}.
+     */
+    private final ReadQueue readQueue = new ReadQueue();
+
+    /**
+     * Where a drained acknowledgement goes.
+     *
+     * Failing to mark as read is not worth interrupting the reader, so it is
+     * logged and dropped here rather than surfaced or retried.
+     */
+    private final ReadQueue.Sink readSink = new ReadQueue.Sink()
+    {
+        public void markRead(Peer peer, int maxId)
+        {
+            try { telegram.markRead(peer, maxId); }
+            catch (Throwable t)
+            {
+                Diag.warn("mark-read failed: " + shortMessage(t));
+            }
+        }
+    };
 
     // -------------------------------------------------------- MIDlet life
 
@@ -1438,7 +1460,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         composeBox = null;
         openPeer = null;
         if (photoToken != null) { photoToken.cancel(); }
-        synchronized (readLock) { pendingReadPeer = null; pendingReadMaxId = 0; }
+        readQueue.clear();
 
         dialogs = new Dialog[0];
         visibleDialogs = new Dialog[0];
@@ -3317,7 +3339,29 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (message == null || message.peer == null) { return false; }
         int dialogIndex = findDialog(message.peer);
-        if (dialogIndex < 0) { return false; }
+        if (dialogIndex < 0)
+        {
+            // The chat list is a window, so a missing row means the reader has
+            // scrolled past this conversation - not that they are not in it.
+            // Everything below needs the row and is skipped; the transcript and
+            // the acknowledgement do not, and skipping those left an open chat
+            // silently unread for as long as it stayed open.
+            if (samePeer(openPeer, message.peer))
+            {
+                // The open peer rather than the update's, for the same reason
+                // the retained row is preferred below: it is the one carrying an
+                // access_hash, and the wire needs one.
+                message.peer = openPeer;
+                mergeOpenHistory(message);
+                if (!message.outgoing)
+                {
+                    requestMarkRead(openPeer, message.id);
+                }
+            }
+            // Still false: the row itself is genuinely missing and a refresh is
+            // the only thing that can bring it back.
+            return false;
+        }
 
         Dialog dialog = dialogs[dialogIndex];
         message.peer = dialog.peer;
@@ -3466,54 +3510,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     }
 
     /**
-     * Coalesce read acknowledgements on a dedicated worker. This cannot use the
-     * UI Worker: a history request may still be finishing when a pushed message
-     * arrives, and dropping readHistory then would leave the remote state stale.
+     * Queue a read acknowledgement for a dedicated worker.
+     *
+     * This cannot use the UI Worker: a history request may still be finishing
+     * when a pushed message arrives, and dropping readHistory then would leave
+     * the remote state stale. One thread drains the whole queue, so the second
+     * producer joins it rather than starting another.
      */
     private void requestMarkRead(Peer peer, int maxId)
     {
-        if (peer == null || maxId <= 0) { return; }
-        synchronized (readLock)
-        {
-            Peer previous = pendingReadPeer;
-            pendingReadPeer = peer;
-            if (!samePeer(peer, previous))
-            {
-                pendingReadMaxId = maxId;
-            }
-            else
-            {
-                pendingReadMaxId = Math.max(pendingReadMaxId, maxId);
-            }
-            if (readDrainRunning) { return; }
-            readDrainRunning = true;
-        }
+        if (!readQueue.offer(peer, maxId)) { return; }
         new Thread(new Runnable()
         {
             public void run()
             {
-                while (true)
-                {
-                    Peer peer;
-                    int maxId;
-                    synchronized (readLock)
-                    {
-                        peer = pendingReadPeer;
-                        maxId = pendingReadMaxId;
-                        pendingReadPeer = null;
-                        pendingReadMaxId = 0;
-                        if (peer == null)
-                        {
-                            readDrainRunning = false;
-                            return;
-                        }
-                    }
-                    try { telegram.markRead(peer, maxId); }
-                    catch (Throwable t)
-                    {
-                        Diag.warn("mark-read failed: " + shortMessage(t));
-                    }
-                }
+                while (readQueue.drainOne(readSink)) { }
             }
         }).start();
     }
