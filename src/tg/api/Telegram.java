@@ -535,6 +535,18 @@ public final class Telegram
         }).start();
     }
 
+    /**
+     * The data centre this account's key belongs to, connected or not.
+     *
+     * Kept current across a migration, so it is what a caller wants before
+     * anything has connected - the UI asks it to find the stored key whose
+     * seeding version it wants to report on the start screen.
+     */
+    public int accountDc()
+    {
+        return savedDc();
+    }
+
     private int savedDc()
     {
         String saved = store.loadString("dc");
