@@ -246,14 +246,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private Message[] openHistory = new Message[0];
 
     /**
-     * Highest message id ever seen for the open conversation.
+     * How far the open conversation has been read, or null when none is open.
      *
-     * {@code openHistory[0]} used to be that by construction. It is not any
-     * more: reading backwards slides the retained window off the newest end, and
-     * marking read against whatever happens to be at the head of the array would
-     * report a message the user scrolled past ten minutes ago.
+     * {@code openHistory[0]} used to be the newest message by construction. It
+     * is not any more: reading backwards slides the retained window off the
+     * newest end, and marking read against whatever happens to be at the head of
+     * the array would report a message the user scrolled past ten minutes ago.
+     *
+     * A value bound to its peer rather than a bare int, because the mark only
+     * ever rises and {@link #restoreScreen} can change the open conversation
+     * without passing through {@link #openDialog} - see {@link ReadMark}.
      */
-    private int newestKnownId;
+    private ReadMark readMark;
 
     /** Dialogs the server says exist, or 0 before it has said. */
     private int dialogTotal;
@@ -311,9 +315,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /**
      * A forward fetch returned nothing newer.
      *
-     * Separate from clamping {@link #newestKnownId}, which would look like the
-     * same thing and would quietly move the read mark backwards. This only
-     * stops asking; it clears the moment anything newer actually turns up.
+     * Separate from clamping {@link #readMark}, which would look like the same
+     * thing and would quietly move the read mark backwards. This only stops
+     * asking; it clears the moment anything newer actually turns up.
      */
     private boolean historyForwardStalled;
 
@@ -653,6 +657,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             chatScreen = context;
             openPeer = context.peer();
+            // Before setOpenHistory, which raises the mark: the stack can hold
+            // two chats at once - opening a forwarded message's source pushes
+            // one over the other - and coming back down must not carry the
+            // upper conversation's high-water mark into the lower one.
+            rebindReadMark(openPeer);
             setOpenHistory(context.messages());
             telegram.setActivePeer(openPeer);
         }
@@ -1442,7 +1451,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
         chatScreen = null;
         openHistory = new Message[0];
-        newestKnownId = 0;
+        readMark = null;
         historyPageInFlight = false;
         historyExhausted = false;
         historyForwardStalled = false;
@@ -2516,7 +2525,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // paint, a wrapped transcript and the inflated history response.
             MemoryPressure.reserve(CHAT_OPEN_BYTES);
             openPeer = peer;
-            newestKnownId = 0;
+            rebindReadMark(peer);
             historyPageInFlight = false;
             historyExhausted = false;
             historyForwardStalled = false;
@@ -2780,7 +2789,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // unable to get back to the present is the worse of the two.
         if (!historyForwardStalled
                 && chatScreen.messagesNewerThanViewport() < margin
-                && newestOpenId() < newestKnownId)
+                && newestOpenId() < knownNewestId())
         {
             loadNewerPage();
             return;
@@ -2949,15 +2958,36 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void noteNewest(Message[] messages)
     {
-        for (int i = 0; i < messages.length; i++)
+        if (readMark != null && readMark.note(messages))
         {
-            Message m = messages[i];
-            if (m != null && m.id > newestKnownId)
-            {
-                newestKnownId = m.id;
-                historyForwardStalled = false;
-            }
+            historyForwardStalled = false;
         }
+    }
+
+    /**
+     * Bind the read mark to {@code peer}, discarding another conversation's.
+     *
+     * Every path that changes the open chat comes through here, including the
+     * navigation one: {@link #restoreScreen} adopts whichever ChatScreen is
+     * topmost on the stack, and the mark rises but never falls, so without this
+     * a Back out of a forwarded message's source would leave that chat's
+     * high-water mark pointing at the conversation underneath it.
+     *
+     * Reopening the same conversation keeps the mark. Every id in it is a real
+     * server message in that chat, so it stays defensible, and dropping it would
+     * only re-fetch what was already known.
+     */
+    private void rebindReadMark(Peer peer)
+    {
+        if (readMark != null && readMark.ownedBy(peer)) { return; }
+        readMark = ReadMark.forPeer(peer);
+        historyForwardStalled = false;
+    }
+
+    /** How far the open conversation may be marked read, or 0. */
+    private int knownNewestId()
+    {
+        return ReadMark.newestKnownIdFor(readMark, openPeer);
     }
 
     /**
@@ -3231,11 +3261,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void markRead()
     {
-        if (newestKnownId == 0 || openPeer == null)
-        {
-            return;
-        }
-        requestMarkRead(openPeer, newestKnownId);
+        // requestMarkRead already refuses a missing chat and a non-id, which is
+        // what knownNewestId() answers when no conversation is open or the mark
+        // belongs to another one.
+        requestMarkRead(openPeer, knownNewestId());
     }
 
     // -------------------------------------------------------- live updates
@@ -3881,13 +3910,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         System.arraycopy(next, 0, openHistory, 0, count);
     }
 
+    /**
+     * Mark the whole open conversation read.
+     *
+     * The id is a maximum over every trustworthy source rather than the first
+     * one that answers. Both of the sources this used to consult are windows:
+     * the retained dialog scrolls out of the chat list, and the retained history
+     * slides off its newest end while reading backwards, which is exactly what
+     * {@link ReadMark} is kept for.
+     */
     private void markAllReadNow()
     {
         if (openPeer == null) { return; }
-        int maxId = 0;
         int dialog = findDialog(openPeer);
-        if (dialog >= 0) { maxId = dialogs[dialog].topMessageId; }
-        if (maxId <= 0 && openHistory.length > 0) { maxId = openHistory[0].id; }
+        int maxId = ReadMark.highest(knownNewestId(),
+                dialog >= 0 ? dialogs[dialog].topMessageId : 0, openHistory);
         if (maxId <= 0) { return; }
         requestMarkRead(openPeer, maxId);
         if (dialog >= 0)
@@ -4299,7 +4336,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 ForwardOpen result = (ForwardOpen) value;
                 openPeer = result.peer;
-                newestKnownId = 0;
+                rebindReadMark(openPeer);
                 historyPageInFlight = false;
                 historyExhausted = false;
                 historyForwardStalled = false;

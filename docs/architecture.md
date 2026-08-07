@@ -365,6 +365,28 @@ stays correct and short after the message it answers has been evicted from the
 retained history window. A refused `Worker.submit` leaves the text and the reply
 target exactly where they were, and says so.
 
+**A read mark belongs to one chat too, and is a maximum rather than a first
+answer.** `Mark all read` used to take the retained dialog's `topMessageId` and
+fall back to `openHistory[0].id`. Both of those are *windows*: the chat list
+scrolls past a row and drops it, and the retained history slides off its newest
+end while reading backwards — which is the whole reason a separate high-water
+mark exists. So the one path a reader triggers deliberately was the one that
+marked read up to wherever they had scrolled to, leaving everything after it
+unread. `tg.app.ReadMark.highest` is now a numeric maximum over the mark, the
+dialog row and everything retained, and nothing below 1 counts as a message.
+Marking with an id above what is on screen is safe when it came from the server,
+because `messages.readHistory` takes the maximum of it and the cursor it already
+holds; an invented id is not.
+
+The mark is bound to its peer for the same reason the composer is. It only ever
+rises — an older page must not walk it backwards — so the value alone never says
+when it stops applying, and `restoreScreen` adopts whichever `ChatScreen` is
+topmost on the navigation stack, which can hold two: opening a forwarded
+message's source pushes a second chat over the first. Back out of it and a bare
+`int` still held the channel's mark while the chat underneath was open. The kind
+and id are captured with the value, `newestKnownIdFor` answers 0 for anyone
+else's, and every peer change goes through one `rebindReadMark`.
+
 **Logging out erases the account, and says what it could not erase.** The
 cleanup used to be split in two, and neither half had the whole list:
 `Telegram.logOut` cleared the auth key of the data centre it happened to be
