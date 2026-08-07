@@ -228,11 +228,11 @@ of every compiled class and rejects anything outside
 ## Test
 
 ```bash
-./tools/test.sh                # all 44 suites
+./tools/test.sh                # all 45 suites
 ./tools/test.sh -Filter bigint # substring match on the suite name
 ```
 
-44 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
+45 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
 serialization, transport, persistence, authorization, content, UI logic and the
 memory budgets.
 There is no JUnit and no reflection — the registry is explicit so the same cases
