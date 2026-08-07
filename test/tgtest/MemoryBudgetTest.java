@@ -4,8 +4,6 @@ import tg.app.HeapMeasurement;
 import tg.mem.MemoryBudget;
 import tg.mem.MemoryPressure;
 import tg.mem.MemoryRelief;
-import tg.mt.AuthKey;
-import tg.mt.AuthKeyStore;
 
 /**
  * The budget holder is the only place in the client that still carries a size
@@ -350,7 +348,7 @@ public final class MemoryBudgetTest implements Test
      */
     private static void measurementSurvivesARestart()
     {
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
 
         MemoryBudget.reset();
         Assert.isFalse("an empty store has nothing to apply",
@@ -395,7 +393,7 @@ public final class MemoryBudgetTest implements Test
 
     private static void aProbeThatNeverReturnsStopsBeingTried()
     {
-        MemoryStore store = new MemoryStore();
+        MemoryAuthKeyStore store = new MemoryAuthKeyStore();
         Assert.isFalse("a fresh store is not exhausted",
                 HeapMeasurement.exhausted(store));
 
@@ -606,30 +604,6 @@ public final class MemoryBudgetTest implements Test
         Assert.equal("it prices the measured avatar",
                 MemoryBudget.photoDecodeCost(160, 160, 16 * 1024),
                 MemoryBudget.avatarDecodeCost());
-    }
-
-    /** Minimal AuthKeyStore double: only the string half is exercised here. */
-    private static final class MemoryStore implements AuthKeyStore
-    {
-        private final java.util.Hashtable values = new java.util.Hashtable();
-
-        public tg.mt.AuthKeyLoad load(int dcId, boolean testEnvironment)
-        {
-            return tg.mt.AuthKeyLoad.notFound();
-        }
-        public void save(AuthKey key) { }
-        public void clear(int dcId, boolean testEnvironment) { }
-
-        public String loadString(String name)
-        {
-            return (String) values.get(name);
-        }
-
-        public void saveString(String name, String value)
-        {
-            if (value == null) { values.remove(name); }
-            else { values.put(name, value); }
-        }
     }
 
     // -------------------------------------------------------------- helpers

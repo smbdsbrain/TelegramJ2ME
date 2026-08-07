@@ -205,6 +205,19 @@ public final class UpdateSync
         }
     }
 
+    /**
+     * Erase the durable cursors, and report a failure instead of logging it.
+     *
+     * {@link #deactivate} clears them too, but it is a lifecycle step that must
+     * not throw at its callers, so it can only log. The logout wipe needs the
+     * opposite: a cursor table that survived is an account-bound record still
+     * on the handset, and the user has to be told.
+     */
+    public void clearStore() throws IOException
+    {
+        synchronized (lock) { store.clear(); }
+    }
+
     /** Reader-thread entry point. It never parses, writes RMS or performs RPC. */
     public void accept(byte[] body)
     {

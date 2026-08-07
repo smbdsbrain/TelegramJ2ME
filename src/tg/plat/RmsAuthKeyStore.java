@@ -51,9 +51,11 @@ import tg.tl.Utf8;
  *
  * <h3>What a key record contains</h3>
  * The bytes and the seeding version that produced them, in one value - see
- * {@link AuthKeyRecord}. This class owns where a record lives and whether the
- * write took; it does not own what a key value looks like, which is also what
- * lets the desktop store speak the same format.
+ * {@link AuthKeyRecord}. This class owns which record store an entry lives in
+ * and whether the write took; it owns neither what a key value looks like nor
+ * what it is called, which is what lets the desktop store speak the same format
+ * and lets the logout sweep in {@link tg.api.AccountWipe} match on
+ * {@link AuthKey#entryPrefix} without restating it.
  */
 public final class RmsAuthKeyStore implements AuthKeyStore
 {
@@ -81,7 +83,7 @@ public final class RmsAuthKeyStore implements AuthKeyStore
 
     public synchronized AuthKeyLoad load(int dcId, boolean testEnvironment)
     {
-        String name = keyName(dcId, testEnvironment);
+        String name = AuthKey.entryName(dcId, testEnvironment);
         // slot[0] is the value, slot[1] the class of whatever stopped the read;
         // CLDC has no tuple and this is the same out-parameter shape used by
         // Session.encrypt.
@@ -123,7 +125,7 @@ public final class RmsAuthKeyStore implements AuthKeyStore
     public synchronized int storedSeeding(int dcId, boolean testEnvironment)
     {
         String[] slot = new String[2];
-        if (read(keyName(dcId, testEnvironment), slot) != READ_OK)
+        if (read(AuthKey.entryName(dcId, testEnvironment), slot) != READ_OK)
         {
             return AuthKey.SEEDING_NONE;
         }
@@ -132,7 +134,7 @@ public final class RmsAuthKeyStore implements AuthKeyStore
 
     public synchronized void save(AuthKey key)
     {
-        if (saveVerified(keyName(key.dcId(), key.isTestEnvironment()),
+        if (saveVerified(AuthKey.entryName(key.dcId(), key.isTestEnvironment()),
                          AuthKeyRecord.encode(key)))
         {
             Diag.info("persisted " + key.describe());
@@ -149,7 +151,7 @@ public final class RmsAuthKeyStore implements AuthKeyStore
 
     public synchronized void clear(int dcId, boolean testEnvironment)
     {
-        saveString(keyName(dcId, testEnvironment), null);
+        saveString(AuthKey.entryName(dcId, testEnvironment), null);
     }
 
     /**
@@ -255,15 +257,43 @@ public final class RmsAuthKeyStore implements AuthKeyStore
         }
     }
 
-    /** Wipe everything - the "log out" path. */
-    public synchronized void clearAll()
+    /**
+     * The logout sweep: delete listed entries, then look again before saying so.
+     *
+     * This replaces a {@code clearAll} that deleted the whole record store. It
+     * was never called, and it could not have been: the proxy, the theme, the
+     * log level and the measured heap ceiling live in here beside the keys, and
+     * losing those to a logout is not a trade any user agreed to. It also
+     * swallowed every failure, which is the one thing a privacy operation may
+     * not do.
+     *
+     * The second pass is not defensive habit. RMS on an unknown handset is
+     * exactly where a delete returns without deleting, and the caller is about
+     * to tell someone their account is off this phone.
+     */
+    public synchronized boolean clearEntries(String[] names, String[] prefixes)
     {
+        RecordStore rs = null;
         try
         {
-            RecordStore.deleteRecordStore(STORE);
-            Diag.info("all stored keys and session state deleted");
+            rs = RecordStore.openRecordStore(STORE, true);
+            sweep(rs, names, prefixes, true);
+            int left = sweep(rs, names, prefixes, false);
+            if (left != 0)
+            {
+                return fail("account entries",
+                        left + " of them are still stored", null);
+            }
+            return true;
         }
-        catch (Throwable ignored) { /* nothing stored yet */ }
+        catch (Throwable t)
+        {
+            return fail("account entries", Diag.className(t), t);
+        }
+        finally
+        {
+            close(rs);
+        }
     }
 
     /** One line for the Diagnostics screen; null while nothing has failed. */
@@ -311,6 +341,77 @@ public final class RmsAuthKeyStore implements AuthKeyStore
         }
     }
 
+    /**
+     * Visit every record whose entry name is listed, deleting or counting.
+     *
+     * The enumeration is not kept updated, so deleting inside the loop walks a
+     * stable snapshot - the same assumption {@link #removeMatching} makes.
+     *
+     * @return how many listed entries were seen
+     */
+    private static int sweep(RecordStore rs, String[] names, String[] prefixes,
+                             boolean delete) throws Exception
+    {
+        RecordEnumeration en = null;
+        int seen = 0;
+        try
+        {
+            en = rs.enumerateRecords(null, null, false);
+            while (en.hasNextElement())
+            {
+                int id = en.nextRecordId();
+                if (!isListed(nameOf(rs, id), names, prefixes)) { continue; }
+                if (!delete) { seen++; continue; }
+                try { rs.deleteRecord(id); }
+                catch (Throwable ignored)
+                {
+                    // Not reported here: the counting pass is what decides,
+                    // and a record that vanished under us is a success.
+                }
+            }
+        }
+        finally
+        {
+            if (en != null) { try { en.destroy(); } catch (Throwable ignored) { } }
+        }
+        return seen;
+    }
+
+    /** The entry name held by record {@code id}, or null when unreadable. */
+    private static String nameOf(RecordStore rs, int id)
+    {
+        try
+        {
+            byte[] raw = rs.getRecord(id);
+            if (raw == null) { return null; }
+            String line = Utf8.decode(raw);
+            int eq = line.indexOf('=');
+            return eq > 0 ? line.substring(0, eq) : null;
+        }
+        catch (Throwable ignored)
+        {
+            return null; // deleted or unreadable id
+        }
+    }
+
+    private static boolean isListed(String name, String[] names,
+                                    String[] prefixes)
+    {
+        if (name == null) { return false; }
+        for (int i = 0; names != null && i < names.length; i++)
+        {
+            if (name.equals(names[i])) { return true; }
+        }
+        for (int i = 0; prefixes != null && i < prefixes.length; i++)
+        {
+            if (prefixes[i] != null && name.startsWith(prefixes[i]))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void removeMatching(RecordStore rs, String name, int keepId)
     {
         RecordEnumeration en = null;
@@ -353,11 +454,6 @@ public final class RmsAuthKeyStore implements AuthKeyStore
                                            + detail));
         }
         return AuthKeyLoad.corrupt(detail);
-    }
-
-    private static String keyName(int dcId, boolean test)
-    {
-        return "authkey." + (test ? "test" : "prod") + "." + dcId;
     }
 
     private static void close(RecordStore rs)

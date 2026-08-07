@@ -37,6 +37,7 @@ import tg.api.Profile;
 import tg.api.Telegram;
 import tg.api.UpdateBatch;
 import tg.api.UpdateState;
+import tg.api.WipeReport;
 import tg.crypto.Rng;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
@@ -133,6 +134,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdCrashLog = new Command("Crash log", Command.SCREEN, 21);
     private final Command cmdUpload  = new Command("Upload", Command.SCREEN, 18);
     private final Command cmdClearCrash = new Command("Clear", Command.SCREEN, 3);
+    private final Command cmdRetryWipe =
+            new Command("Retry cleanup", Command.SCREEN, 1);
     private final Command cmdSettings = new Command("Settings", Command.SCREEN, 8);
     private final Command cmdLogOut  = new Command("Log out", Command.SCREEN, 9);
     private final Command cmdLogOutEverywhere =
@@ -335,6 +338,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private volatile int avatarGeneration;
 
     /**
+     * False from the moment a logout starts until the next sign-in.
+     *
+     * The account is what the caches are keyed on, and three separate writers -
+     * the dialog cache, the history cache and the avatar worker - ask
+     * {@link #cacheAccountId} before every write. {@code Worker} clears its busy
+     * flag before running the callback, and the avatar worker is a second
+     * {@code Worker} entirely, so work belonging to the account being erased can
+     * and does still be running when the erasure starts. Answering 0 from that
+     * moment turns every one of those writes into a no-op, which is a smaller
+     * and more checkable thing than a generation threaded through each callback.
+     */
+    private volatile boolean accountActive = true;
+
+    /** What the last logout managed to erase; null until one has run. */
+    private WipeReport lastWipe;
+
+    /**
      * Set once this handset has refused a second concurrent socket.
      *
      * Not persisted: it is a property of the device plus the network in front
@@ -436,6 +456,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                 connectionConfig, connectionDiagnostics);
         telegram.setOutgoingStore(outgoingStore);
         telegram.setUpdateStateStore(updateStateStore);
+        // The three stores the shell owns rather than the client. Registered
+        // here so there is one list of what belongs to an account, instead of
+        // a second cleanup path in the logout callback that could only log its
+        // failures.
+        telegram.accountWipe().add("drafts", draftStore);
+        telegram.accountWipe().add("avatars", avatarDiskCache);
+        telegram.accountWipe().add("chat cache", conversationCache);
         telegram.setConnectionListener(new Telegram.ConnectionListener()
         {
             public void onConnectionState(final int state, final int retrySeconds,
@@ -858,6 +885,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             confirmLogOutEverywhere();
         }
+        else if (c == cmdRetryWipe)
+        {
+            retryWipe();
+        }
         else if (c == cmdConfirmLogOutEverywhere)
         {
             logOutEverywhere();
@@ -1257,7 +1288,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void logOut()
     {
         showBusy("Log out", "Logging out...");
-        worker.submit(new Worker.Task()
+        // Before the task starts, not inside it. Work already in flight belongs
+        // to the account being erased, and this is what stops it writing - see
+        // accountActive.
+        accountActive = false;
+        boolean started = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.logOut"; }
 
@@ -1270,26 +1305,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                finishLoggedOut();
+                finishLoggedOut(true, null);
             }
 
             public void onFailure(Throwable error)
             {
-                if (!telegram.isAuthorized())
-                {
-                    // Telegram.logOut always clears the local key in finally:
-                    // a lost reply must not leave the UI showing stale chats.
-                    finishLoggedOut();
-                    showAlert("The local session was cleared, but Telegram "
-                              + "did not confirm the server logout:\n"
-                              + shortMessage(error), AlertType.WARNING, phoneBox);
-                }
-                else
-                {
-                    showRetryableError("Log out failed", error);
-                }
+                // Telegram.logOut erases locally in a finally, so a failure
+                // here is always "the server did not confirm", never "nothing
+                // happened". The two are reported apart because they have
+                // different answers: one is worth retrying with Telegram, the
+                // other means the account may still be on this phone.
+                finishLoggedOut(false, error);
             }
         });
+        if (!started) { logOutRefused("Log out"); }
     }
 
     private void confirmLogOutEverywhere()
@@ -1307,7 +1336,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void logOutEverywhere()
     {
         showBusy("Log out everywhere", "Ending all Telegram sessions...");
-        worker.submit(new Worker.Task()
+        accountActive = false;
+        boolean started = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.resetAuthorizations"; }
 
@@ -1320,47 +1350,224 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                finishLoggedOut();
+                finishLoggedOut(true, null);
             }
 
             public void onFailure(Throwable error)
             {
-                if (!telegram.isAuthorized())
+                // auth.resetAuthorizations can fail before the ordinary logout
+                // it wraps is reached, in which case nothing local was erased
+                // at all. finishLoggedOut runs the erasure itself when that has
+                // happened, so this branch cannot be the one that leaves an
+                // account on the handset.
+                finishLoggedOut(false, error);
+            }
+        });
+        if (!started) { logOutRefused("Log out everywhere"); }
+    }
+
+    /**
+     * Nothing was logged out, so nothing may stay closed.
+     *
+     * {@code Worker} runs one operation at a time and refuses while it is busy.
+     * Reopening the caches matters more here than the message does: the account
+     * is still signed in, and leaving {@code accountActive} false would stop it
+     * caching for the rest of the session with nothing to show for it.
+     */
+    private void logOutRefused(String title)
+    {
+        accountActive = true;
+        showRetryableError(title, new IllegalStateException(
+                "another operation is still running: " + worker.currentTask()));
+    }
+
+    /**
+     * Land on the login screen, having first dropped everything of the account.
+     *
+     * The store clears that used to live here have moved into
+     * {@link tg.api.AccountWipe}, which runs inside {@code Telegram.logOut} and
+     * reports what it could not erase. What is left here is the half a wipe
+     * cannot reach: screens, arrays and text fields that are still holding the
+     * previous account in this MIDlet's heap.
+     *
+     * It is a long list on purpose. Everything below was live at some point in
+     * a signed-in session, and a field left set is a message, a name or a phone
+     * number visible to whoever signs in next.
+     *
+     * @param serverConfirmed whether Telegram acknowledged the logout
+     * @param error           why it did not, or null
+     */
+    private void finishLoggedOut(boolean serverConfirmed, Throwable error)
+    {
+        // The screens first, so the draft autosave thread - which fires every
+        // three seconds while a compose box is on screen - cannot write one
+        // more draft into the store that is about to be, or has just been,
+        // emptied.
+        draftAutosaveRunning = false;
+        composeBox = null;
+        openPeer = null;
+        lastSavedDraft = "";
+        replyTarget = null;
+        if (photoToken != null) { photoToken.cancel(); }
+        synchronized (readLock) { pendingReadPeer = null; pendingReadMaxId = 0; }
+
+        dialogs = new Dialog[0];
+        visibleDialogs = new Dialog[0];
+        dialogTotal = 0;
+        resetDialogWindow();
+        dialogPageInFlight = false;
+        dialogList = null;
+        dialogFilter = "";
+        filterBox = null;
+
+        chatScreen = null;
+        openHistory = new Message[0];
+        newestKnownId = 0;
+        historyPageInFlight = false;
+        historyExhausted = false;
+        historyForwardStalled = false;
+
+        outboxList = null;
+        outboxItems = new OutgoingMessage[0];
+        forwardList = null;
+        forwardTargets = new Peer[0];
+        actionMessage = null;
+        actionPeer = null;
+        deleteConfirm = null;
+
+        reactionScreen = null;
+        reactionActorsScreen = null;
+        reactionMessageId = 0;
+        reactionOptionsPeer = null;
+        reactionOptionsLoading = false;
+        reactionPalette = ReactionCatalog.EMOJI;
+        reactionLabels = ReactionCatalog.LABELS;
+
+        photoScreen = null;
+        photoToken = null;
+        photoMessage = null;
+        photoReferenceExpired = false;
+        cachedPhotoId = 0;
+        cachedPhoto = null;
+        thumbnailGeneration++;
+
+        profileScreen = null;
+        editProfileForm = null;
+        profileFirstName = null;
+        profileLastName = null;
+        profileAbout = null;
+        currentProfile = null;
+        profileAvatarIndex = -1;
+        profilePhoto = false;
+
+        avatarGeneration++;
+        avatarCache.clear();
+
+        // Recreated on the way in rather than reused: phoneBox is built once
+        // and keeps whatever was typed into it, which after a logout is the
+        // previous account's number sitting on the login screen.
+        phoneNumber = null;
+        phoneCodeHash = null;
+        phoneBox = null;
+        codeBox = null;
+        passwordBox = null;
+        settingsScreen = null;
+
+        // Only now is there an answer to give. A wipe that never ran - the
+        // "log out everywhere" path can fail before reaching the local half -
+        // is run here, so no route out of a session skips it.
+        WipeReport report = telegram.lastWipeReport();
+        if (report == null) { report = telegram.accountWipe().run(); }
+        lastWipe = report;
+
+        showPhoneBox();
+        if (!report.complete)
+        {
+            showWipeIncomplete(report, serverConfirmed, error);
+        }
+        else if (!serverConfirmed)
+        {
+            showAlert("This phone no longer holds the account, but Telegram "
+                      + "did not confirm the logout:\n" + shortMessage(error)
+                      + "\n\nThe session may still be listed on your other "
+                      + "devices.", AlertType.WARNING, phoneBox);
+        }
+    }
+
+    /**
+     * The account may still be on this handset, and saying so is the point.
+     *
+     * Separated from an ordinary error screen because the failure is not the
+     * user's connection and retrying the logout would not address it: the
+     * server side may well have succeeded. What can be retried is the erasure,
+     * so that is the command this offers.
+     */
+    private void showWipeIncomplete(WipeReport report, boolean serverConfirmed,
+                                    Throwable error)
+    {
+        Form form = new Form("Local data was not erased");
+        form.append("Some of this account could not be deleted from this "
+                    + "phone:\n" + report.failed
+                    + "\n\nUntil it is, signing in as someone else can show "
+                    + "the previous account's chats.");
+        if (!serverConfirmed)
+        {
+            form.append("\n\nTelegram also did not confirm the logout: "
+                        + shortMessage(error));
+        }
+        form.addCommand(cmdRetryWipe);
+        form.addCommand(cmdDiag);
+        form.addCommand(cmdLog);
+        form.addCommand(cmdBack);
+        form.addCommand(cmdExit);
+        form.setCommandListener(this);
+        pushScreen(form);
+    }
+
+    /** Try the local erasure again, on the worker: it is RMS-bound work. */
+    private void retryWipe()
+    {
+        showBusy("Erasing", "Deleting local account data...");
+        boolean started = worker.submit(new Worker.Task()
+        {
+            public String name() { return "account wipe retry"; }
+
+            public Object run() throws Exception
+            {
+                return telegram.accountWipe().run();
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                WipeReport report = (WipeReport) result;
+                lastWipe = report;
+                showPhoneBox();
+                if (!report.complete)
                 {
-                    // resetAuthorizations succeeded and the following current
-                    // logout cleared local state, but its reply was lost.
-                    finishLoggedOut();
-                    showAlert("Other sessions were ended and the local session "
-                              + "was cleared, but Telegram did not confirm the "
-                              + "last logout:\n" + shortMessage(error),
-                              AlertType.WARNING, phoneBox);
+                    showWipeIncomplete(report, true, null);
                 }
                 else
                 {
-                    showRetryableError("Log out everywhere failed", error);
+                    showAlert("This phone no longer holds the account.",
+                              AlertType.INFO, phoneBox);
                 }
             }
-        });
-    }
 
-    private void finishLoggedOut()
-    {
-        try { draftStore.clear(); }
-        catch (Throwable t) { Diag.error("draft clear failed", t); }
-        dialogs = new Dialog[0];
-        dialogTotal = 0;
-        resetDialogWindow();
-        dialogList = null;
-        avatarGeneration++;
-        avatarCache.clear();
-        try { avatarDiskCache.clear(); }
-        catch (Throwable t) { Diag.error("avatar cache clear failed", t); }
-        try { conversationCache.clear(); }
-        catch (Throwable t) { Diag.error("conversation cache clear failed", t); }
-        openPeer = null;
-        phoneCodeHash = null;
-        passwordBox = null;
-        showPhoneBox();
+            public void onFailure(Throwable retryError)
+            {
+                showPhoneBox();
+                showAlert("The erasure could not be retried:\n"
+                          + shortMessage(retryError),
+                          AlertType.ERROR, phoneBox);
+            }
+        });
+        if (!started)
+        {
+            showPhoneBox();
+            showAlert("Another operation is still running. Try the cleanup "
+                      + "again in a moment.", AlertType.WARNING, phoneBox);
+        }
     }
 
     // ------------------------------------------------------------ dialogs
@@ -1374,6 +1581,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void loadDialogs()
     {
+        // Every route to this method has an authorized account behind it -
+        // sign-in, 2FA, a verified stored session, or Refresh from the list
+        // itself - so this is where the caches are allowed to fill again after
+        // a logout closed them. See accountActive.
+        accountActive = true;
         final Peer selectedPeer = selectedDialogPeer();
         avatarCache.clearFailures();
         resetDialogWindow();
@@ -1605,7 +1817,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     avatarAdmittedAt = MemoryPressure.headroom();
                     Image decoded = JpegDecoder.decode(bytes, null);
                     Image scaled = ImageScaler.fitBox(decoded, target, target);
-                    if (downloaded && accountId != 0)
+                    // Re-asked, not reused: the id was read before the download,
+                    // and a logout can have happened during it. This worker is
+                    // a separate Worker from the one running auth.logOut, so
+                    // the two genuinely overlap.
+                    if (downloaded && accountId != 0 && accountActive)
                     {
                         avatarDiskCache.save(accountId, Dc.isTest(), peer, bytes);
                     }
@@ -1730,6 +1946,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private long cacheAccountId()
     {
+        // The one gate every cache write passes through. See accountActive.
+        if (!accountActive) { return 0; }
         Peer self = telegram == null ? null : telegram.peers().self();
         if (self != null) { return self.id; }
         if (store == null) { return 0; }
@@ -4668,12 +4886,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             "tgkeys", "tgupdates", "tgdialogcache", "tghistorycache",
             "tgavatars", "tgoutbox", "tgdrafts", "tgcrash"
         });
-        String[] out = new String[stores.length + 2];
+        String[] out = new String[stores.length + 3];
         out[0] = "persistence marker: " + String.valueOf(startupMarker);
         System.arraycopy(stores, 0, out, 1, stores.length);
         String failures = store == null ? null : store.writeFailureSummary();
-        out[out.length - 1] = "key store: "
+        out[out.length - 2] = "key store: "
                 + (failures == null ? "no write failures" : failures);
+        // Survives leaving the warning screen, so a partial erasure can still
+        // be described after the user has navigated away from it.
+        out[out.length - 1] = "last logout: "
+                + (lastWipe == null ? "none this run" : lastWipe.describe());
         return out;
     }
 

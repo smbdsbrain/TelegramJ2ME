@@ -3,6 +3,9 @@ package tgtest;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Properties;
 
 import tg.mt.AuthKey;
@@ -40,7 +43,7 @@ public final class FileAuthKeyStore implements AuthKeyStore
 
     public AuthKeyLoad load(int dcId, boolean testEnvironment)
     {
-        String value = props.getProperty(keyName(dcId, testEnvironment));
+        String value = props.getProperty(AuthKey.entryName(dcId, testEnvironment));
         if (value == null || value.length() == 0)
         {
             return AuthKeyLoad.notFound();
@@ -61,14 +64,14 @@ public final class FileAuthKeyStore implements AuthKeyStore
 
     public void save(AuthKey key)
     {
-        props.setProperty(keyName(key.dcId(), key.isTestEnvironment()),
+        props.setProperty(AuthKey.entryName(key.dcId(), key.isTestEnvironment()),
                           AuthKeyRecord.encode(key));
         store();
     }
 
     public void clear(int dcId, boolean testEnvironment)
     {
-        props.remove(keyName(dcId, testEnvironment));
+        props.remove(AuthKey.entryName(dcId, testEnvironment));
         store();
     }
 
@@ -90,20 +93,43 @@ public final class FileAuthKeyStore implements AuthKeyStore
         store();
     }
 
-    public void clearAll()
+    /** The logout sweep, over a properties file instead of RMS. */
+    public boolean clearEntries(String[] names, String[] prefixes)
     {
-        props.clear();
+        List<String> doomed = new ArrayList<String>();
+        for (Enumeration<?> e = props.propertyNames(); e.hasMoreElements(); )
+        {
+            String name = String.valueOf(e.nextElement());
+            if (isListed(name, names, prefixes)) { doomed.add(name); }
+        }
+        for (int i = 0; i < doomed.size(); i++)
+        {
+            props.remove(doomed.get(i));
+        }
         store();
+        return true;
+    }
+
+    private static boolean isListed(String name, String[] names,
+                                    String[] prefixes)
+    {
+        for (int i = 0; names != null && i < names.length; i++)
+        {
+            if (name.equals(names[i])) { return true; }
+        }
+        for (int i = 0; prefixes != null && i < prefixes.length; i++)
+        {
+            if (prefixes[i] != null && name.startsWith(prefixes[i]))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public File file()
     {
         return file;
-    }
-
-    private static String keyName(int dcId, boolean test)
-    {
-        return "authkey." + (test ? "test" : "prod") + "." + dcId;
     }
 
     private void load()

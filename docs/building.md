@@ -228,7 +228,7 @@ of every compiled class and rejects anything outside
 ## Test
 
 ```bash
-./tools/test.sh                # all 42 suites
+./tools/test.sh                # all 43 suites
 ./tools/test.sh -Filter bigint # substring match on the suite name
 ```
 

@@ -76,7 +76,18 @@ public final class Telegram
     private final PeerCache peers = new PeerCache();
     private final DcDirectory dcDirectory = new DcDirectory();
     private final UpdateSync updates;
+    private final AccountWipe wipe;
     private final Object outboxLock = new Object();
+
+    /**
+     * Incremented when the account leaves this handset.
+     *
+     * Work already in flight belongs to the account that started it. The outbox
+     * drain is the one that writes: it runs on its own thread, and without this
+     * it would file a "sending" row into the store the wipe had just emptied.
+     */
+    private volatile int accountEpoch;
+    private volatile WipeReport lastWipe;
 
     private MtClient client;
     private OutgoingStore outgoingStore;
@@ -134,6 +145,28 @@ public final class Telegram
                 return Telegram.this.invoke(query);
             }
         }, peers);
+        // Built here rather than handed in, so the credentials are erased on
+        // every path that has a client at all - including the live tests, which
+        // never assemble a MIDlet. The two stores this class owns are
+        // registered once, here, rather than in their setters: an adapter reads
+        // the field, so re-setting a store does not need a second slot.
+        this.wipe = new AccountWipe(store, Dc.isTest());
+        this.wipe.add("outbox", new AccountStore()
+        {
+            // Emptied under outboxLock, which the drain thread also takes to
+            // write, so the two cannot interleave.
+            public void clear() throws IOException
+            {
+                synchronized (outboxLock)
+                {
+                    if (outgoingStore != null) { outgoingStore.clear(); }
+                }
+            }
+        });
+        this.wipe.add("update state", new AccountStore()
+        {
+            public void clear() throws IOException { updates.clearStore(); }
+        });
     }
 
     public PeerCache peers()
@@ -880,12 +913,11 @@ public final class Telegram
             }
             if (e.isAuthKeyInvalid())
             {
+                // Someone ended this session from another device. That is a
+                // logout, and it has to erase what a logout erases - not the
+                // one key this used to take.
                 Diag.warn("stored session is no longer valid: " + e.getMessage());
-                store.clear(dcId, Dc.isTest());
-                store.saveString("authorized", null);
-                updates.close();
-                updates.deactivate();
-                authorized = false;
+                eraseLocalAccount();
                 return AuthCheck.no(e.getMessage());
             }
             return inconclusive(e);
@@ -915,6 +947,16 @@ public final class Telegram
         return AuthCheck.unknown(e);
     }
 
+    /**
+     * Log out here and erase the account from this handset.
+     *
+     * The erasure is in a {@code finally} because the two halves are
+     * independent: Telegram may never answer - a lost reply on a train - and
+     * the account still has to leave the phone. The report of what was erased
+     * survives the throw in {@link #lastWipeReport}, so the caller can tell
+     * "the server did not confirm" from "a cache would not delete", which are
+     * different problems with different answers.
+     */
     public void logOut() throws IOException
     {
         try
@@ -923,16 +965,55 @@ public final class Telegram
         }
         finally
         {
-            store.clear(dcId, Dc.isTest());
-            store.saveString("authorized", null);
-            peers.clear();
-            cachedAvailableReactions = null;
-            authorized = false;
-            updates.close();
-            updates.deactivate();
-            if (outgoingStore != null) { outgoingStore.clear(); }
-            notifyOutboxChanged();
+            eraseLocalAccount();
         }
+    }
+
+    /**
+     * End the account on this handset: session, memory, then storage.
+     *
+     * Shared by Log out and by the server reporting the key as revoked, which
+     * is a logout someone performed from another device. Both mean the same
+     * thing locally, and only one of them used to act like it - the revoked
+     * path cleared one key and left the drafts, the caches and the media import
+     * markers for whoever signed in next.
+     *
+     * The socket is deliberately left open. {@link #invoke} refuses when there
+     * is no client, and the sign-in that follows a logout goes straight to
+     * {@code auth.sendCode} without reconnecting, so closing here would answer
+     * the user's next keypress with "not connected". What has to stop is
+     * writing, not talking, and the account epoch below is what stops it.
+     */
+    private void eraseLocalAccount()
+    {
+        authorized = false;
+        // Bumped under the lock the outbox drain writes under: a drain already
+        // between a send and its record update either writes before the erase
+        // or not at all, never after it.
+        synchronized (outboxLock) { accountEpoch++; }
+        updates.close();
+        updates.deactivate();
+        peers.clear();
+        cachedAvailableReactions = null;
+        lastWipe = wipe.run();
+        notifyOutboxChanged();
+    }
+
+    /**
+     * What the last local erasure managed to erase, or null if none has run.
+     *
+     * Readable after {@link #logOut} has thrown, which is the case it exists
+     * for.
+     */
+    public WipeReport lastWipeReport()
+    {
+        return lastWipe;
+    }
+
+    /** The list of what belongs to the account, for the shell to add to. */
+    public AccountWipe accountWipe()
+    {
+        return wipe;
     }
 
     /**
@@ -943,9 +1024,29 @@ public final class Telegram
      */
     public void logOutEverywhere() throws IOException
     {
-        requireTrue(invoke(Requests.resetAuthorizations()),
-                    "auth.resetAuthorizations");
-        logOut();
+        // The two halves are reported together but must not be conditional on
+        // each other. This used to throw straight out of resetAuthorizations,
+        // which left the account signed in and fully stored on the handset the
+        // user was holding - the one session they could definitely end.
+        IOException failure = null;
+        try
+        {
+            requireTrue(invoke(Requests.resetAuthorizations()),
+                        "auth.resetAuthorizations");
+        }
+        catch (IOException e)
+        {
+            failure = e;
+        }
+        try
+        {
+            logOut();
+        }
+        catch (IOException e)
+        {
+            if (failure == null) { failure = e; }
+        }
+        if (failure != null) { throw failure; }
     }
 
     // ------------------------------------------------------------ messaging
@@ -1472,12 +1573,46 @@ public final class Telegram
         }).start();
     }
 
+    /**
+     * Write an outbox row unless the account it belongs to has gone.
+     *
+     * Under {@code outboxLock}, which the wipe also takes to empty the store,
+     * so the two cannot interleave: the row is written before the erase or not
+     * at all.
+     *
+     * @return false when this drain is stale and must stop
+     */
+    private boolean saveOutgoing(int epoch, OutgoingMessage message)
+            throws IOException
+    {
+        synchronized (outboxLock)
+        {
+            if (epoch != accountEpoch || outgoingStore == null) { return false; }
+            outgoingStore.save(message);
+            return true;
+        }
+    }
+
+    /** @return false when this drain is stale and must stop */
+    private boolean removeOutgoing(int epoch, int localId) throws IOException
+    {
+        synchronized (outboxLock)
+        {
+            if (epoch != accountEpoch || outgoingStore == null) { return false; }
+            outgoingStore.remove(localId);
+            return true;
+        }
+    }
+
     private void drainOutbox()
     {
         long retryAfter = 0;
+        // The account this drain belongs to. A logout during a send must not be
+        // followed by a row landing back in the store it just emptied.
+        final int epoch = accountEpoch;
         try
         {
-            while (connectionState() == ONLINE)
+            while (connectionState() == ONLINE && epoch == accountEpoch)
             {
                 OutgoingMessage[] messages = outgoingStore.list();
                 OutgoingMessage next = null;
@@ -1500,13 +1635,13 @@ public final class Telegram
                 next.state = OutgoingMessage.SENDING;
                 next.attempts++;
                 next.lastError = "";
-                outgoingStore.save(next);
+                if (!saveOutgoing(epoch, next)) { return; }
                 notifyOutboxChanged();
                 try
                 {
                     sendMessage(next.peer(), next.text, next.randomId,
                             next.replyToMessageId);
-                    outgoingStore.remove(next.localId);
+                    if (!removeOutgoing(epoch, next.localId)) { return; }
                     notifyOutboxChanged();
                 }
                 catch (RpcError error)
@@ -1518,21 +1653,21 @@ public final class Telegram
                         next.nextAttemptAt = System.currentTimeMillis()
                                 + wait * 1000L;
                         next.lastError = error.getMessage();
-                        outgoingStore.save(next);
+                        if (!saveOutgoing(epoch, next)) { return; }
                         notifyOutboxChanged();
                         retryAfter = wait * 1000L;
                         return;
                     }
                     next.state = OutgoingMessage.FAILED;
                     next.lastError = error.getMessage();
-                    outgoingStore.save(next);
+                    if (!saveOutgoing(epoch, next)) { return; }
                     notifyOutboxChanged();
                 }
                 catch (IOException error)
                 {
                     next.state = OutgoingMessage.QUEUED;
                     next.lastError = error.getMessage();
-                    outgoingStore.save(next);
+                    if (!saveOutgoing(epoch, next)) { return; }
                     notifyOutboxChanged();
                     return;
                 }

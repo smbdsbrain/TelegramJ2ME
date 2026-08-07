@@ -6,6 +6,7 @@ import javax.microedition.rms.RecordEnumeration;
 import javax.microedition.rms.RecordStore;
 import javax.microedition.rms.RecordStoreNotFoundException;
 
+import tg.api.AccountStore;
 import tg.api.Peer;
 import tg.tl.TlReader;
 import tg.tl.TlWriter;
@@ -16,7 +17,7 @@ import tg.tl.TlWriter;
  * At most twelve records and 256 KiB are retained. Full-size photos never
  * enter this store.
  */
-public final class RmsAvatarCache
+public final class RmsAvatarCache implements AccountStore
 {
     private static final String STORE = "tgavatars";
     private static final int MAGIC = 0x54474131; // TGA1

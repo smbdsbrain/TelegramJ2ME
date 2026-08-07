@@ -45,6 +45,7 @@ public final class AllTests
             new RmsAuthKeyStoreTest(),
             new AuthKeyProvenanceTest(),
             new AuthCheckTest(),
+            new AccountWipeTest(),
             new UpdateSyncTest(),
             new ChatScrollStateTest(),
             new ChatWindowTest(),
