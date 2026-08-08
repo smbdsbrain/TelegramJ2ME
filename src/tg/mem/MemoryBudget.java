@@ -177,6 +177,8 @@ public final class MemoryBudget
     private static final int MIN_PEER_SEARCH     = 8;
     private static final int REF_MESSAGE_SEARCH  = 20;
     private static final int MIN_MESSAGE_SEARCH  = 8;
+    private static final int REF_MESSAGE_ENTITIES = 8;
+    private static final int MIN_MESSAGE_ENTITIES = 4;
     private static final int REF_DIALOG_MARGIN   = 20;
     private static final int MIN_DIALOG_MARGIN   = 5;
     private static final int REF_HISTORY         = 120;
@@ -348,6 +350,12 @@ public final class MemoryBudget
     public static int messageSearchLimit()
     {
         return scale(REF_MESSAGE_SEARCH, MIN_MESSAGE_SEARCH);
+    }
+
+    /** Actionable entities retained per message. */
+    public static int messageEntityLimit()
+    {
+        return scale(REF_MESSAGE_ENTITIES, MIN_MESSAGE_ENTITIES);
     }
 
     /**

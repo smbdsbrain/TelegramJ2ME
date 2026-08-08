@@ -1,6 +1,7 @@
 package tg.api;
 
 import tg.tl.TlObj;
+import tg.mem.MemoryBudget;
 
 /**
  * One message, flattened for display.
@@ -18,6 +19,7 @@ public final class Message
     public String text = "";
     public Media media;
     public ReactionSummary[] reactions = new ReactionSummary[0];
+    public MessageEntity[] entities = new MessageEntity[0];
     public ForwardInfo forwarded;
     public int replyToMessageId;
 
@@ -59,6 +61,9 @@ public final class Message
             }
             m.reactions = ReactionSummary.from(
                     obj.obj(Api.F_MESSAGE__REACTIONS));
+            m.entities = MessageEntity.from(
+                    obj.vec(Api.F_MESSAGE__ENTITIES), m.text,
+                    MemoryBudget.messageEntityLimit());
             m.sender = resolveSender(obj.obj(Api.F_MESSAGE__FROM_ID), peers);
             return m;
         }

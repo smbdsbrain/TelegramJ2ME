@@ -21,6 +21,7 @@ import tg.api.DialogPage;
 import tg.api.AppSettings;
 import tg.api.ForwardInfo;
 import tg.api.Message;
+import tg.api.MessageEntity;
 import tg.api.MessageSearchPage;
 import tg.api.OutgoingMessage;
 import tg.api.PageMerge;
@@ -189,6 +190,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdMyProfile = new Command("My profile", Command.SCREEN, 3);
     private final Command cmdProfile = new Command("Profile", Command.SCREEN, 3);
     private final Command cmdReply = new Command("Reply", Command.SCREEN, 1);
+    private final Command cmdViewFullText =
+            new Command("View full text", Command.SCREEN, 2);
+    private final Command cmdEntityActions =
+            new Command("Links", Command.SCREEN, 2);
+    private final Command cmdOpenEntity = new Command("Select", Command.ITEM, 1);
+    private final Command cmdOpenExternal =
+            new Command("Open externally", Command.SCREEN, 1);
     private final Command cmdForward = new Command("Forward", Command.SCREEN, 2);
     private final Command cmdForwardHere = new Command("Forward here", Command.SCREEN, 1);
     private final Command cmdDeleteMessage = new Command("Delete", Command.SCREEN, 3);
@@ -452,6 +460,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private Message actionMessage;
     private Peer actionPeer;
     private Form deleteConfirm;
+    private TextBox fullTextBox;
+    private List entityList;
+    private Message entityMessage;
+    private MessageEntity[] entityItems = new MessageEntity[0];
+    private Form entityConfirm;
+    private ExternalAction.Target pendingEntityTarget;
     private List profileScreen;
     private Form editProfileForm;
     private javax.microedition.lcdui.TextField profileFirstName;
@@ -1035,6 +1049,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdReply)
         {
             beginReply();
+        }
+        else if (c == cmdViewFullText && d == chatScreen)
+        {
+            showFullMessageText();
+        }
+        else if (c == cmdEntityActions
+                && (d == chatScreen || d == fullTextBox))
+        {
+            showEntityPicker();
+        }
+        else if (c == cmdOpenEntity && d == entityList)
+        {
+            selectEntityAction();
+        }
+        else if (c == cmdOpenExternal && d == entityConfirm)
+        {
+            performExternalAction();
         }
         else if (c == cmdForward)
         {
@@ -3440,6 +3471,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdLog);
         screen.addCommand(cmdReactions);
         screen.addCommand(cmdReply);
+        screen.addCommand(cmdViewFullText);
+        screen.addCommand(cmdEntityActions);
         screen.addCommand(cmdForward);
         screen.addCommand(cmdDeleteMessage);
         screen.addCommand(cmdProfile);
@@ -4887,6 +4920,191 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     }
 
     // ------------------------------------------------------- message actions
+
+    private Message selectedOpenMessage()
+    {
+        return chatScreen == null ? null
+                : findOpenMessage(chatScreen.focusedMessageId());
+    }
+
+    private void showFullMessageText()
+    {
+        entityMessage = selectedOpenMessage();
+        if (entityMessage == null) { return; }
+        String text = entityMessage.text == null ? "" : entityMessage.text;
+        fullTextBox = new TextBox("Message #" + entityMessage.id, text,
+                Math.max(1, text.length()), TextField.ANY);
+        if (entityMessage.entities != null && entityMessage.entities.length > 0)
+        {
+            fullTextBox.addCommand(cmdEntityActions);
+        }
+        fullTextBox.addCommand(cmdBack);
+        fullTextBox.setCommandListener(this);
+        pushScreen(fullTextBox);
+    }
+
+    private void showEntityPicker()
+    {
+        if (navigation.current() == chatScreen)
+        {
+            entityMessage = selectedOpenMessage();
+        }
+        if (entityMessage == null || entityMessage.entities == null) { return; }
+        MessageEntity[] candidates = new MessageEntity[entityMessage.entities.length];
+        String[] labels = new String[entityMessage.entities.length];
+        int count = 0;
+        for (int i = 0; i < entityMessage.entities.length; i++)
+        {
+            MessageEntity entity = entityMessage.entities[i];
+            ExternalAction.Target target = ExternalAction.target(
+                    entity, entityMessage.text);
+            if (target == null) { continue; }
+            candidates[count] = entity;
+            labels[count] = entityTypeName(entity.type) + ": " + target.label;
+            count++;
+        }
+        entityItems = new MessageEntity[count];
+        System.arraycopy(candidates, 0, entityItems, 0, count);
+        entityList = new List("Message actions", List.IMPLICIT);
+        for (int i = 0; i < count; i++) { entityList.append(labels[i], null); }
+        if (count == 0) { entityList.append("(no supported actions)", null); }
+        entityList.addCommand(cmdOpenEntity);
+        entityList.addCommand(cmdBack);
+        entityList.setCommandListener(this);
+        pushScreen(entityList);
+    }
+
+    private static String entityTypeName(int type)
+    {
+        if (type == MessageEntity.MENTION
+                || type == MessageEntity.MENTION_NAME) { return "User"; }
+        if (type == MessageEntity.EMAIL) { return "Email"; }
+        if (type == MessageEntity.PHONE) { return "Phone"; }
+        return "Link";
+    }
+
+    private void selectEntityAction()
+    {
+        if (entityList == null || entityMessage == null) { return; }
+        int index = entityList.getSelectedIndex();
+        if (index < 0 || index >= entityItems.length) { return; }
+        final ExternalAction.Target target = ExternalAction.target(
+                entityItems[index], entityMessage.text);
+        if (target == null) { return; }
+        if (target.kind == ExternalAction.EXTERNAL)
+        {
+            pendingEntityTarget = target;
+            entityConfirm = new Form("Open external target");
+            entityConfirm.append("Shown text:\n" + target.label
+                    + "\n\nActual target:\n" + target.value
+                    + "\n\nThe phone may close TelegramJ2ME to continue.");
+            entityConfirm.addCommand(cmdOpenExternal);
+            entityConfirm.addCommand(cmdBack);
+            entityConfirm.setCommandListener(this);
+            pushScreen(entityConfirm);
+            return;
+        }
+
+        final Peer source = openPeer;
+        showBusy("Open user", "Resolving this Telegram user...");
+        final AsyncScope.Token asked = scope.capture(source);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "resolve message entity"; }
+            public Object run() throws Exception
+            {
+                Peer peer;
+                if (target.kind == ExternalAction.USERNAME)
+                {
+                    peer = telegram.resolveUsername(target.value);
+                }
+                else
+                {
+                    peer = telegram.peers().resolve(
+                            new Peer(Peer.USER, target.userId));
+                }
+                if (peer == null || !telegram.peers().isAddressable(peer))
+                {
+                    throw new java.io.IOException(
+                            "Telegram could not resolve this user");
+                }
+                return peer;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object value)
+            {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("resolve message entity");
+                    return;
+                }
+                popEntityScreens();
+                openDialog((Peer) value);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("resolve message entity");
+                    return;
+                }
+                showAlertThen("Cannot open user", error, entityList);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("User not opened", "Try Select again in a moment.",
+                    entityList);
+        }
+    }
+
+    private void popEntityScreens()
+    {
+        Displayable at = navigation.current();
+        for (int i = 0; i < 3; i++)
+        {
+            if (at != entityConfirm && at != entityList && at != fullTextBox)
+            {
+                break;
+            }
+            Displayable next = navigation.pop();
+            if (next == at) { break; }
+            at = next;
+        }
+        restoreScreen(at);
+    }
+
+    private void performExternalAction()
+    {
+        if (pendingEntityTarget == null || entityConfirm == null) { return; }
+        try
+        {
+            int outcome = ExternalAction.request(new ExternalAction.Launcher()
+            {
+                public boolean open(String uri) throws Exception
+                {
+                    return platformRequest(uri);
+                }
+            }, pendingEntityTarget.value);
+            if (outcome == ExternalAction.EXIT_REQUIRED)
+            {
+                destroyApp(false);
+                notifyDestroyed();
+                return;
+            }
+            restoreScreen(navigation.pop());
+            showAlert("The request was handed to the phone.", AlertType.INFO,
+                    entityList);
+        }
+        catch (Throwable refused)
+        {
+            showAlertThen("Could not open target",
+                    "The phone refused this action. The full target remains "
+                    + "visible so you can check it.", entityConfirm);
+        }
+    }
 
     private Message findOpenMessage(int id)
     {

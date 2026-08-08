@@ -5,6 +5,7 @@ import javax.microedition.rms.RecordStore;
 import tg.api.Cached;
 import tg.api.Dialog;
 import tg.api.Message;
+import tg.api.MessageEntity;
 import tg.api.Peer;
 import tg.api.RecordEnvelope;
 import tg.plat.RmsConversationCache;
@@ -32,6 +33,7 @@ public final class CacheIntegrityTest implements Test
 {
     private static final String DIALOGS = "tgdialogcache";
     private static final String HISTORY = "tghistorycache";
+    private static final int HISTORY_MAGIC = 0x54474834;
 
     private static final long ACCOUNT = 31337L;
     private static final long NOW = 1700000000000L;
@@ -44,6 +46,7 @@ public final class CacheIntegrityTest implements Test
         aClockThatWentBackwardsSaysAgeUnknown();
         aCachedListCarriesWhenItWasWritten();
         oneDamagedConversationDoesNotHideTheOthers();
+        versionOneHistoryMigratesOnRead();
         aDamagedRecordIsRemovedRatherThanLeftToFailAgain();
         anotherAccountCacheIsNeverShown();
         theOtherEnvironmentCacheIsNeverShown();
@@ -125,7 +128,14 @@ public final class CacheIntegrityTest implements Test
         {
             RmsConversationCache cache = new RmsConversationCache();
             cache.saveHistory(ACCOUNT, false, peer(7), new Message[] { message(1, "seven") });
-            cache.saveHistory(ACCOUNT, false, peer(8), new Message[] { message(2, "eight") });
+            Message withEntity = message(2, "eight@example.test");
+            MessageEntity entity = new MessageEntity();
+            entity.type = MessageEntity.EMAIL;
+            entity.offset = 0;
+            entity.length = withEntity.text.length();
+            withEntity.entities = new MessageEntity[] { entity };
+            cache.saveHistory(ACCOUNT, false, peer(8),
+                    new Message[] { withEntity });
 
             int[] ids = rms.recordIds(HISTORY);
             Assert.equal("two conversations cached", 2, ids.length);
@@ -135,9 +145,43 @@ public final class CacheIntegrityTest implements Test
             RmsConversationCache reopened = new RmsConversationCache();
             Cached eight = reopened.loadHistory(ACCOUNT, false, peer(8));
             Assert.isTrue("the intact conversation still loads", eight != null);
-            Assert.equal("with its message", "eight", eight.messages()[0].text);
+            Assert.equal("with its message", "eight@example.test",
+                    eight.messages()[0].text);
+            Assert.equal("entity survives cache round trip", 1,
+                    eight.messages()[0].entities.length);
             Assert.equal("and the damaged one was dropped", 1,
                     reopened.droppedRecords());
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    private static void versionOneHistoryMigratesOnRead() throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            RmsConversationCache cache = new RmsConversationCache();
+            cache.saveHistory(ACCOUNT, false, peer(7),
+                    new Message[] { message(3, "old cache") });
+            int id = rms.recordIds(HISTORY)[0];
+            byte[] raw = rms.peek(HISTORY, id);
+            RecordEnvelope v2 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
+                    2, 2, ACCOUNT, false);
+            Assert.isTrue("fixture starts as v2", v2.isOk());
+            byte[] oldPayload = new byte[v2.payload.length - 4];
+            System.arraycopy(v2.payload, 0, oldPayload, 0,
+                    oldPayload.length);
+            rms.poke(HISTORY, id, RecordEnvelope.wrap(HISTORY_MAGIC, 1,
+                    ACCOUNT, false, oldPayload));
+            rms.restart();
+
+            Cached loaded = new RmsConversationCache().loadHistory(
+                    ACCOUNT, false, peer(7));
+            Assert.isTrue("v1 history remains readable", loaded != null);
+            Assert.equal("v1 text", "old cache", loaded.messages()[0].text);
+            Assert.equal("v1 entities default empty", 0,
+                    loaded.messages()[0].entities.length);
         }
         finally { EmulatorRecords.restore(); }
     }

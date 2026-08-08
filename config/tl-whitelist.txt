@@ -144,6 +144,7 @@ message.media
 message.fwd_from
 message.reply_to
 message.reactions
+message.entities
 messageReplyHeader.reply_to_msg_id
 messageService.id
 messageService.peer_id
@@ -372,6 +373,23 @@ contacts.found.my_results
 contacts.found.results
 contacts.found.chats
 contacts.found.users
+
+# Actionable text entities. Offsets and lengths are UTF-16 code units, which
+# are Java String char indices; payload fields are retained only when needed.
+messageEntityMention.offset
+messageEntityMention.length
+messageEntityUrl.offset
+messageEntityUrl.length
+messageEntityEmail.offset
+messageEntityEmail.length
+messageEntityTextUrl.offset
+messageEntityTextUrl.length
+messageEntityTextUrl.url
+messageEntityMentionName.offset
+messageEntityMentionName.length
+messageEntityMentionName.user_id
+messageEntityPhone.offset
+messageEntityPhone.length
 
 auth.exportedAuthorization.id
 auth.exportedAuthorization.bytes

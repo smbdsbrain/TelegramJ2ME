@@ -64,6 +64,7 @@ public final class AllTests
             new ReadQueueTest(),
             new DialogListTest(),
             new MessageSearchTest(),
+            new MessageEntityTest(),
             new Phase4ContentTest(),
             new Phase5AuthTest(),
             new Phase6Test(),

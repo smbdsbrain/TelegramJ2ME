@@ -15,6 +15,7 @@ import tg.api.Dialog;
 import tg.api.ForwardInfo;
 import tg.api.Media;
 import tg.api.Message;
+import tg.api.MessageEntity;
 import tg.api.Peer;
 import tg.api.ReactionSummary;
 import tg.api.RecordEnvelope;
@@ -52,7 +53,8 @@ public final class RmsConversationCache implements AccountStore
     /** TGD4/TGH4 - the envelope-wrapped generation. */
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
-    private static final int VERSION = 1;
+    private static final int DIALOG_VERSION = 1;
+    private static final int HISTORY_VERSION = 2;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
     private static final int MAX_HISTORIES = 6;
@@ -87,7 +89,8 @@ public final class RmsConversationCache implements AccountStore
                 catch (Throwable t) { continue; }
 
                 RecordEnvelope envelope = RecordEnvelope.unwrap(raw,
-                        DIALOG_MAGIC, VERSION, VERSION, accountId, test);
+                        DIALOG_MAGIC, DIALOG_VERSION, DIALOG_VERSION,
+                        accountId, test);
                 if (!envelope.isOk())
                 {
                     // Anything that is not this build, this account and intact
@@ -133,7 +136,7 @@ public final class RmsConversationCache implements AccountStore
         w.writeLong(System.currentTimeMillis());
         w.writeInt(count);
         for (int i = 0; i < count; i++) { writeDialog(w, dialogs[i]); }
-        saveSingle(DIALOGS, RecordEnvelope.wrap(DIALOG_MAGIC, VERSION,
+        saveSingle(DIALOGS, RecordEnvelope.wrap(DIALOG_MAGIC, DIALOG_VERSION,
                 accountId, test, w.toByteArray()), "RMS dialog cache save");
     }
 
@@ -165,7 +168,7 @@ public final class RmsConversationCache implements AccountStore
                 catch (Throwable t) { continue; }
 
                 RecordEnvelope envelope = RecordEnvelope.unwrap(raw,
-                        HISTORY_MAGIC, VERSION, VERSION, accountId, test);
+                        HISTORY_MAGIC, 1, HISTORY_VERSION, accountId, test);
                 if (!envelope.isOk())
                 {
                     doomed.addElement(new Integer(recordId));
@@ -182,7 +185,10 @@ public final class RmsConversationCache implements AccountStore
                     if (kind != peer.kind || id != peer.id) { continue; }
                     int count = bounded(r.readInt(), MAX_CACHED_MESSAGES);
                     Message[] out = new Message[count];
-                    for (int i = 0; i < count; i++) { out[i] = readMessage(r); }
+                    for (int i = 0; i < count; i++)
+                    {
+                        out[i] = readMessage(r, envelope.version);
+                    }
                     found = Cached.of(out, savedAt);
                 }
                 catch (Throwable t)
@@ -211,7 +217,8 @@ public final class RmsConversationCache implements AccountStore
         w.writeLong(System.currentTimeMillis());
         w.writeInt(count);
         for (int i = 0; i < count; i++) { writeMessage(w, messages[i]); }
-        byte[] raw = RecordEnvelope.wrap(HISTORY_MAGIC, VERSION, accountId,
+        byte[] raw = RecordEnvelope.wrap(HISTORY_MAGIC, HISTORY_VERSION,
+                accountId,
                 test, w.toByteArray());
         if (raw.length > MAX_RECORD) { return; }
 
@@ -332,9 +339,23 @@ public final class RmsConversationCache implements AccountStore
             writePeer(w, m.forwarded.source);
             w.writeInt(m.forwarded.messageId);
         }
+        MessageEntity[] entities = m.entities == null
+                ? new MessageEntity[0] : m.entities;
+        int entityCount = Math.min(entities.length, 8);
+        w.writeInt(entityCount);
+        for (int i = 0; i < entityCount; i++)
+        {
+            MessageEntity entity = entities[i];
+            w.writeInt(entity == null ? 0 : entity.type);
+            w.writeInt(entity == null ? 0 : entity.offset);
+            w.writeInt(entity == null ? 0 : entity.length);
+            w.writeString(text(entity == null ? "" : entity.value));
+            w.writeLong(entity == null ? 0 : entity.userId);
+        }
     }
 
-    private static Message readMessage(TlReader r) throws IOException
+    private static Message readMessage(TlReader r, int version)
+            throws IOException
     {
         Message m = new Message();
         m.id = r.readInt();
@@ -373,6 +394,26 @@ public final class RmsConversationCache implements AccountStore
             m.forwarded.label = r.readString();
             m.forwarded.source = readPeer(r);
             m.forwarded.messageId = r.readInt();
+        }
+        if (version >= 2)
+        {
+            int entityCount = bounded(r.readInt(), 8);
+            m.entities = new MessageEntity[entityCount];
+            for (int i = 0; i < entityCount; i++)
+            {
+                MessageEntity entity = new MessageEntity();
+                entity.type = r.readInt();
+                entity.offset = r.readInt();
+                entity.length = r.readInt();
+                entity.value = emptyToNull(r.readString());
+                entity.userId = r.readLong();
+                if (!MessageEntity.validRange(m.text, entity.offset,
+                        entity.length))
+                {
+                    throw new IOException("invalid cached message entity");
+                }
+                m.entities[i] = entity;
+            }
         }
         return m;
     }
@@ -531,7 +572,7 @@ public final class RmsConversationCache implements AccountStore
         try
         {
             RecordEnvelope envelope = RecordEnvelope.unwrapAnyOwner(raw,
-                    HISTORY_MAGIC, VERSION, VERSION);
+                    HISTORY_MAGIC, 1, HISTORY_VERSION);
             if (!envelope.isOk()) { return null; }
             TlReader r = new TlReader(envelope.payload);
             Header h = new Header();
