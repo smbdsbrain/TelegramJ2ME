@@ -60,6 +60,7 @@ public final class AllTests
             new DelayedWakeTest(),
             new ReadMarkTest(),
             new LocalReadsTest(),
+            new UnreadPickTest(),
             new ReadQueueTest(),
             new DialogListTest(),
             new Phase4ContentTest(),

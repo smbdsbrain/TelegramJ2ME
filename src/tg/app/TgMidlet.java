@@ -153,6 +153,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdRetryPhoto = new Command("Retry", Command.SCREEN, 1);
     private final Command cmdZoomPhoto = new Command("Zoom", Command.SCREEN, 1);
     private final Command cmdOlder = new Command("Older", Command.SCREEN, 4);
+    private final Command cmdJumpLatest =
+            new Command("Jump to latest", Command.SCREEN, 4);
+    private final Command cmdFirstUnread =
+            new Command("First unread", Command.SCREEN, 4);
     private final Command cmdMoreDialogs = new Command("More", Command.SCREEN, 4);
     private final Command cmdFilter =
             new Command("Filter loaded", Command.SCREEN, 3);
@@ -866,6 +870,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // Explicitly a non-reply session. Write used to inherit whatever
             // reply state an earlier composer had left behind.
             openComposer(ComposerState.write(openPeer));
+        }
+        else if (c == cmdJumpLatest)
+        {
+            jumpToLatest();
+        }
+        else if (c == cmdFirstUnread)
+        {
+            jumpToFirstUnread();
         }
         else if (c == cmdOlder)
         {
@@ -3134,6 +3146,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdDeleteMessage);
         screen.addCommand(cmdProfile);
         screen.addCommand(cmdOlder);
+        screen.addCommand(cmdJumpLatest);
+        screen.addCommand(cmdFirstUnread);
         screen.addCommand(cmdMarkAllRead);
         screen.setCommandListener(this);
         screen.setActivationListener(new ChatScreen.ActivationListener()
@@ -3493,6 +3507,224 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (readMark != null && readMark.ownedBy(peer)) { return; }
         readMark = ReadMark.forPeer(peer);
         historyForwardStalled = false;
+    }
+
+    /**
+     * Back to the newest page of this conversation, in one action.
+     *
+     * The window slides, so a reader who has paged a long way back has no route
+     * forward except paging the same distance again - and if the retained
+     * window has fallen off the newest end entirely, the forward page is
+     * "stalled" and stops asking. This replaces the window rather than
+     * extending it, which is the honest thing: what is on screen afterwards is
+     * the newest page, not the newest page spliced onto wherever the reader
+     * was.
+     */
+    private void jumpToLatest()
+    {
+        if (openPeer == null || chatScreen == null) { return; }
+        final Peer peer = openPeer;
+        if (historyPageInFlight)
+        {
+            chatScreen.setStatus("already loading...");
+            return;
+        }
+        historyPageInFlight = true;
+        chatScreen.setStatus("loading the latest...");
+        final AsyncScope.Token asked = scope.capture(peer);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getHistory/latest"; }
+            public Object run() throws Exception
+            {
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/latest");
+                    return;
+                }
+                historyPageInFlight = false;
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/latest");
+                    return;
+                }
+                Message[] page = (Message[]) result;
+                // Assigned, not merged. Merging would keep the old window and
+                // leave the reader wherever they were, which is the opposite of
+                // what they asked for; the pages they had can be fetched again
+                // by scrolling back.
+                setOpenHistory(page);
+                cacheHistory(peer, openHistory);
+                applyKnownReadState(openHistory, peer);
+                chatScreen.setMessages(openHistory);
+                scheduleInlineThumbnails(peer);
+                appendPendingForOpenPeer();
+                chatScreen.scrollToEnd();
+                // Both latches reset: this is the newest page, so there is
+                // nothing newer to be stalled about, and older paging starts
+                // again from here.
+                historyForwardStalled = false;
+                historyExhausted = false;
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                markRead();
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/latest");
+                    return;
+                }
+                historyPageInFlight = false;
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/latest");
+                    return;
+                }
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                showAlertThen("Could not load the latest messages", error,
+                        chatScreen);
+            }
+        });
+        if (!submitted)
+        {
+            historyPageInFlight = false;
+            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Not jumped", "Press Jump to latest again in a moment.",
+                    chatScreen);
+        }
+    }
+
+    /**
+     * The oldest incoming message this reader has not read, if there is one.
+     *
+     * Deliberately not {@code readInboxMaxId + 1}: the marker is a high-water
+     * id and ids are not contiguous, so the id one past it usually does not
+     * exist. A bounded page around the marker is fetched and
+     * {@link UnreadPick} chooses out of what actually came back.
+     */
+    private void jumpToFirstUnread()
+    {
+        if (openPeer == null || chatScreen == null) { return; }
+        final Peer peer = openPeer;
+        int at = findDialog(peer);
+        final int readMaxId = at < 0 ? 0 : dialogs[at].readInboxMaxId;
+        int unread = at < 0 ? 0 : dialogs[at].unreadCount;
+
+        if (readMaxId <= 0)
+        {
+            chatScreen.setStatus("no read position known for this chat");
+            return;
+        }
+        if (unread <= 0)
+        {
+            // The server says there is nothing, and it is the authority on
+            // this. Answered locally rather than with a round trip.
+            chatScreen.setStatus("no unread messages");
+            return;
+        }
+
+        // Already held? Then no request is needed at all.
+        int local = UnreadPick.firstUnread(openHistory, readMaxId);
+        if (local != UnreadPick.NONE)
+        {
+            chatScreen.focusMessage(local);
+            chatScreen.setStatus("first unread");
+            return;
+        }
+
+        if (historyPageInFlight)
+        {
+            chatScreen.setStatus("already loading...");
+            return;
+        }
+        historyPageInFlight = true;
+        chatScreen.setStatus("finding the first unread...");
+        final AsyncScope.Token asked = scope.capture(peer);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getHistory/unread"; }
+            public Object run() throws Exception
+            {
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                // Around the marker rather than after it: the marker itself may
+                // have been deleted, and a page centred on it contains the
+                // boundary in both directions so the earliest still-available
+                // unread is in it.
+                return telegram.getHistoryAround(peer, readMaxId,
+                        MemoryBudget.historyPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/unread");
+                    return;
+                }
+                historyPageInFlight = false;
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/unread");
+                    return;
+                }
+                Message[] page = (Message[]) result;
+                mergeHistoryPage(page);
+                cacheHistory(peer, openHistory);
+                applyKnownReadState(openHistory, peer);
+                chatScreen.setMessages(openHistory);
+                scheduleInlineThumbnails(peer);
+
+                int target = UnreadPick.firstUnread(openHistory, readMaxId);
+                if (target == UnreadPick.NONE)
+                {
+                    chatScreen.setStatus(
+                            UnreadPick.pageReachesMarker(page, readMaxId)
+                                    ? "no unread messages in this part"
+                                    : "could not locate the first unread");
+                    return;
+                }
+                chatScreen.focusMessage(target);
+                // "Earliest available" rather than "the first": if the message
+                // at the boundary was deleted, this is the closest one that
+                // still exists, and saying so is cheaper than pretending.
+                chatScreen.setStatus("earliest unread available");
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/unread");
+                    return;
+                }
+                historyPageInFlight = false;
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/unread");
+                    return;
+                }
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                showAlertThen("Could not find the first unread", error,
+                        chatScreen);
+            }
+        });
+        if (!submitted)
+        {
+            historyPageInFlight = false;
+            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Not searched", "Press First unread again in a moment.",
+                    chatScreen);
+        }
     }
 
     /** How far the open conversation may be marked read, or 0. */
