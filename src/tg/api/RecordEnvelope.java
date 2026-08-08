@@ -173,6 +173,24 @@ public final class RecordEnvelope
         return new RecordEnvelope(OK, payload, version, owner, test);
     }
 
+    /**
+     * The same read, without asking who it belongs to.
+     *
+     * For maintenance rather than for use: eviction has to see - and be able to
+     * reclaim - space held by records belonging to an account that is no longer
+     * signed in or to the other environment. Reading the payload of one of
+     * those and acting on it would be the bug this class exists to prevent, so
+     * the only caller is the one that needs a timestamp to evict by.
+     */
+    public static RecordEnvelope unwrapAnyOwner(byte[] raw, int magic,
+                                                int minVersion, int maxVersion)
+    {
+        RecordEnvelope envelope = unwrap(raw, magic, minVersion, maxVersion, 0,
+                raw != null && raw.length >= HEADER
+                        && (getInt(raw, 16) & FLAG_TEST_ENVIRONMENT) != 0);
+        return envelope;
+    }
+
     private static void putInt(byte[] out, int at, int value)
     {
         out[at] = (byte) (value >>> 24);

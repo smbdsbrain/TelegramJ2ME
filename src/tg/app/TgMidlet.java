@@ -15,6 +15,7 @@ import javax.microedition.midlet.MIDlet;
 import java.io.ByteArrayInputStream;
 
 import tg.api.AuthCheck;
+import tg.api.Cached;
 import tg.api.Dialog;
 import tg.api.DialogPage;
 import tg.api.AppSettings;
@@ -362,6 +363,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** What the store already holds for {@link #composer}; same three threads. */
     private volatile String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
+
+    /**
+     * How old the cached data on screen was when it was read.
+     *
+     * Held rather than recomputed: the status line is written again on every
+     * connection change, and re-reading the record to answer "how old" would be
+     * an RMS open per repaint. The age it names is therefore the age at load,
+     * which for a screen that is refreshed the moment a connection appears is
+     * the honest number anyway.
+     */
+    private String cachedDialogLabel = "cached";
+    private String cachedHistoryLabel = "cached";
 
     /**
      * Which account and which chat every asynchronous request was made for.
@@ -1801,14 +1814,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             try
             {
                 long accountId = cacheAccountId();
-                Dialog[] cached = accountId == 0 ? null
+                Cached cached = accountId == 0 ? null
                         : conversationCache.loadDialogs(
                                 accountId, Dc.isTest());
-                if (cached != null && cached.length > 0)
+                if (cached != null && cached.dialogs().length > 0)
                 {
-                    dialogs = cached;
+                    dialogs = cached.dialogs();
+                    cachedDialogLabel = cachedLabel(cached);
                     showDialogList(selectedPeer);
-                    dialogList.setStatus("cached/loading", updateLabel);
+                    dialogList.setStatus(cachedDialogLabel + ", refreshing",
+                            updateLabel);
                     fallback = true;
                 }
             }
@@ -1866,7 +1881,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 if (hasFallback && dialogs.length > 0)
                 {
                     showDialogList(selectedPeer);
-                    dialogList.setStatus("cached/offline", updateLabel);
+                    dialogList.setStatus(cachedDialogLabel + ", offline",
+                            updateLabel);
                     Diag.warn("using cached dialogs: " + shortMessage(error));
                 }
                 else { showRetryableError("Could not load chats", error); }
@@ -2175,6 +2191,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 || "SecurityException".equals(name);
     }
 
+    /** "cached 18 min old" for the status line; see {@link Cached}. */
+    private static String cachedLabel(Cached cached)
+    {
+        return cached == null ? "cached"
+                : cached.ageLabel(System.currentTimeMillis());
+    }
+
     private long cacheAccountId()
     {
         long id = resolveAccountId();
@@ -2228,18 +2251,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (accountId == 0 || conversationCache == null) { return false; }
         try
         {
-            Dialog[] cached = conversationCache.loadDialogs(
+            Cached cached = conversationCache.loadDialogs(
                     accountId, Dc.isTest());
-            if (cached == null || cached.length == 0) { return false; }
+            if (cached == null || cached.dialogs().length == 0) { return false; }
             resetDialogWindow();
-            dialogs = cached;
+            dialogs = cached.dialogs();
             // The cache is the whole list as far as this session can tell, and
             // there is no connection to ask for more over. Latched so scrolling
             // to the bottom of it does not fire a request per keypress at a
             // server we cannot reach; loadDialogs clears it on reconnect.
             dialogsExhausted = true;
             showDialogList();
-            dialogList.setStatus("cached/offline", "stopped");
+            // Says how old, not just that it is cached. A reader who cannot
+            // tell four-second-old from four-day-old text has no way to know
+            // whether the last message in a chat is the last message in it.
+            dialogList.setStatus(cachedLabel(cached) + ", offline", "stopped");
             return true;
         }
         catch (Throwable t)
@@ -2883,15 +2909,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             try
             {
                 long accountId = cacheAccountId();
-                Message[] cached = accountId == 0 ? null
+                Cached cached = accountId == 0 ? null
                         : conversationCache.loadHistory(
                                 accountId, Dc.isTest(), peer);
-                if (cached != null && cached.length > 0)
+                if (cached != null && cached.messages().length > 0)
                 {
-                    setOpenHistory(cached);
+                    setOpenHistory(cached.messages());
                     chatScreen.setMessages(openHistory);
                     appendPendingForOpenPeer();
-                    chatScreen.setStatus("cached/loading");
+                    cachedHistoryLabel = cachedLabel(cached);
+                    chatScreen.setStatus(cachedHistoryLabel + ", refreshing");
                     fallback = true;
                 }
             }
@@ -2952,7 +2979,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 {
                     if (hasFallback && openHistory.length > 0)
                     {
-                        chatScreen.setStatus("cached/offline");
+                        chatScreen.setStatus(cachedHistoryLabel + ", offline");
                         Diag.warn("using cached history: " + shortMessage(error));
                     }
                     else
@@ -2969,7 +2996,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // life of the screen. The chat itself stays usable and carries
             // Refresh, which is the retry.
             chatScreen.setStatus(hasFallback
-                    ? "cached/not refreshed"
+                    ? (cachedHistoryLabel + ", not refreshed")
                     : (connectionLabel + "/" + updateLabel));
             showRefused("Chat not loaded", "Press Refresh in a moment.",
                     chatScreen);

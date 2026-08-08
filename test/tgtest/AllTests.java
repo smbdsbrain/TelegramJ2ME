@@ -45,6 +45,7 @@ public final class AllTests
             new RmsAuthKeyStoreTest(),
             new RmsFaultTest(),
             new DurableStoreTest(),
+            new CacheIntegrityTest(),
             new AuthKeyProvenanceTest(),
             new AuthCheckTest(),
             new AccountWipeTest(),
