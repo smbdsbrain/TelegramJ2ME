@@ -364,6 +364,27 @@ public final class Requests
         return w.toByteArray();
     }
 
+    /** Bounded text search inside one peer. */
+    public static byte[] searchMessages(Peer peer, String query, int offsetId,
+                                        int addOffset, int limit)
+    {
+        TlWriter w = new TlWriter(96 + query.length() * 3);
+        w.writeInt(Api.MESSAGES_SEARCH);
+        w.writeInt(0);                       // flags
+        writeInputPeer(w, peer);
+        w.writeString(query);
+        w.writeInt(Api.INPUT_MESSAGES_FILTER_EMPTY);
+        w.writeInt(0);                       // min_date
+        w.writeInt(0);                       // max_date
+        w.writeInt(offsetId);
+        w.writeInt(addOffset);
+        w.writeInt(limit);
+        w.writeInt(0);                       // max_id
+        w.writeInt(0);                       // min_id
+        w.writeLong(0);                      // hash
+        return w.toByteArray();
+    }
+
     /**
      * messages.sendMessage#545cd15a flags:# ... peer:InputPeer
      *     reply_to:flags.0?InputReplyTo message:string random_id:long ...

@@ -58,6 +58,7 @@ messages.sendReaction
 # over the retained dialog window, which is the whole point - a chat the reader
 # has not scrolled to is not in the window and cannot be found there.
 contacts.search
+messages.search
 
 [types]
 # Extra types to include even when no whitelisted method names them directly.
@@ -164,10 +165,12 @@ messages.messages.messages
 messages.messages.chats
 messages.messages.users
 messages.messagesSlice.count
+messages.messagesSlice.inexact
 messages.messagesSlice.messages
 messages.messagesSlice.chats
 messages.messagesSlice.users
 messages.channelMessages.count
+messages.channelMessages.inexact
 messages.channelMessages.messages
 messages.channelMessages.chats
 messages.channelMessages.users

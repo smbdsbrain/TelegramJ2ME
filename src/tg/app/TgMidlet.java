@@ -21,6 +21,7 @@ import tg.api.DialogPage;
 import tg.api.AppSettings;
 import tg.api.ForwardInfo;
 import tg.api.Message;
+import tg.api.MessageSearchPage;
 import tg.api.OutgoingMessage;
 import tg.api.PageMerge;
 import tg.api.Peer;
@@ -168,8 +169,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             new Command("Top of list", Command.SCREEN, 2);
     private final Command cmdFindChat =
             new Command("Find chat", Command.SCREEN, 2);
+    private final Command cmdFindMessages =
+            new Command("Find messages", Command.SCREEN, 3);
     private final Command cmdSearchGo = new Command("Search", Command.SCREEN, 1);
     private final Command cmdOpenResult = new Command("Open", Command.ITEM, 1);
+    private final Command cmdMessageSearchGo =
+            new Command("Search", Command.SCREEN, 1);
+    private final Command cmdOpenMessageResult =
+            new Command("Open", Command.ITEM, 1);
+    private final Command cmdNextMessageResults =
+            new Command("Next page", Command.SCREEN, 2);
+    private final Command cmdNewMessageSearch =
+            new Command("New search", Command.SCREEN, 3);
     private final Command cmdForwardToResult =
             new Command("Forward here", Command.SCREEN, 1);
     private final Command cmdApplyFilter = new Command("Apply", Command.SCREEN, 1);
@@ -353,6 +364,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     /** True when the search was opened to pick a forward target. */
     private boolean searchForForward;
+
+    /** Bounded, replace-in-place in-chat search state. */
+    private TextBox messageSearchBox;
+    private List messageSearchResults;
+    private Message[] messageSearchMessages = new Message[0];
+    private Peer messageSearchPeer;
+    private String messageSearchQuery = "";
+    private int messageSearchNextOffset;
+    private int messageSearchShownBefore;
+    private boolean messageSearchExhausted;
+    private int messageSearchGeneration;
 
     /**
      * The dialog immediately above the window, or null when the window starts
@@ -946,9 +968,31 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             showSearchBox(d == forwardList);
         }
+        else if (c == cmdFindMessages && d == chatScreen)
+        {
+            showMessageSearchBox();
+        }
         else if (c == cmdSearchGo)
         {
             runPeerSearch();
+        }
+        else if (c == cmdMessageSearchGo && d == messageSearchBox)
+        {
+            runMessageSearch(false);
+        }
+        else if (c == cmdNextMessageResults && d == messageSearchResults)
+        {
+            runMessageSearch(true);
+        }
+        else if (c == cmdNewMessageSearch && d == messageSearchResults)
+        {
+            messageSearchGeneration++;
+            messageSearchBox.setString("");
+            replaceScreen(messageSearchBox);
+        }
+        else if (c == cmdOpenMessageResult && d == messageSearchResults)
+        {
+            openMessageSearchResult();
         }
         else if (c == cmdOpenResult && d == searchResults)
         {
@@ -2291,6 +2335,206 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return title;
     }
 
+    private void showMessageSearchBox()
+    {
+        if (openPeer == null) { return; }
+        messageSearchPeer = openPeer;
+        messageSearchGeneration++;
+        messageSearchQuery = "";
+        messageSearchNextOffset = 0;
+        messageSearchShownBefore = 0;
+        messageSearchExhausted = false;
+        messageSearchMessages = new Message[0];
+        if (messageSearchBox == null)
+        {
+            messageSearchBox = new TextBox("Find messages", "", 64,
+                    TextField.ANY);
+            messageSearchBox.addCommand(cmdMessageSearchGo);
+            messageSearchBox.addCommand(cmdBack);
+            messageSearchBox.setCommandListener(this);
+        }
+        else
+        {
+            messageSearchBox.setString("");
+        }
+        pushScreen(messageSearchBox);
+    }
+
+    private void runMessageSearch(final boolean nextPage)
+    {
+        if (messageSearchPeer == null || !samePeer(openPeer, messageSearchPeer))
+        {
+            return;
+        }
+        final String query = nextPage ? messageSearchQuery
+                : messageSearchBox.getString().trim();
+        if (query.length() < 2)
+        {
+            showAlert("Type at least two characters.", AlertType.WARNING,
+                    messageSearchBox);
+            return;
+        }
+        if (query.length() > 64)
+        {
+            showAlert("Search is limited to 64 characters.",
+                    AlertType.WARNING, messageSearchBox);
+            return;
+        }
+        if (nextPage && messageSearchExhausted) { return; }
+        final Peer peer = messageSearchPeer;
+        final int offset = nextPage ? messageSearchNextOffset : 0;
+        final int before = nextPage ? messageSearchShownBefore : 0;
+        final int generation = ++messageSearchGeneration;
+        messageSearchQuery = query;
+        showBusy("Message search", "Searching this chat...");
+        final AsyncScope.Token asked = scope.capture(peer);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.search"; }
+            public Object run() throws Exception
+            {
+                return telegram.searchMessages(peer, query, offset, 0,
+                        MemoryBudget.messageSearchLimit());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameChat(openPeer)
+                        || generation != messageSearchGeneration
+                        || !query.equals(messageSearchQuery))
+                {
+                    dropStale("messages.search");
+                    return;
+                }
+                showMessageSearchResults((MessageSearchPage) result, before);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameChat(openPeer)
+                        || generation != messageSearchGeneration)
+                {
+                    dropStale("messages.search");
+                    return;
+                }
+                Displayable back = nextPage && messageSearchResults != null
+                        ? (Displayable) messageSearchResults
+                        : (Displayable) messageSearchBox;
+                showAlertThen("Message search failed", error, back);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Not searched", "Press Search again in a moment.",
+                    nextPage ? (Displayable) messageSearchResults
+                            : (Displayable) messageSearchBox);
+        }
+    }
+
+    private void showMessageSearchResults(MessageSearchPage page, int before)
+    {
+        messageSearchMessages = page == null || page.messages == null
+                ? new Message[0] : page.messages;
+        messageSearchNextOffset = page == null ? 0 : page.nextOffsetId;
+        messageSearchShownBefore = before + messageSearchMessages.length;
+        messageSearchExhausted = page == null || page.exhausted;
+        int first = messageSearchMessages.length == 0 ? 0 : before + 1;
+        int last = before + messageSearchMessages.length;
+        String total = page == null ? "0" : ((page.totalExact ? "" : "about ")
+                + page.totalCount);
+        messageSearchResults = new List("Messages " + first + "-" + last
+                + " of " + total, List.IMPLICIT);
+        for (int i = 0; i < messageSearchMessages.length; i++)
+        {
+            Message message = messageSearchMessages[i];
+            String label = message.senderName();
+            if (label.length() > 0) { label += ": "; }
+            String summary = message.summaryText();
+            if (summary.length() > 72)
+            {
+                summary = summary.substring(0, 69) + "...";
+            }
+            messageSearchResults.append(label + summary, null);
+        }
+        if (messageSearchMessages.length == 0)
+        {
+            messageSearchResults.append("(no matching messages)", null);
+        }
+        messageSearchResults.addCommand(cmdOpenMessageResult);
+        if (!messageSearchExhausted)
+        {
+            messageSearchResults.addCommand(cmdNextMessageResults);
+        }
+        messageSearchResults.addCommand(cmdNewMessageSearch);
+        messageSearchResults.addCommand(cmdBack);
+        messageSearchResults.setCommandListener(this);
+        replaceScreen(messageSearchResults);
+    }
+
+    private void openMessageSearchResult()
+    {
+        if (messageSearchResults == null || messageSearchPeer == null) { return; }
+        int index = messageSearchResults.getSelectedIndex();
+        if (index < 0 || index >= messageSearchMessages.length) { return; }
+        final int messageId = messageSearchMessages[index].id;
+        final Peer peer = messageSearchPeer;
+        final ChatScreen returnChat = chatScreen;
+        restoreScreen(navigation.pop());
+        returnChat.setStatus("opening search result...");
+        final AsyncScope.Token asked = scope.capture(peer);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "open message search result"; }
+            public Object run() throws Exception
+            {
+                return telegram.getHistoryAround(peer, messageId,
+                        MemoryBudget.historyPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("open message search result");
+                    return;
+                }
+                bindOpenPeer(peer);
+                rebindReadMark(openPeer);
+                historyPageInFlight = false;
+                historyExhausted = false;
+                historyForwardStalled = false;
+                telegram.setActivePeer(openPeer);
+                openHistory = new Message[0];
+                setOpenHistory((Message[]) result);
+                applyKnownReadState(openHistory, openPeer);
+                returnChat.resetMessages(openHistory);
+                returnChat.focusMessage(messageId);
+                returnChat.setStatus(connectionLabel + "/" + updateLabel);
+                scheduleInlineThumbnails(openPeer);
+                markRead();
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("open message search result");
+                    return;
+                }
+                returnChat.setStatus(connectionLabel + "/" + updateLabel);
+                showAlertThen("Cannot open result", error, returnChat);
+            }
+        });
+        if (!submitted)
+        {
+            returnChat.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Result not opened", "Try Open again in a moment.",
+                    returnChat);
+        }
+    }
+
     /** Load only avatars that can currently become visible. */
     private void loadVisibleAvatars()
     {
@@ -3202,6 +3446,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         screen.addCommand(cmdOlder);
         screen.addCommand(cmdJumpLatest);
         screen.addCommand(cmdFirstUnread);
+        screen.addCommand(cmdFindMessages);
         screen.addCommand(cmdMarkAllRead);
         screen.setCommandListener(this);
         screen.setActivationListener(new ChatScreen.ActivationListener()

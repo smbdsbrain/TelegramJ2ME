@@ -1243,6 +1243,31 @@ public final class Telegram
                 peer, messageId, limit)), "messages.getHistory/around");
     }
 
+    /** One bounded page of text matches inside {@code peer}. */
+    public MessageSearchPage searchMessages(Peer peer, String query,
+            int offsetId, int addOffset, int limit) throws IOException
+    {
+        if (peer == null || !peers.isAddressable(peer))
+        {
+            throw new IOException("search peer is not addressable");
+        }
+        query = query == null ? "" : query.trim();
+        if (query.length() < 2) { throw new IOException("search query is too short"); }
+        if (query.length() > 64) { throw new IOException("search query exceeds 64 characters"); }
+        if (limit < 1) { limit = 1; }
+        if (limit > 30) { limit = 30; }
+        TlObj reply = TlParser.parse(new TlReader(invoke(Requests.searchMessages(
+                peer, query, offsetId, addOffset, limit))));
+        MessageSearchPage page = MessageSearchPage.from(
+                reply, peers, limit, offsetId);
+        if (page == null)
+        {
+            throw new IOException("unexpected reply to messages.search: "
+                    + describe(reply));
+        }
+        return page;
+    }
+
     private Message[] parseMessagesReply(byte[] result, String method)
             throws IOException
     {
