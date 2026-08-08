@@ -516,6 +516,65 @@ order, and an unreadable store still reports "unreadable" rather than "empty".
 same injector and asserting that it loses both values. A fault injector that
 cannot fail a wrong implementation is not evidence that the right one is right.
 
+### The record header every durable store carries
+
+`RecordEnvelope` — 24 bytes: magic, schema version, account id, environment
+flag, CRC-32 of the payload. It exists so four things a record can be are
+distinguishable before anything acts on it: this build's, an older build's,
+another account's or the other environment's, and damaged. Without it the last
+two look like a valid record whose fields happen to decode, which is how a
+truncated draft becomes a message sent to the wrong chat.
+
+An account id of **0 means unbound, and matches** rather than excluding. A
+message queued before the client knows who it is signed in as must not vanish
+the moment it finds out; binding is defence in depth behind the logout wipe, not
+the mechanism that separates accounts. `TgMidlet.cacheAccountId` pushes the
+current id into the outbox and draft stores, so it tracks sign-in and logout
+without a lifecycle of its own.
+
+The CRC catches accidental damage — a torn write, a flipped bit, a short read.
+It is not tamper detection: anyone who can edit a record can recompute it in the
+same edit, and RMS on these handsets has no encryption and no access control
+beyond "other MIDlet suites cannot read it".
+
+### What the three durable stores now guarantee
+
+**Every mutation happened or reported failure.** `add`, `save` and `remove` read
+back and compare before returning; a `setRecord` that was acknowledged into a
+buffer and never landed used to be indistinguishable from success. A failed
+drain now fires the outbox listener, so the screen cannot keep showing "sent"
+for a row the store would not release.
+
+**Replacement is add-then-delete, everywhere.** Interrupted, that leaves two
+records rather than none, and the reader keeps the higher record id — the newer
+write, because RMS never reuses an id. The outbox resolves duplicates by
+`random_id`, drafts by peer, the update cursor by there being only one.
+
+**`random_id` is never regenerated.** It is Telegram's deduplication key: the
+same value resent is the same message, a new one is a second copy in the
+conversation. Recovery, migration and retry all re-encode the message object
+rather than rebuilding it.
+
+**`SENDING` does not survive a restart.** It means a request is on the wire, and
+after a restart none is. Those rows come back `QUEUED` under the same
+`random_id`, so a request Telegram did receive is deduplicated rather than
+delivered twice.
+
+**Damaged rows are removed, not skipped.** A skipped one held one of the outbox's
+sixty-four slots until the installation was deleted, and a store full of records
+it cannot read reports itself full.
+
+**A damaged update cursor resets rather than reading as absent.** Believing a
+wrong `pts` is worse than having none — it tells Telegram the client has seen
+updates it has not, and the difference is never requested. `lastLoadWasReset()`
+separates "nothing stored" from "something was, and it could not be trusted".
+
+Legacy records (bare `TGO2`, `TGD2` and `UpdateStateCodec` output) are still
+read. The outbox migrates them into the current format on first sweep, keeping
+`random_id`; drafts and the cursor are rewritten by the next save. An upgrade
+that silently dropped the user's unsent messages would not be acceptable for
+either.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate

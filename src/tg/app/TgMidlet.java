@@ -2177,6 +2177,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private long cacheAccountId()
     {
+        long id = resolveAccountId();
+        // Pushed rather than passed. The durable stores stamp every record they
+        // write with the account it belongs to, and this is the one place in
+        // the client that knows what that is - so it is also the place that
+        // keeps them current, including through a logout, where it answers 0
+        // and the stores go back to accepting anyone's rows. See
+        // RecordEnvelope: 0 matches, it does not exclude.
+        if (outgoingStore != null) { outgoingStore.bindAccount(id); }
+        if (draftStore != null) { draftStore.bindAccount(id); }
+        return id;
+    }
+
+    private long resolveAccountId()
+    {
         // The one gate every cache write passes through. See accountActive.
         if (!accountActive) { return 0; }
         Peer self = telegram == null ? null : telegram.peers().self();

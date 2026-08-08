@@ -1706,6 +1706,12 @@ public final class Telegram
         catch (Throwable t)
         {
             Diag.error("outbox drain failed", t);
+            // The store refused a write or a delete, so what the outbox screen
+            // is showing is no longer what is stored. Telling the listener is
+            // the whole recovery: nothing was lost - the row is still there -
+            // but the user must not be shown "sent" for a message the store
+            // would not let go of.
+            notifyOutboxChanged();
         }
         finally
         {

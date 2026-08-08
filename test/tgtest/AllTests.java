@@ -44,6 +44,7 @@ public final class AllTests
             new Phase2PersistenceTest(),
             new RmsAuthKeyStoreTest(),
             new RmsFaultTest(),
+            new DurableStoreTest(),
             new AuthKeyProvenanceTest(),
             new AuthCheckTest(),
             new AccountWipeTest(),
