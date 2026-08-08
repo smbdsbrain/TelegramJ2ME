@@ -361,19 +361,29 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** What the store already holds for {@link #composer}; same three threads. */
     private volatile String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
-    private volatile int avatarGeneration;
+
+    /**
+     * Which account and which chat every asynchronous request was made for.
+     *
+     * A request captures this at submit time and its callback asks whether the
+     * capture still holds before touching anything. See {@link AsyncScope}: the
+     * durable half of a task is unaffected either way, and only the screen half
+     * is dropped.
+     */
+    private final AsyncScope scope = new AsyncScope();
 
     /**
      * False from the moment a logout starts until the next sign-in.
      *
-     * The account is what the caches are keyed on, and three separate writers -
-     * the dialog cache, the history cache and the avatar worker - ask
-     * {@link #cacheAccountId} before every write. {@code Worker} clears its busy
-     * flag before running the callback, and the avatar worker is a second
-     * {@code Worker} entirely, so work belonging to the account being erased can
-     * and does still be running when the erasure starts. Answering 0 from that
-     * moment turns every one of those writes into a no-op, which is a smaller
-     * and more checkable thing than a generation threaded through each callback.
+     * Narrower than the session generation, and kept beside it: this closes the
+     * window between pressing Log out and the erasure actually starting, during
+     * which the account is still signed in but its caches must stop being
+     * written. Three writers - the dialog cache, the history cache and the
+     * avatar worker - ask {@link #cacheAccountId} before every write, and
+     * answering 0 from that moment turns each into a no-op.
+     *
+     * The session generation is what says a result belongs to a <em>different</em>
+     * account; this says the current one is on its way out.
      */
     private volatile boolean accountActive = true;
 
@@ -673,7 +683,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // this is the one hook rather than a check at every caller. Leaving
             // rather than closing, so a reset does not drop what was typed.
             leaveComposer();
-            openPeer = null;
+            bindOpenPeer(null);
             telegram.setActivePeer(null);
         }
         ChatScreen context = null;
@@ -695,7 +705,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (context != null)
         {
             chatScreen = context;
-            openPeer = context.peer();
+            bindOpenPeer(context.peer());
             // Before setOpenHistory, which raises the mark: the stack can hold
             // two chats at once - opening a forwarded message's source pushes
             // one over the other - and coming back down must not carry the
@@ -1054,6 +1064,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private boolean connectAndCheck()
     {
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "connect"; }
@@ -1067,6 +1078,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // A logout, or a different account signing in, while a connect
+                // was on the wire. Applying this would rebuild the previous
+                // account's list over whatever is on screen now.
+                if (!asked.sameSession()) { dropStale("connect"); return; }
                 AuthCheck check = (AuthCheck) result;
                 if (check.isYes())
                 {
@@ -1099,6 +1114,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession()) { dropStale("connect"); return; }
                 if (!showCachedDialogsOffline())
                 {
                     showRetryableError("Could not connect", error);
@@ -1138,6 +1154,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         showBusy("Sign in", "Requesting a code for " + phoneNumber + "...");
 
+        // The login flow is a session in its own right: a logout landing while
+        // one of these is on the wire, or the user going back to the number,
+        // must not leave a code box for an account they are no longer signing
+        // in to on top of the stack.
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.sendCode"; }
@@ -1150,12 +1171,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession()) { dropStale("auth.sendCode"); return; }
                 phoneCodeHash = (String) result;
                 showCodeBox();
             }
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession()) { dropStale("auth.sendCode"); return; }
                 showRetryableError("Could not request a code", error);
             }
         });
@@ -1201,6 +1224,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         showBusy("Sign in", "Signing in...");
 
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.signIn"; }
@@ -1213,6 +1237,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession()) { dropStale("auth.signIn"); return; }
                 Peer me = (Peer) result;
                 Diag.info("signed in as " + (me == null ? "?" : me.title));
                 loadDialogs();
@@ -1220,6 +1245,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession()) { dropStale("auth.signIn"); return; }
                 if (error instanceof RpcError && ((RpcError) error).isPasswordNeeded())
                 {
                     requestPasswordHint();
@@ -1239,6 +1265,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void resendCode()
     {
         showBusy("Sign in", "Requesting another code...");
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.resendCode"; }
@@ -1251,12 +1278,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession()) { dropStale("auth.resendCode"); return; }
                 phoneCodeHash = (String) result;
                 showCodeBox();
             }
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession()) { dropStale("auth.resendCode"); return; }
                 showAlertThen("Could not resend code", error, codeBox);
             }
         });
@@ -1280,6 +1309,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Sign in", "Cancelling the code for " + oldPhone + "...");
+        // Not guarded - this is itself an authorization change. Going back to
+        // the number abandons the login in progress, and a sendCode or signIn
+        // still in flight for the old one must not put its code box back.
+        scope.newSession();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.cancelCode"; }
@@ -1316,6 +1349,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void requestPasswordHint()
     {
         showBusy("Two-step verification", "Loading password parameters...");
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "account.getPassword"; }
@@ -1328,11 +1362,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("account.getPassword");
+                    return;
+                }
                 showPasswordBox((String) result);
             }
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("account.getPassword");
+                    return;
+                }
                 showAlertThen("Could not load 2FA", error, codeBox);
             }
         });
@@ -1371,6 +1415,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                  "Checking the password locally.\n\n"
                  + "This may take several minutes on older hardware. "
                  + "Please keep the app open.");
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "auth.checkPassword"; }
@@ -1383,6 +1428,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("auth.checkPassword");
+                    return;
+                }
                 Peer me = (Peer) result;
                 Diag.info("2FA signed in as " + (me == null ? "?" : me.title));
                 loadDialogs();
@@ -1390,6 +1440,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("auth.checkPassword");
+                    return;
+                }
                 showAlertThen("2FA sign-in failed", error, passwordBox);
             }
         });
@@ -1522,7 +1577,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void finishLoggedOut(boolean serverConfirmed, Throwable error)
     {
-        // The screens first, so the draft autosave thread - which fires every
+        // Before anything is torn down. Every request still in flight was made
+        // for the account that is about to stop existing on this phone, and
+        // this is the line that stops any of them rebuilding a screen or an
+        // array out from under the phone box.
+        scope.newSession();
+        // The screens next, so the draft autosave thread - which fires every
         // three seconds while a compose box is on screen - cannot write one
         // more draft into the store that is about to be, or has just been,
         // emptied.
@@ -1532,7 +1592,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // data - the retained Peer carries a contact's name.
         closeComposer();
         composeBox = null;
-        openPeer = null;
+        bindOpenPeer(null);
         if (photoToken != null) { photoToken.cancel(); }
         readQueue.clear();
 
@@ -1585,7 +1645,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         profileAvatarIndex = -1;
         profilePhoto = false;
 
-        avatarGeneration++;
         avatarCache.clear();
 
         // Recreated on the way in rather than reused: phoneBox is built once
@@ -1653,6 +1712,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void retryWipe()
     {
         showBusy("Erasing", "Deleting local account data...");
+        final AsyncScope.Token asked = scope.capture();
         boolean started = worker.submit(new Worker.Task()
         {
             public String name() { return "account wipe retry"; }
@@ -1665,8 +1725,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The erasure itself already happened, whatever the screen has
+                // done since - lastWipe records it either way. Only the report
+                // and the navigation are dropped.
                 WipeReport report = (WipeReport) result;
                 lastWipe = report;
+                if (!asked.sameSession())
+                {
+                    dropStale("account wipe retry");
+                    return;
+                }
                 showPhoneBox();
                 if (!report.complete)
                 {
@@ -1710,7 +1778,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // sign-in, 2FA, a verified stored session, or Refresh from the list
         // itself - so this is where the caches are allowed to fill again after
         // a logout closed them. See accountActive.
-        accountActive = true;
+        //
+        // The generation moves only on the edge. Refresh comes through here too
+        // and does not change who is signed in; bumping on every call would
+        // discard the page the user is waiting for every time they pressed it.
+        if (!accountActive)
+        {
+            accountActive = true;
+            scope.newSession();
+        }
         final Peer selectedPeer = selectedDialogPeer();
         avatarCache.clearFailures();
         resetDialogWindow();
@@ -1742,6 +1818,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.setStatus("refreshing", updateLabel);
         }
         final boolean hasFallback = fallback;
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs"; }
@@ -1754,6 +1831,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The one that mattered most: without this a page requested
+                // before a logout repopulates the list and resets the
+                // navigation root on top of the phone box, under the next
+                // account's name.
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs");
+                    return;
+                }
                 DialogPage page = (DialogPage) result;
                 // A first page is row zero, whatever the window was showing
                 // before: this is the path Refresh and reconnect take.
@@ -1767,6 +1853,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs");
+                    return;
+                }
                 if (hasFallback && dialogs.length > 0)
                 {
                     showDialogList(selectedPeer);
@@ -1917,7 +2008,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 continue;
             }
             if (!avatarCache.markLoading(peer)) { continue; }
-            final int generation = avatarGeneration;
+            // What this used to bump its own counter for. avatarGeneration
+            // moved on exactly one event - a logout - which is what the session
+            // generation is, so the two are now one.
+            final AsyncScope.Token asked = scope.capture(peer);
             final long photoId = peer.avatar.photoId;
             final int target = Math.max(8, dialogList.avatarSize());
             boolean submitted = avatarWorker.submit(new Worker.Task()
@@ -1978,7 +2072,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 public void onSuccess(final Object result)
                 {
                     AvatarLoad loaded = (AvatarLoad) result;
-                    if (generation == avatarGeneration
+                    if (asked.sameSession()
                             && loaded.peer.avatar != null
                             && loaded.peer.avatar.photoId == loaded.photoId)
                     {
@@ -2033,7 +2127,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     final boolean noRoom = error instanceof NoRoom
                             || error instanceof OutOfMemoryError;
 
-                    if (generation == avatarGeneration)
+                    if (asked.sameSession())
                     {
                         avatarCache.fail(peer);
                         if (dialogList != null)
@@ -2381,6 +2475,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Peer selected = selectedDialogPeer();
         dialogPageInFlight = true;
         dialogList.setStatus("loading...", updateLabel);
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs/back"; }
@@ -2397,6 +2492,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
+                // The latch belongs to the session, so a stale callback must
+                // not clear it - and within a session it is always cleared by
+                // whoever set it, which is what keeps paging from sticking.
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs/back");
+                    return;
+                }
                 dialogPageInFlight = false;
                 if (!canRestoreDialogs()) { return; }
                 DialogPage page = (DialogPage) result;
@@ -2415,6 +2518,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(final Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs/back");
+                    return;
+                }
                 dialogPageInFlight = false;
                 if (dialogList != null)
                 {
@@ -2477,6 +2585,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Peer selected = selectedDialogPeer();
         dialogPageInFlight = true;
         dialogList.setStatus("loading...", updateLabel);
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs/more"; }
@@ -2489,6 +2598,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs/more");
+                    return;
+                }
                 dialogPageInFlight = false;
                 DialogPage page = (DialogPage) result;
                 // Whether the page carried anything the window did not already
@@ -2518,6 +2632,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(final Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getDialogs/more");
+                    return;
+                }
                 dialogPageInFlight = false;
                 if (dialogList != null)
                 {
@@ -2593,7 +2712,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // shape of what follows: a ChatScreen, the emoji sheet on first
             // paint, a wrapped transcript and the inflated history response.
             MemoryPressure.reserve(CHAT_OPEN_BYTES);
-            openPeer = peer;
+            bindOpenPeer(peer);
             rebindReadMark(peer);
             historyPageInFlight = false;
             historyExhausted = false;
@@ -2765,6 +2884,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         chatScreen.setStatus(fallback ? "cached/refreshing"
                 : ("loading... / " + connectionLabel));
         final boolean hasFallback = fallback;
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory"; }
@@ -2782,7 +2902,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory");
+                    return;
+                }
                 try
                 {
                     setOpenHistory((Message[]) result);
@@ -2805,7 +2929,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (samePeer(openPeer, peer))
+                if (asked.sameChat(openPeer))
                 {
                     if (hasFallback && openHistory.length > 0)
                     {
@@ -2904,6 +3028,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int offsetId = openHistory[openHistory.length - 1].id;
         historyPageInFlight = true;
         chatScreen.setStatus("loading older messages...");
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/older"; }
@@ -2917,8 +3042,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
+                // The latch is session-scoped, the content is chat-scoped. A
+                // result from a previous account must not clear a latch the
+                // current one is holding; a result for a chat the reader has
+                // left has to release it, because nothing else will.
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/older");
+                    return;
+                }
                 historyPageInFlight = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/older");
+                    return;
+                }
                 Message[] page = (Message[]) result;
                 // Whether the page itself carried anything older than what was
                 // held. Deliberately not "did the retained array change": the
@@ -2951,8 +3089,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(final Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/older");
+                    return;
+                }
                 historyPageInFlight = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/older");
+                    return;
+                }
                 chatScreen.setStatus(connectionLabel + "/" + updateLabel);
                 if (manual)
                 {
@@ -3066,6 +3213,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int offsetId = newestOpenId();
         historyPageInFlight = true;
         chatScreen.setStatus("loading newer messages...");
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/newer"; }
@@ -3079,8 +3227,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/newer");
+                    return;
+                }
                 historyPageInFlight = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/newer");
+                    return;
+                }
                 Message[] page = (Message[]) result;
                 int before = newestOpenId();
                 mergeHistoryPage(page);
@@ -3096,8 +3253,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(final Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getHistory/newer");
+                    return;
+                }
                 historyPageInFlight = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.getHistory/newer");
+                    return;
+                }
                 chatScreen.setStatus(connectionLabel + "/" + updateLabel);
                 Diag.warn("newer page failed: " + shortMessage(error));
             }
@@ -3527,9 +3693,38 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogs[firstUnpinned] = changed;
     }
 
+    /**
+     * The same conversation, by kind and id. One definition, in
+     * {@link AsyncScope}, because the guards there compare peers for the same
+     * reason every call site here does.
+     */
     private static boolean samePeer(Peer a, Peer b)
     {
-        return a != null && b != null && a.kind == b.kind && a.id == b.id;
+        return AsyncScope.samePeer(a, b);
+    }
+
+    /**
+     * Bind the open chat, bumping the chat generation when it really moved.
+     *
+     * The single assignment point for {@code openPeer}, so that no path can
+     * change which conversation is open without the guards noticing.
+     */
+    private void bindOpenPeer(Peer next)
+    {
+        scope.chatChanged(next);
+        openPeer = next;
+    }
+
+    /**
+     * A result that arrived for an account or a chat that is no longer current.
+     *
+     * Info rather than a warning, and never an alert: this is the expected
+     * outcome of opening another chat while a page is in flight, not a fault.
+     * Bounded by construction - Diag keeps a fixed-size ring.
+     */
+    private static void dropStale(String what)
+    {
+        Diag.info("stale result dropped: " + what);
     }
 
     /**
@@ -3624,6 +3819,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void submitSnapshotRefresh()
     {
         final Peer target = openPeer;
+        final AsyncScope.Token asked = scope.capture(target);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "updates.snapshotRefresh"; }
@@ -3652,6 +3848,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
+                // Session, not chat: the dialog half of this snapshot is worth
+                // applying even if the reader has moved to another chat since
+                // it was asked for. The history half keeps its own check below.
+                if (!asked.sameSession())
+                {
+                    snapshotRefreshScheduled = false;
+                    dropStale("updates.snapshotRefresh");
+                    return;
+                }
                 UpdateSnapshot snapshot = (UpdateSnapshot) result;
                 Peer selectedPeer = null;
                 if (dialogList != null && display.getCurrent() == dialogList)
@@ -3705,6 +3910,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public void onFailure(final Throwable error)
             {
                 snapshotRefreshScheduled = false;
+                if (!asked.sameSession())
+                {
+                    dropStale("updates.snapshotRefresh");
+                    return;
+                }
                 Diag.warn("update snapshot refresh failed: "
                         + shortMessage(error));
             }
@@ -3853,6 +4063,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Message message = actionMessage;
         final Peer source = actionPeer;
         showBusy("Forward", "Forwarding message...");
+        final AsyncScope.Token asked = scope.capture(source);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.forwardMessages"; }
@@ -3865,11 +4076,28 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The forward happened on the server whatever the screen says.
+                // Only the pop and the status line are dropped - and the status
+                // line would otherwise be written into whichever chat the user
+                // moved to, claiming a forward it knows nothing about.
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.forwardMessages");
+                    return;
+                }
                 restoreScreen(navigation.pop());
-                chatScreen.setStatus("forwarded / " + connectionLabel);
+                if (chatScreen != null)
+                {
+                    chatScreen.setStatus("forwarded / " + connectionLabel);
+                }
             }
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession() || forwardList == null)
+                {
+                    dropStale("messages.forwardMessages");
+                    return;
+                }
                 showAlertThen("Could not forward message", error, forwardList);
             }
         });
@@ -3915,6 +4143,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int messageId = actionMessage.id;
         final Peer peer = actionPeer;
         showBusy("Delete", "Deleting message...");
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return peer.kind == Peer.CHANNEL
@@ -3928,14 +4157,33 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The message is gone on the server either way. What the guard
+                // stops is removeOpenMessage running against the wrong
+                // transcript: message ids are unique per peer, not globally, so
+                // deleting id 4711 from whichever chat happens to be open can
+                // and did strip an unrelated message from it.
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("deleteMessages");
+                    scheduleSnapshotRefresh();
+                    return;
+                }
                 removeOpenMessage(messageId);
                 restoreScreen(navigation.pop());
-                chatScreen.setMessages(openHistory);
-                chatScreen.setStatus("deleted / " + connectionLabel);
+                if (chatScreen != null)
+                {
+                    chatScreen.setMessages(openHistory);
+                    chatScreen.setStatus("deleted / " + connectionLabel);
+                }
                 scheduleSnapshotRefresh();
             }
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession() || deleteConfirm == null)
+                {
+                    dropStale("deleteMessages");
+                    return;
+                }
                 showAlertThen("Could not delete message", error, deleteConfirm);
             }
         });
@@ -4024,6 +4272,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Profile", "Loading profile...");
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "users.getFullUser"; }
@@ -4035,12 +4284,24 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // A profile pushed after a logout would be the previous
+                // account's contact, on top of the phone box.
+                if (!asked.sameSession())
+                {
+                    dropStale("users.getFullUser");
+                    return;
+                }
                 currentProfile = (Profile) result;
                 rebuildProfileScreen();
                 pushScreen(profileScreen);
             }
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("users.getFullUser");
+                    return;
+                }
                 showAlertThen("Could not load profile", error,
                         navigation.current());
             }
@@ -4141,6 +4402,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         showBusy("Profile", "Saving profile...");
+        final AsyncScope.Token asked = scope.capture();
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "account.updateProfile"; }
@@ -4152,6 +4414,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The name is already changed on the server; only the screen
+                // it would replace no longer belongs to this account.
+                if (!asked.sameSession())
+                {
+                    dropStale("account.updateProfile");
+                    return;
+                }
                 currentProfile = (Profile) result;
                 rebuildProfileScreen();
                 navigation.pop();
@@ -4159,6 +4428,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession() || editProfileForm == null)
+                {
+                    dropStale("account.updateProfile");
+                    return;
+                }
                 showAlertThen("Could not update profile", error,
                         editProfileForm);
             }
@@ -4191,6 +4465,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Peer peer = openPeer;
         reactionOptionsLoading = true;
         chatScreen.setStatus("loading reactions...");
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "available reactions"; }
@@ -4202,8 +4477,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("available reactions");
+                    return;
+                }
                 reactionOptionsLoading = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("available reactions");
+                    return;
+                }
                 reactionOptionsPeer = peer;
                 reactionPalette = (String[]) result;
                 reactionLabels = ReactionCatalog.labelsFor(reactionPalette);
@@ -4218,8 +4502,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameSession())
+                {
+                    dropStale("available reactions");
+                    return;
+                }
                 reactionOptionsLoading = false;
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("available reactions");
+                    return;
+                }
                 reactionOptionsPeer = peer;
                 reactionPalette = ReactionCatalog.EMOJI;
                 reactionLabels = ReactionCatalog.LABELS;
@@ -4315,7 +4608,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         reactionActorsScreen = new TextScreen("Reactions",
                 new String[] { "Loading..." }, currentTheme());
         reactionActorsScreen.withBack(cmdBack, this);
-        pushScreen(reactionActorsScreen);
+        // The screen instance itself is the guard here: this is the one screen
+        // pushed before its submission, so a result must land on the screen it
+        // was pushed for or on nothing at all.
+        final TextScreen actorsScreen = reactionActorsScreen;
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getMessageReactionsList"; }
@@ -4327,6 +4624,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                if (!asked.sameChat(openPeer)
+                        || reactionActorsScreen != actorsScreen)
+                {
+                    dropStale("messages.getMessageReactionsList");
+                    return;
+                }
                 ReactionActorsPage page = (ReactionActorsPage) result;
                 int extra = page.totalCount > page.actors.length ? 1 : 0;
                 String[] lines = new String[page.actors.length + extra];
@@ -4349,6 +4652,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameChat(openPeer) || reactionScreen == null)
+                {
+                    dropStale("messages.getMessageReactionsList");
+                    return;
+                }
                 String detail = shortMessage(error);
                 if (detail != null
                         && detail.indexOf("BROADCAST_FORBIDDEN") >= 0)
@@ -4384,6 +4692,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final ChatScreen returnChat = chatScreen;
         restoreScreen(navigation.pop());
         returnChat.setStatus("opening forwarded message...");
+        // Captured after the pop, so it names the chat this returns to. This
+        // callback replaces the open chat outright - the widest transition in
+        // the client - and doing that to a conversation the reader moved to in
+        // the meantime is indistinguishable from the client opening a chat by
+        // itself.
+        final AsyncScope.Token asked = scope.capture(openPeer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "open forwarded source"; }
@@ -4410,8 +4724,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object value)
             {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("open forwarded source");
+                    return;
+                }
                 ForwardOpen result = (ForwardOpen) value;
-                openPeer = result.peer;
+                bindOpenPeer(result.peer);
                 rebindReadMark(openPeer);
                 historyPageInFlight = false;
                 historyExhausted = false;
@@ -4434,6 +4753,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("open forwarded source");
+                    return;
+                }
                 returnChat.setStatus(connectionLabel + "/" + updateLabel);
                 showAlertThen("Cannot open source", error, returnChat);
             }
@@ -4481,23 +4805,39 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         restoreScreen(navigation.pop());
         chatScreen.setStatus("reacting...");
+        // Captured, not read from the field inside run(). The task body used to
+        // read openPeer on the worker thread, so opening another chat while the
+        // reaction was in flight sent it against the chat the user had moved
+        // to - a reaction on a message that was never selected.
+        final Peer peer = openPeer;
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.sendReaction"; }
             public Object run() throws Exception
             {
-                telegram.sendReactions(openPeer, message.id, reactions);
+                telegram.sendReactions(peer, message.id, reactions);
                 return null;
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object ignored)
             {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.sendReaction");
+                    return;
+                }
                 chatScreen.setStatus(connectionLabel + "/" + updateLabel);
             }
 
             public void onFailure(Throwable error)
             {
+                if (!asked.sameChat(openPeer))
+                {
+                    dropStale("messages.sendReaction");
+                    return;
+                }
                 chatScreen.setStatus("reaction failed");
                 String detail = shortMessage(error);
                 if (detail != null
@@ -4639,7 +4979,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                if (token != photoToken) { return; }
+                // The download token is the guard for this screen: it is
+                // replaced on every open, cancelled on Back, and cancelled and
+                // nulled by a logout. The null check is what the token cannot
+                // say - the same logout takes the screen away too.
+                if (token != photoToken || photoScreen == null)
+                {
+                    dropStale("upload.getFile/photo");
+                    return;
+                }
                 cachedPhotoId = message.media.photo.id;
                 cachedPhoto = (Image) result;
                 photoScreen.setImage(cachedPhoto);
@@ -4647,7 +4995,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (token != photoToken || token.isCancelled()) { return; }
+                if (token != photoToken || token.isCancelled()
+                        || photoScreen == null)
+                {
+                    dropStale("upload.getFile/photo");
+                    return;
+                }
                 String message = shortMessage(error);
                 if (message != null && message.indexOf("FILE_REFERENCE") >= 0)
                 {
@@ -4685,6 +5038,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (previous == null || peer == null) { return; }
         photoReferenceExpired = false;
         photoScreen.setStatus("refreshing photo reference...");
+        final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "refresh expired photo reference"; }
@@ -4696,7 +5050,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                if (!samePeer(openPeer, peer)) { return; }
+                if (!asked.sameChat(openPeer) || photoScreen == null)
+                {
+                    dropStale("refresh expired photo reference");
+                    return;
+                }
                 mergeHistoryPage((Message[]) result);
                 chatScreen.setMessages(openHistory);
                 scheduleInlineThumbnails(peer);
@@ -4711,6 +5069,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                // The latch decides what Retry does next, so it is only worth
+                // setting while there is still a photo screen to press it on.
+                if (!asked.sameChat(openPeer) || photoScreen == null)
+                {
+                    dropStale("refresh expired photo reference");
+                    return;
+                }
                 photoReferenceExpired = true;
                 photoScreen.setStatus("refresh failed: " + shortMessage(error));
             }
@@ -4763,6 +5128,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
         final Peer peer = session.peer();
         final int replyToMessageId = session.replyToMessageId();
+        final AsyncScope.Token asked = scope.capture(peer);
 
         boolean submitted = worker.submit(new Worker.Task()
         {
@@ -4776,16 +5142,33 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
+                // The durable half is already done: enqueueMessage put the row
+                // in RMS and started the drain before this callback existed, so
+                // the message is on its way whatever the screen does now. Only
+                // the screen half is conditional.
+                //
+                // The draft is cleared against the captured peer, so it happens
+                // even if the reader has moved on - the message it was a draft
+                // of has been sent, and leaving it would send a second copy the
+                // next time that chat is opened.
+                if (asked.sameSession())
+                {
+                    try { draftStore.save(peer, ""); }
+                    catch (Throwable t) { Diag.error("draft clear failed", t); }
+                }
+
                 // The composer may have been closed and reopened while this was
                 // in flight. Clearing then would erase a draft belonging to the
                 // session now on screen and pop a screen nobody asked to leave.
-                if (composer != session) { return; }
+                if (composer != session)
+                {
+                    dropStale("outbox.enqueue");
+                    return;
+                }
 
-                try { draftStore.save(peer, ""); }
-                catch (Throwable t) { Diag.error("draft clear failed", t); }
                 closeComposer();
                 popComposer();
-                if (chatScreen != null && samePeer(openPeer, peer))
+                if (chatScreen != null && asked.sameChat(openPeer))
                 {
                     chatScreen.appendLocal((replyToMessageId > 0
                             ? ("[reply to #" + replyToMessageId + "] ") : "")
@@ -4797,6 +5180,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
+                if (composer != session || composeBox == null)
+                {
+                    // Nothing was queued and there is no box left to say so on.
+                    // Loud in the log rather than silent: this is a message the
+                    // user wrote and the client did not send.
+                    Diag.warn("compose enqueue failed for a session that is no"
+                            + " longer open: " + shortMessage(error));
+                    return;
+                }
                 showAlertThen("Could not queue message", error, composeBox);
             }
         });

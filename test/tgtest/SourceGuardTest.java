@@ -55,6 +55,11 @@ import java.util.List;
  * where a keypress could arrive first. So the call now lives in exactly one
  * file, and "which thread is this on" has one answer per call site instead of
  * one per reader.
+ *
+ * The sixth rule is the same shape one axis over. A result that arrives after
+ * the reader has moved to another chat must not be applied to it, and what
+ * decides that is a generation bumped when the open conversation changes - so
+ * the open conversation has to change in exactly one place.
  */
 public final class SourceGuardTest implements Test
 {
@@ -110,6 +115,64 @@ public final class SourceGuardTest implements Test
             check(RULES[r], sources);
         }
         everySubmitAnswerIsRead(sources);
+        theOpenChatHasOneAssignmentPoint(sources);
+    }
+
+    /**
+     * {@code openPeer} is assigned in exactly one place.
+     *
+     * That place is {@code TgMidlet.bindOpenPeer}, which bumps the chat
+     * generation when the conversation really moved. An assignment anywhere
+     * else changes which chat is open without the guards noticing, and the
+     * result is a page merged into the wrong transcript - which looks like
+     * nothing at all until it is a message in a conversation it was never
+     * sent to.
+     *
+     * Counted rather than allow-listed by file, because the offender would be
+     * in the same file as the legitimate one.
+     */
+    private static void theOpenChatHasOneAssignmentPoint(List sources)
+            throws IOException
+    {
+        List found = new ArrayList();
+        for (int i = 0; i < sources.size(); i++)
+        {
+            File f = (File) sources.get(i);
+            String path = relative(f);
+            String[] lines = read(f).split("\n", -1);
+            for (int n = 0; n < lines.length; n++)
+            {
+                if (assignsOpenPeer(lines[n]))
+                {
+                    found.add(path + ":" + (n + 1));
+                }
+            }
+        }
+
+        Assert.equal("openPeer must be assigned only by bindOpenPeer, which is"
+                + " what bumps the chat generation; assigned at " + found,
+                1, found.size());
+    }
+
+    /** {@code openPeer = x}, but not {@code openPeer == x} or a longer name. */
+    private static boolean assignsOpenPeer(String line)
+    {
+        int at = line.indexOf("openPeer");
+        while (at >= 0)
+        {
+            int before = at - 1;
+            boolean wordStart = before < 0
+                    || !Character.isJavaIdentifierPart(line.charAt(before));
+            int after = at + "openPeer".length();
+            // Skip the spaces an assignment is allowed to have around it.
+            while (after < line.length() && line.charAt(after) == ' ') { after++; }
+            boolean assigns = after < line.length()
+                    && line.charAt(after) == '='
+                    && (after + 1 >= line.length() || line.charAt(after + 1) != '=');
+            if (wordStart && assigns) { return true; }
+            at = line.indexOf("openPeer", at + 1);
+        }
+        return false;
     }
 
     /**

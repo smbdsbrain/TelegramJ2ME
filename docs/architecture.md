@@ -406,6 +406,56 @@ A fifth worker is not admissible without adding a row here first. The refusal
 contract above only means something against a written-down list of what is
 allowed to be in flight beside it.
 
+### A result can be correct and still not belong here
+
+Owning the thread decides *when* a result is applied, not *whether* it should
+be. A `messages.getDialogs` on GPRS takes seconds, and in those seconds the user
+can log out, sign in as someone else, or open two other chats. The result then
+arrives correct and complete, about a world that is gone.
+
+`AsyncScope` is two counters and a captured peer. A submission takes a token;
+its callback asks the token whether the capture still holds before it touches
+anything.
+
+| Counter | Bumped by | Asked by |
+|---|---|---|
+| session | `finishLoggedOut`, `changeNumber`, and the first `loadDialogs` after a logout — i.e. whenever a *different* authorization becomes the live one | everything; it is the outer guard |
+| chat | binding a *different* conversation as the open one, through the single `bindOpenPeer` assignment point | anything that writes into the open transcript |
+
+Two decisions inside that are load-bearing. Closing a chat does not bump: a
+token holds a peer and a peer never matches a null current one, so closing is
+already covered. And rebinding to the *same* chat does not bump either — every
+pop back onto a conversation rebinds it, and the dialog list closes the chat on
+the way past, so a reader who backs out and comes straight in would otherwise
+lose the page already on its way to them. A detour *through* another chat does
+bump, and that page is dropped: it was requested against paging offsets the
+second visit does not share.
+
+**Durable and screen halves are decided separately.** A stale result still
+finishes and its durable half still counts. An outbox row that reached RMS stays
+there whether or not the composer it came from is still open — `enqueueMessage`
+committed it and started the drain before the callback existed. A delete already
+happened on the server; what the guard stops is `removeOpenMessage` running
+against the wrong transcript, because message ids are unique per peer and not
+globally. The draft of a sent message is cleared against the *captured* peer, so
+it happens even if the reader moved on — otherwise that draft comes back as a
+second copy.
+
+**Latches are session-scoped, content is chat-scoped.** `historyPageInFlight`
+and `dialogPageInFlight` are released by any callback from the current session,
+including one whose chat has changed, because nothing else would release them
+and paging would stick. Only a result from a previous account leaves them alone,
+and `finishLoggedOut` clears both.
+
+Where a request already had a better guard than a generation, it kept it:
+`photoToken` is replaced per open and cancelled on logout, `composer` is a
+session object compared by reference, `thumbnailGeneration` is per batch rather
+than per chat. `avatarGeneration` was deleted — it moved on exactly one event, a
+logout, which is what the session counter is.
+
+Counters are signed ints compared for equality, not persisted. A bump costs a
+logout or opening a different chat; 2^31 of those is 68 years at one a second.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate

@@ -53,6 +53,7 @@ public final class AllTests
             new ComposerStateTest(),
             new WorkerTest(),
             new WorkerDispatchTest(),
+            new AsyncScopeTest(),
             new ReadMarkTest(),
             new ReadQueueTest(),
             new DialogListTest(),
