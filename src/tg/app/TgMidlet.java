@@ -368,6 +368,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** An older page is on the wire; a second request would only be dropped. */
     private boolean historyPageInFlight;
 
+    /**
+     * Bumped by an explicit history navigation.
+     *
+     * A scroll-driven page that was already on the wire when the reader pressed
+     * Jump to latest is not wrong, it is just about where they no longer are.
+     * Its content must not be merged into the window the jump installed - that
+     * is a page requested against paging offsets the new window does not share.
+     * The latch is still cleared by whoever set it, so paging cannot stick.
+     */
+    private int historyNavigation;
+
     /** The last page came back empty: this is the start of the conversation. */
     private boolean historyExhausted;
 
@@ -2201,7 +2212,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // Replaces the query box rather than stacking on it: Back from the
         // results belongs on the screen the search was started from, and a
         // reader who wants a different query presses Find chat again.
-        navigation.pop();
+        //
+        // replace() overwrites the top of the stack, which is already the query
+        // box - so there is nothing to pop first. Popping first overwrote the
+        // screen *underneath* it instead, and when the search was started from
+        // the chat list that screen was the root: the results became the root,
+        // and Back on a root screen is how this MIDlet exits. It looked exactly
+        // like a crash on the handset and left nothing in the crash log,
+        // because nothing had thrown.
         replaceScreen(searchResults);
     }
 
@@ -3350,6 +3368,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         historyPageInFlight = true;
         chatScreen.setStatus("loading older messages...");
         final AsyncScope.Token asked = scope.capture(peer);
+        final int atRequest = historyNavigation;
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/older"; }
@@ -3373,6 +3392,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     return;
                 }
                 historyPageInFlight = false;
+                // Superseded by an explicit navigation - Jump to latest, or
+                // First unread - that the reader asked for while this page was
+                // on the wire. The page is not wrong, it is about where they no
+                // longer are, and merging it would fold a page requested
+                // against the old paging offsets into the new window. The latch
+                // above is still cleared, because this path owns it.
+                if (atRequest != historyNavigation)
+                {
+                    dropStale("messages.getHistory/older");
+                    return;
+                }
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/older");
@@ -3524,12 +3554,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (openPeer == null || chatScreen == null) { return; }
         final Peer peer = openPeer;
-        if (historyPageInFlight)
-        {
-            chatScreen.setStatus("already loading...");
-            return;
-        }
-        historyPageInFlight = true;
+        // Deliberately not gated on historyPageInFlight. That latch belongs to
+        // the scroll-driven paging, which on this heap prefetches every seven
+        // messages - so on GPRS, where a page takes seconds, it is set most of
+        // the time a reader is moving. Refusing an explicit action because a
+        // background prefetch is running is what produced "already loading..."
+        // on every press of Jump to latest, several presses running.
+        //
+        // The Worker is still serial, so this cannot overtake the request that
+        // is on the wire. What it can do is take precedence over its *result*,
+        // and be retried the moment the worker frees up.
+        historyNavigation++;
         chatScreen.setStatus("loading the latest...");
         final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
@@ -3549,7 +3584,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/latest");
                     return;
                 }
-                historyPageInFlight = false;
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/latest");
@@ -3583,7 +3617,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/latest");
                     return;
                 }
-                historyPageInFlight = false;
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/latest");
@@ -3596,12 +3629,48 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
         if (!submitted)
         {
-            historyPageInFlight = false;
-            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-            showRefused("Not jumped", "Press Jump to latest again in a moment.",
-                    chatScreen);
+            // Refused because the prefetch has the worker. Queued rather than
+            // handed back to the user as "press it again": they already did,
+            // several times, and the answer was the same each time.
+            pendingJumpPeer = peer;
+            historyJumpRetry.schedule(HISTORY_JUMP_RETRY_MS);
+            chatScreen.setStatus("waiting for the current page...");
         }
     }
+
+    /** How long to wait before re-offering a jump the worker refused. */
+    private static final long HISTORY_JUMP_RETRY_MS = 400L;
+
+    /** The chat a queued Jump to latest was asked for, or null. */
+    private Peer pendingJumpPeer;
+
+    /**
+     * One waiter for a Jump to latest the worker was too busy to take.
+     *
+     * The same shape as the snapshot refresh: try, and on a refusal come back
+     * rather than dropping the action. Bounded to one waiter by DelayedWake,
+     * and it re-checks the chat on the way in, because the reader can leave
+     * while it waits.
+     */
+    private final DelayedWake historyJumpRetry = new DelayedWake("jump-latest",
+            new DelayedWake.Wake()
+    {
+        public void onWake()
+        {
+            ui.post(new Runnable()
+            {
+                public void run()
+                {
+                    Peer want = pendingJumpPeer;
+                    pendingJumpPeer = null;
+                    if (want != null && samePeer(openPeer, want))
+                    {
+                        jumpToLatest();
+                    }
+                }
+            });
+        }
+    });
 
     /**
      * The oldest incoming message this reader has not read, if there is one.
@@ -3641,12 +3710,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
 
-        if (historyPageInFlight)
-        {
-            chatScreen.setStatus("already loading...");
-            return;
-        }
-        historyPageInFlight = true;
+        // Same reasoning as Jump to latest: an explicit action is not refused
+        // because a background prefetch holds the latch.
+        historyNavigation++;
         chatScreen.setStatus("finding the first unread...");
         final AsyncScope.Token asked = scope.capture(peer);
         boolean submitted = worker.submit(new Worker.Task()
@@ -3671,7 +3737,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/unread");
                     return;
                 }
-                historyPageInFlight = false;
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/unread");
@@ -3707,7 +3772,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/unread");
                     return;
                 }
-                historyPageInFlight = false;
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/unread");
@@ -3720,7 +3784,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
         if (!submitted)
         {
-            historyPageInFlight = false;
             chatScreen.setStatus(connectionLabel + "/" + updateLabel);
             showRefused("Not searched", "Press First unread again in a moment.",
                     chatScreen);
@@ -3753,6 +3816,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         historyPageInFlight = true;
         chatScreen.setStatus("loading newer messages...");
         final AsyncScope.Token asked = scope.capture(peer);
+        final int atRequest = historyNavigation;
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/newer"; }
@@ -3772,6 +3836,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     return;
                 }
                 historyPageInFlight = false;
+                // Superseded by an explicit navigation - Jump to latest, or
+                // First unread - that the reader asked for while this page was
+                // on the wire. The page is not wrong, it is about where they no
+                // longer are, and merging it would fold a page requested
+                // against the old paging offsets into the new window. The latch
+                // above is still cleared, because this path owns it.
+                if (atRequest != historyNavigation)
+                {
+                    dropStale("messages.getHistory/newer");
+                    return;
+                }
                 if (!asked.sameChat(openPeer))
                 {
                     dropStale("messages.getHistory/newer");
@@ -4641,6 +4716,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * the same terms as a row of the loaded window - same request, same
      * staleness guard, same recovery.
      */
+    /**
+     * Leave the forward flow, however many screens deep it went.
+     *
+     * One pop was enough while the only way to pick a target was the loaded
+     * list. A target found by searching sits one screen higher - results on top
+     * of the picker - so a single pop landed the user back on the picker they
+     * had just used, with the message already forwarded.
+     *
+     * Bounded rather than a while(true): {@code pop} stops at the root and
+     * returns it, so a mistake here would spin instead of throwing.
+     */
+    private void popPastPicker()
+    {
+        Displayable at = navigation.current();
+        for (int i = 0; i < 3; i++)
+        {
+            if (at != searchResults && at != forwardList) { break; }
+            Displayable next = navigation.pop();
+            if (next == at) { break; }
+            at = next;
+        }
+        restoreScreen(at);
+    }
+
     private void forwardMessageTo(final Peer destination)
     {
         if (destination == null || actionMessage == null || actionPeer == null)
@@ -4672,7 +4771,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.forwardMessages");
                     return;
                 }
-                restoreScreen(navigation.pop());
+                popPastPicker();
                 if (chatScreen != null)
                 {
                     chatScreen.setStatus("forwarded / " + connectionLabel);

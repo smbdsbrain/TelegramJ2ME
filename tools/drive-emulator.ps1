@@ -33,6 +33,11 @@
              virtualised window exists for: what has to stay flat is the line
              count, and what has to track pages rather than keypresses is the
              request count.
+    navigate search for a chat and press Back, then open one and use Jump to
+             latest and First unread. Every one of those is a transition rather
+             than a request, which is why none had automated coverage: the
+             desktop suite can prove what a page merge does to an array and
+             cannot press Back. -ChatTitle is the search query here.
     chats    scroll the chat list down -Pages screens and back up, reporting
              the retained count, requests per page, bytes per dialog and
              whether the reader's row moved under them. The chat-list twin of
@@ -131,7 +136,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap',
-                 'scroll', 'chats', 'hashprobe')]
+                 'scroll', 'chats', 'hashprobe', 'navigate')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
     [string]$Phone = '',
@@ -240,6 +245,7 @@ switch ($Scenario) {
                                  $(if ($SingleSocket) { 'single' } else { 'multi' })) }
     'chats'   { $driverArgs += @("$Pages", $Pictures) }
     'hashprobe' { $driverArgs += "$Pages" }
+    'navigate'  { $driverArgs += @($Mode, $ChatTitle) }
 }
 
 Write-Step "emulator driver [$profileLabel] :: $Scenario ($Env)"

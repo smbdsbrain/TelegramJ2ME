@@ -76,6 +76,15 @@ public class ChatScreen extends Canvas
 
     private final ChatScrollState scroll = new ChatScrollState();
     private String status;
+
+    /**
+     * The status line, for a driver that has to assert on what it says.
+     *
+     * The line is how every asynchronous history action reports itself - which
+     * page is loading, which one was refused, whether a jump landed - and on a
+     * MIDlet there is nowhere else for a test to read that from.
+     */
+    public String status() { return status == null ? "" : status; }
     private boolean mediaPreviews = true;
     private int focusedMessageId;
     private ActivationListener activationListener;

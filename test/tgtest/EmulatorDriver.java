@@ -157,6 +157,10 @@ public final class EmulatorDriver
             {
                 exit = chats(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
             }
+            else if ("navigate".equals(scenario))
+            {
+                exit = navigate(app, arg(args, 1), arg(args, 2)) ? 0 : 1;
+            }
             else if ("hashprobe".equals(scenario))
             {
                 exit = hashProbe(arg(args, 1));
@@ -1497,6 +1501,170 @@ public final class EmulatorDriver
      * Back command that does nothing, so "press Back while there is one" spins
      * forever.
      */
+    /**
+     * The three navigations a handset session found broken, in one run.
+     *
+     * All three are transitions rather than requests, which is why none of them
+     * had automated coverage: the desktop suite can prove what a page merge
+     * does to an array and cannot press Back. What is checked here is the thing
+     * a person noticed - that the screen afterwards is the screen it should be,
+     * and that the client is still running.
+     *
+     * <ol>
+     * <li><b>Search, then Back.</b> The results screen used to replace the
+     *     screen <em>underneath</em> the query box rather than the box itself,
+     *     so a search started from the chat list made the results the root -
+     *     and Back on a root screen is how this MIDlet exits. It read as a
+     *     crash on the handset and left nothing in the crash log, because
+     *     nothing had thrown. The assertion is simply: after Back, the client
+     *     is alive and on the chat list.</li>
+     * <li><b>Jump to latest.</b> It was gated on the same in-flight latch the
+     *     scroll prefetch sets, which on this heap fires every seven messages -
+     *     so on a slow link the answer to an explicit action was "already
+     *     loading...", repeatedly. The assertion is that the status line stops
+     *     saying it is loading.</li>
+     * <li><b>First unread.</b> Same gate, and it also has to answer locally
+     *     when there is nothing unread rather than spending a round trip.</li>
+     * </ol>
+     *
+     * @param query what to search for; a name the account is likely to match
+     */
+    private static boolean navigate(EmulatorHarness app, String modeLabel,
+                                    String query) throws Exception
+    {
+        if (modeLabel != null && modeLabel.length() > 0
+                && !setMode(app, modeLabel)) { return false; }
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run the login scenario first");
+            return false;
+        }
+
+        // The same wait the session scenario takes, for the same reason: a
+        // driver presses Open before messages.getDialogs has come back, and the
+        // worker drops rather than queues.
+        Thread.sleep(6000);
+
+        boolean ok = searchThenBack(app, query);
+        ok = jumpActions(app) && ok;
+        return ok;
+    }
+
+    /**
+     * Find chat, then Back. The client has to still be here afterwards.
+     */
+    private static boolean searchThenBack(EmulatorHarness app, String query)
+            throws Exception
+    {
+        if (!returnToDialogList(app)) { return false; }
+        if (query == null || query.length() < 2) { query = "a"; }
+
+        if (!app.press("Find chat"))
+        {
+            System.out.println("NAVIGATE FAIL: no Find chat command on the list");
+            return false;
+        }
+        if (!app.awaitCommand("Search", 5000))
+        {
+            System.out.println("NAVIGATE FAIL: the query box did not appear");
+            return false;
+        }
+        app.type(query);
+        Displayable box = app.current();
+        app.press("Search");
+
+        // The request is real, so give it a GPRS-shaped window.
+        app.awaitChange(box, 20000);
+        Thread.sleep(2000);
+        report("search results: " + EmulatorHarness.describe(app.current()));
+
+        Displayable results = app.current();
+        if (!app.press("Back"))
+        {
+            System.out.println("NAVIGATE FAIL: no Back on the results screen");
+            return false;
+        }
+        app.awaitChange(results, 5000);
+
+        // The one that matters. If the results had become the root, Back has
+        // just destroyed the MIDlet and there is no current screen at all.
+        if (app.current() == null)
+        {
+            System.out.println("NAVIGATE FAIL: Back from search left no screen -"
+                               + " the MIDlet exited");
+            return false;
+        }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("NAVIGATE FAIL: Back from search landed on "
+                               + EmulatorHarness.describe(app.current())
+                               + ", not the chat list");
+            return false;
+        }
+        report("back from search: on the chat list, client alive");
+        return true;
+    }
+
+    /** Jump to latest and First unread, in a chat, without either being refused. */
+    private static boolean jumpActions(EmulatorHarness app) throws Exception
+    {
+        if (!returnToDialogList(app)) { return false; }
+        if (!openFirstChat(app)) { return false; }
+
+        boolean ok = true;
+        if (!app.press("Jump to latest"))
+        {
+            System.out.println("NAVIGATE FAIL: no Jump to latest command");
+            ok = false;
+        }
+        else
+        {
+            Thread.sleep(8000);
+            String status = chatStatus(app);
+            report("after Jump to latest: status=" + status);
+            if (status.indexOf("already loading") >= 0)
+            {
+                System.out.println("NAVIGATE FAIL: Jump to latest was refused by"
+                                   + " the prefetch latch");
+                ok = false;
+            }
+        }
+
+        if (!app.press("First unread"))
+        {
+            System.out.println("NAVIGATE FAIL: no First unread command");
+            ok = false;
+        }
+        else
+        {
+            Thread.sleep(8000);
+            String status = chatStatus(app);
+            report("after First unread: status=" + status);
+            if (status.indexOf("already loading") >= 0)
+            {
+                System.out.println("NAVIGATE FAIL: First unread was refused by"
+                                   + " the prefetch latch");
+                ok = false;
+            }
+        }
+
+        ok = returnToDialogList(app) && ok;
+        return ok;
+    }
+
+    /** The chat screen status line, or "" when that is not what is showing. */
+    private static String chatStatus(EmulatorHarness app)
+    {
+        Displayable screen = app.current();
+        if (screen instanceof tg.ui.ChatScreen)
+        {
+            String status = ((tg.ui.ChatScreen) screen).status();
+            return status == null ? "" : status;
+        }
+        return "";
+    }
+
     private static boolean returnToDialogList(EmulatorHarness app) throws Exception
     {
         dismissAlert(app);
