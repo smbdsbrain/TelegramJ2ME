@@ -150,6 +150,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdReconnect = new Command("Reconnect now", Command.SCREEN, 2);
     private final Command cmdTestDrop = new Command("Test reconnect", Command.SCREEN, 9);
     private final Command cmdReactions = new Command("Reactions", Command.SCREEN, 1);
+    private final Command cmdSelectReaction =
+            new Command("Select", Command.ITEM, 1);
+    private final Command cmdReactionUp = new Command("Up", Command.SCREEN, 2);
+    private final Command cmdReactionDown = new Command("Down", Command.SCREEN, 3);
     private final Command cmdRetryPhoto = new Command("Retry", Command.SCREEN, 1);
     private final Command cmdZoomPhoto = new Command("Zoom", Command.SCREEN, 1);
     private final Command cmdOlder = new Command("Older", Command.SCREEN, 4);
@@ -904,6 +908,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdTopOfList)
         {
             goToTopOfList();
+        }
+        else if (c == cmdSelectReaction && reactionScreen != null)
+        {
+            reactionScreen.activateSelected();
+        }
+        else if (c == cmdReactionUp && reactionScreen != null)
+        {
+            reactionScreen.moveSelection(-1);
+        }
+        else if (c == cmdReactionDown && reactionScreen != null)
+        {
+            reactionScreen.moveSelection(1);
         }
         else if (c == cmdFindChat)
         {
@@ -5232,6 +5248,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (reactionScreen == null)
         {
             reactionScreen = new ReactionScreen(currentTheme());
+            // Soft-key equivalents for the navigation cluster. The C3-00 never
+            // delivers it to the MIDlet, so on that handset these three are the
+            // only way to use the palette at all; everywhere else they are a
+            // second route to what the d-pad already does.
+            reactionScreen.addCommand(cmdSelectReaction);
+            reactionScreen.addCommand(cmdReactionUp);
+            reactionScreen.addCommand(cmdReactionDown);
             reactionScreen.addCommand(cmdBack);
             reactionScreen.setCommandListener(this);
             reactionScreen.setActivationListener(

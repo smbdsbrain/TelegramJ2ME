@@ -409,6 +409,16 @@ The soft keys, call and end keys never reach the MIDlet at all: the AMS owns
 them for the Options menu and for call handling. Neither does the navigation
 cluster, in two separate captures.
 
+That last sentence has a consequence the client had to be changed for. A
+`Canvas` whose selection can only be taken with `Canvas.FIRE` cannot be used on
+this handset - the key never arrives, so the screen opens and does nothing.
+Every selectable Canvas here therefore carries soft-key commands as well as key
+handling; the reaction palette was the one that did not, and it presented as a
+palette a reader could open and not use. It now has Select, Up and Down.
+
+Anything new that reads the navigation cluster needs the same treatment. The
+d-pad is a convenience on the other two handsets and absent on this one.
+
 ## Image decoding
 
 ```

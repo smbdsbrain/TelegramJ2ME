@@ -191,6 +191,29 @@ public class ReactionScreen extends Canvas
         repaint();
     }
 
+    /**
+     * Take the current selection, as the fire key would.
+     *
+     * Exists because on at least one handset the fire key does not arrive. The
+     * Nokia C3-00 gives the AMS the whole navigation cluster along with the
+     * soft, call and end keys - measured twice, written up in
+     * docs/hardware/nokia-c3-00.md - so a Canvas that can only be activated by
+     * FIRE cannot be activated at all there. Every other selectable Canvas in
+     * this client already carries a command for the same reason; this one was
+     * the exception, and the symptom was a reaction palette a reader could
+     * open and not use.
+     */
+    public void activateSelected()
+    {
+        activate();
+    }
+
+    /** Move the selection without the navigation cluster. */
+    public void moveSelection(int delta)
+    {
+        move(delta);
+    }
+
     private void activate()
     {
         ActivationListener listener = activationListener;
