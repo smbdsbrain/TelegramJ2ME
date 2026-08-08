@@ -180,6 +180,23 @@ public class DialogListScreen extends Canvas
     /** Position of the window in the list as a whole. */
     public int windowStart() { return windowStart; }
 
+    /**
+     * What the header says about the window, composed by the caller.
+     *
+     * The screen knows how many rows it holds and nothing about what they are a
+     * window onto - whether a filter is narrowing them, whether the ordering
+     * has gone stale, what the server said the total was. Handing it the
+     * finished string keeps that policy in one place instead of reconstructing
+     * it here from four fields.
+     */
+    public void setWindowLabel(String label)
+    {
+        windowLabel = label == null ? "" : label;
+        repaint();
+    }
+
+    private String windowLabel = "";
+
     public int avatarSize()
     {
         updateMetrics();
@@ -218,8 +235,13 @@ public class DialogListScreen extends Canvas
         // to be both, back when the list was everything that had been loaded;
         // with a window it would report the window size and sit at "500/1690"
         // whether the reader was at row 500 or row 1500.
-        String count = dialogs.length == 0 ? ("0/" + totalCount)
-                : ((windowStart + selected + 1) + "/" + totalCount);
+        // The window, not the cursor. "912/1690" answered where the reader
+        // was and left them to guess how much of the list was actually here,
+        // which is the question that matters once Filter and the restore stack
+        // only see what is loaded.
+        String count = windowLabel.length() > 0 ? windowLabel
+                : (dialogs.length == 0 ? ("0/" + totalCount)
+                        : ((windowStart + selected + 1) + "/" + totalCount));
         String state = connection;
         if (updates.length() > 0) { state += "/" + updates; }
         UiChrome.header(g, theme, metrics, titleFont,

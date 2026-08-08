@@ -59,6 +59,7 @@ public final class AllTests
             new AsyncScopeTest(),
             new DelayedWakeTest(),
             new ReadMarkTest(),
+            new LocalReadsTest(),
             new ReadQueueTest(),
             new DialogListTest(),
             new Phase4ContentTest(),

@@ -154,7 +154,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdZoomPhoto = new Command("Zoom", Command.SCREEN, 1);
     private final Command cmdOlder = new Command("Older", Command.SCREEN, 4);
     private final Command cmdMoreDialogs = new Command("More", Command.SCREEN, 4);
-    private final Command cmdFilter = new Command("Filter", Command.SCREEN, 3);
+    private final Command cmdFilter =
+            new Command("Filter loaded", Command.SCREEN, 3);
+    private final Command cmdTopOfList =
+            new Command("Top of list", Command.SCREEN, 2);
     private final Command cmdApplyFilter = new Command("Apply", Command.SCREEN, 1);
     private final Command cmdClearFilter = new Command("Clear", Command.SCREEN, 2);
     private final Command cmdSaved = new Command("Saved Messages", Command.SCREEN, 2);
@@ -282,6 +285,25 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * starts. Only the header and the paging arithmetic use it.
      */
     private int dialogsAbove;
+
+    /**
+     * Whether the order of the retained rows may no longer be the server's.
+     *
+     * A refresh that arrives while the window has scrolled away from the top
+     * cannot splice the newest page in - row 400 under row 0 reads as a
+     * contiguous list that skips four hundred chats - so PageMerge.restate
+     * brings the contents forward and leaves the order alone. That is the right
+     * trade and it is still a lie unless the header says so.
+     */
+    private boolean dialogOrderStale;
+
+    /**
+     * Chats the reader marked read, until the server reports the same.
+     *
+     * Applied after every refresh, because a refresh replaces the row object
+     * and would otherwise bring the badge back moments after it was cleared.
+     */
+    private final LocalReads localReads = new LocalReads();
 
     /**
      * The dialog immediately above the window, or null when the window starts
@@ -834,6 +856,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdMoreDialogs)
         {
             loadMoreDialogs(true);
+        }
+        else if (c == cmdTopOfList)
+        {
+            goToTopOfList();
         }
         else if (c == cmdFilter)
         {
@@ -1612,6 +1638,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // submission would land on the phone box.
         snapshotRetry.cancel();
         snapshotRefreshScheduled = false;
+        localReads.clear();
         readQueue.clear();
 
         dialogs = new Dialog[0];
@@ -1918,6 +1945,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showDialogList(Peer selectedPeer)
     {
+        // Before the filter and before the screen sees any of it: a refresh
+        // has just replaced these row objects, and the badges the reader
+        // cleared live outside them on purpose. See LocalReads.
+        for (int i = 0; i < dialogs.length; i++) { localReads.apply(dialogs[i]); }
         visibleDialogs = filterDialogs(dialogs, dialogFilter);
         if (dialogList == null)
         {
@@ -1925,6 +1956,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.addCommand(cmdOpen);
             dialogList.addCommand(cmdRefresh);
             dialogList.addCommand(cmdMoreDialogs);
+            dialogList.addCommand(cmdTopOfList);
             dialogList.addCommand(cmdFilter);
             dialogList.addCommand(cmdSaved);
             dialogList.addCommand(cmdMyProfile);
@@ -1959,8 +1991,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (dialogFilter.length() > 0) { dialogList.addCommand(cmdClearFilter); }
         dialogList.setTheme(currentTheme());
         dialogList.setStatus(connectionLabel, updateLabel);
+        // "No matches" on its own reads as "you are not in a chat by that
+        // name", and the filter only ever saw the loaded window. Until PR-016
+        // there is no way to ask Telegram, so the wording has to carry it.
         dialogList.setEmptyText(dialogFilter.length() == 0
-                ? "(no chats)" : "(no matches)");
+                ? "(no chats)"
+                : "(no match in the " + dialogs.length + " loaded chats)");
+        dialogList.setWindowLabel(dialogWindowLabel());
         // The server's total when it gave one, so the header reads "912/1690"
         // rather than counting the list against itself and always agreeing.
         // A filter hides rows without moving them, so the window start it is
@@ -1973,6 +2010,43 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else { restoreScreen(dialogList); }
         loadVisibleAvatars();
         maybeLoadDialogs();
+    }
+
+    /**
+     * "601-720/1690", or what can honestly be said instead.
+     *
+     * Bounded by construction: four numbers, whatever the list is a window
+     * onto. Under a filter it counts matches against what is loaded rather than
+     * against the server total, because the filter never saw the rest.
+     */
+    private String dialogWindowLabel()
+    {
+        if (dialogFilter.length() > 0)
+        {
+            return visibleDialogs.length + " of " + dialogs.length + " loaded";
+        }
+        if (dialogs.length == 0) { return "0"; }
+        int first = dialogsAbove + 1;
+        int last = dialogsAbove + dialogs.length;
+        int total = Math.max(dialogTotal, last);
+        String range = first + "-" + last + "/" + total;
+        return dialogOrderStale ? (range + " *") : range;
+    }
+
+    /**
+     * Back to the newest window, in one action.
+     *
+     * The restore stack walks back one page at a time and is bounded, so a
+     * reader a long way down has no way to return except by scrolling through
+     * everything they scrolled past. This is that way: the same reset a Refresh
+     * performs, named for what the user wants rather than for what it does.
+     */
+    private void goToTopOfList()
+    {
+        if (dialogList == null) { return; }
+        dialogFilter = "";
+        dialogOrderStale = false;
+        loadDialogs();
     }
 
     /** Load only avatars that can currently become visible. */
@@ -2316,7 +2390,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showDialogFilter()
     {
-        filterBox = new TextBox("Filter chats", dialogFilter, 64,
+        filterBox = new TextBox("Filter loaded chats", dialogFilter, 64,
                 TextField.ANY);
         filterBox.addCommand(cmdApplyFilter);
         filterBox.addCommand(cmdClearFilter);
@@ -2361,6 +2435,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void resetDialogWindow()
     {
         dialogsAbove = 0;
+        dialogOrderStale = false;
         dialogAbove = null;
         dialogAboveStack = new Dialog[0];
         dialogAboveDepth = 0;
@@ -2490,7 +2565,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // Upwards first. A reader coming back up is retracing a path they have
         // already taken and expects it to still be there; running out of window
         // in that direction is the more surprising of the two.
-        if (canRestoreDialogs()
+        if (PageMerge.above(dialogs, dialogList.firstVisiblePeer()) < margin
+                && !canRestoreDialogs() && dialogsAbove > 0)
+        {
+            // The stack is bounded, so a reader who went a long way down can
+            // reach the top of the window with nothing left to walk back
+            // through. Saying so, with the way out, beats a list that simply
+            // stops moving.
+            dialogList.setStatus("top of loaded - press Top of list",
+                    updateLabel);
+        }
+        else if (canRestoreDialogs()
                 && PageMerge.above(dialogs, dialogList.firstVisiblePeer()) < margin)
         {
             restoreDialogsAbove();
@@ -3666,6 +3751,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialog.readOutboxMaxId = Math.max(dialog.readOutboxMaxId, read.outboxMaxId);
         }
         if (read.unreadCount >= 0) { dialog.unreadCount = read.unreadCount; }
+        // The server assigns absolutely here, so a count it has not yet
+        // adjusted for our acknowledgement would undo it. LocalReads drops
+        // itself as soon as the server's cursor reaches what we sent.
+        localReads.apply(dialog);
         if (samePeer(openPeer, read.peer))
         {
             applyKnownReadState(openHistory, read.peer);
@@ -3726,7 +3815,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // It has gone to row zero, outside what is held, so the honest thing
         // is to leave it where it is with its content updated and let the
         // ordering go stale until the reader comes back up or refreshes.
-        if (dialogsAbove > 0) { return; }
+        if (dialogsAbove > 0) { dialogOrderStale = true; return; }
         int firstUnpinned = 0;
         while (firstUnpinned < dialogs.length && dialogs[firstUnpinned].pinned)
         {
@@ -3937,8 +4026,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 if (dialogsAbove > 0)
                 {
                     // The window is not at the top, so the newest page is not
-                    // adjacent to it and must not be spliced on. Content only.
+                    // adjacent to it and must not be spliced on. Content only,
+                    // and the header has to admit the order is no longer the
+                    // server order until the reader goes back to the top.
                     dialogs = PageMerge.restate(snapshot.dialogs.dialogs, dialogs);
+                    dialogOrderStale = true;
                 }
                 else
                 {
@@ -4095,7 +4187,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 : findOpenMessage(chatScreen.focusedMessageId());
         actionPeer = openPeer;
         if (actionMessage == null || actionMessage.id <= 0) { return; }
-        forwardList = new List("Forward to", List.IMPLICIT);
+        // Named for what it can actually offer. Until there is a server-side
+        // peer search, a chat the reader has not scrolled to is not in here,
+        // and a picker titled "Forward to" reads as the whole account.
+        forwardList = new List("Forward to (loaded chats)", List.IMPLICIT);
         Peer self = telegram.peers().self();
         Peer[] targets = new Peer[dialogs.length + (self == null ? 0 : 1)];
         int count = 0;
@@ -4306,6 +4401,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogs[dialog].readInboxMaxId =
                     Math.max(dialogs[dialog].readInboxMaxId, maxId);
         }
+        // Recorded outside the row as well as on it. The next snapshot refresh
+        // replaces that object, and without this the badge comes back seconds
+        // after the user cleared it.
+        localReads.cleared(openPeer, maxId);
         showAlert("All loaded messages are marked as read.",
                 AlertType.INFO, chatScreen);
     }
