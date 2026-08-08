@@ -41,6 +41,7 @@ import tg.api.WipeReport;
 import tg.crypto.Rng;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
+import tg.io.DelayedWake;
 import tg.mem.MemoryBudget;
 import tg.mem.MemoryPressure;
 import tg.mem.MemoryRelief;
@@ -1594,6 +1595,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         composeBox = null;
         bindOpenPeer(null);
         if (photoToken != null) { photoToken.cancel(); }
+        // A refresh waiting for the worker has nothing left to refresh, and its
+        // submission would land on the phone box.
+        snapshotRetry.cancel();
+        snapshotRefreshScheduled = false;
         readQueue.clear();
 
         dialogs = new Dialog[0];
@@ -3786,27 +3791,44 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (snapshotRefreshScheduled) { return; }
         snapshotRefreshScheduled = true;
-        // The wait is a poll with sleeps, so it has to be off the display
-        // thread. The submission does not follow it there: submitting is
-        // display-thread-owned, so that a refusal - an ordinary outcome here,
-        // because the user can start something during the wait - is handled on
-        // the thread that owns the screen it would have to leave alone.
-        new Thread(new Runnable()
-        {
-            public void run()
-            {
-                while (worker.isBusy())
-                {
-                    try { Thread.sleep(250); }
-                    catch (InterruptedException ignored) { }
-                }
-                ui.post(new Runnable()
-                {
-                    public void run() { submitSnapshotRefresh(); }
-                });
-            }
-        }).start();
+        snapshotBackoffMs = SNAPSHOT_RETRY_MS;
+        // Straight to the try, not through a wait: the common case is a worker
+        // that is free, and paying a thread and a sleep to discover that is
+        // what the loop this replaced did on every update burst.
+        submitSnapshotRefresh();
     }
+
+    /** First delay before re-offering the snapshot to a busy worker. */
+    private static final long SNAPSHOT_RETRY_MS = 250L;
+
+    /** Ceiling for the backoff. Refreshing is not latency-critical. */
+    private static final long SNAPSHOT_RETRY_MAX_MS = 4000L;
+
+    private long snapshotBackoffMs = SNAPSHOT_RETRY_MS;
+
+    /**
+     * One waiter for the snapshot retry, shared with nothing.
+     *
+     * This used to be a raw thread spinning on {@code worker.isBusy()} with
+     * 250 ms sleeps - the same defect the outbox had, one update burst away
+     * from a sleeping thread per refresh. Now the submission is simply tried,
+     * and a refusal - an ordinary outcome, because the user can act at any
+     * moment - schedules one wake to try again.
+     */
+    private final DelayedWake snapshotRetry = new DelayedWake("snapshot",
+            new DelayedWake.Wake()
+    {
+        public void onWake()
+        {
+            // Off the display thread, so the submission goes back to it:
+            // submitting is display-thread-owned, and a refusal has to be
+            // handled where the screen it must not disturb lives.
+            ui.post(new Runnable()
+            {
+                public void run() { submitSnapshotRefresh(); }
+            });
+        }
+    });
 
     /**
      * The submission half of {@link #scheduleSnapshotRefresh}, on the display
@@ -3919,7 +3941,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         + shortMessage(error));
             }
         });
-        if (!submitted) { snapshotRefreshScheduled = false; }
+        if (!submitted)
+        {
+            // Refused, not failed: something else is on the worker. Come back
+            // rather than dropping the refresh, and back off so a long
+            // foreground operation is not polled at four times a second for the
+            // length of it.
+            snapshotRetry.schedule(snapshotBackoffMs);
+            snapshotBackoffMs = snapshotBackoffMs * 2 > SNAPSHOT_RETRY_MAX_MS
+                    ? SNAPSHOT_RETRY_MAX_MS : snapshotBackoffMs * 2;
+        }
     }
 
     // ------------------------------------------------------------ sending

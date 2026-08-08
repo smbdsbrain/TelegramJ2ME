@@ -54,6 +54,7 @@ public final class AllTests
             new WorkerTest(),
             new WorkerDispatchTest(),
             new AsyncScopeTest(),
+            new DelayedWakeTest(),
             new ReadMarkTest(),
             new ReadQueueTest(),
             new DialogListTest(),

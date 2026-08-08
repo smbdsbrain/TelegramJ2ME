@@ -456,6 +456,32 @@ logout, which is what the session counter is.
 Counters are signed ints compared for equality, not persisted. A bump costs a
 logout or opening a different chat; 2^31 of those is 68 years at one a second.
 
+### Coming back later costs one thread, not one per caller
+
+`new Thread(sleep(delay); doTheThing()).start()` works exactly once. A
+`FLOOD_WAIT` is per message, so a queue of them asked for it once per message —
+a sleeping thread with a stack each, on a handset whose whole Java heap measured
+2 MB, all waking to run the same drain against the same store.
+
+`DelayedWake` is one waiter and one pending deadline. The **earliest** deadline
+wins: a later one is dropped rather than postponing a retry legitimately due
+sooner, and an earlier one wakes the waiter to re-read it. `cancel` drops the
+deadline and the waiter exits — but a wake already past its deadline check
+cannot be cancelled, so callbacks have to be safe to run once late. Both are:
+the outbox drain re-checks the account epoch and the store, and the snapshot
+refresh re-checks the worker.
+
+Two users. `Telegram.scheduleOutboxDrain` cancels on logout, on store
+replacement, on the wipe and on `pause()`. `TgMidlet.scheduleSnapshotRefresh`
+no longer spins on `worker.isBusy()` at all: it tries the submission, and a
+refusal — an ordinary outcome, because the user can act at any moment —
+schedules one wake to try again, backing off 250 ms → 4 s.
+
+CLDC has no monotonic clock, and one of the three handsets resets its clock to
+2011 on every power cycle. A backward jump would turn a two-second wait into a
+fourteen-year one, so a single `wait` is capped at 30 s and the deadline re-read
+afterwards.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate

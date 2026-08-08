@@ -5,6 +5,7 @@ import java.io.IOException;
 import tg.crypto.Pbkdf2;
 import tg.crypto.Rng;
 import tg.diag.Diag;
+import tg.io.DelayedWake;
 import tg.io.Transport;
 import tg.mt.AuthKey;
 import tg.mt.AuthKeyLoad;
@@ -93,6 +94,19 @@ public final class Telegram
     private OutgoingStore outgoingStore;
     private OutgoingListener outgoingListener;
     private boolean outboxDraining;
+
+    /**
+     * The one delayed retry.
+     *
+     * A FLOOD_WAIT is per message, so a queue of them used to start a sleeping
+     * thread each, all waking to run the same drain. This keeps the earliest
+     * deadline of all of them and one waiter to serve it.
+     */
+    private final DelayedWake outboxRetry = new DelayedWake("outbox",
+            new DelayedWake.Wake()
+    {
+        public void onWake() { startOutboxDrain(); }
+    });
     private final Object connectLock = new Object();
     private final Object lifecycleLock = new Object();
     private ConnectionListener connectionListener;
@@ -161,6 +175,8 @@ public final class Telegram
                 {
                     if (outgoingStore != null) { outgoingStore.clear(); }
                 }
+                // Whatever it was waiting to retry is not there any more.
+                outboxRetry.cancel();
             }
         });
         this.wipe.add("update state", new AccountStore()
@@ -205,7 +221,11 @@ public final class Telegram
 
     public void setOutgoingStore(OutgoingStore store)
     {
-        outgoingStore = store;
+        // Under the lock the drain writes under, so a replacement cannot land
+        // between a send and its record update. A wake pending against the
+        // store being replaced has nothing left to do.
+        synchronized (outboxLock) { outgoingStore = store; }
+        outboxRetry.cancel();
     }
 
     public void setOutgoingListener(OutgoingListener listener)
@@ -463,6 +483,11 @@ public final class Telegram
         client = null;
         if (old != null) { old.close(); }
         updates.offline();
+        // Not for safety - startOutboxDrain refuses while the connection is not
+        // ONLINE anyway - but a backgrounded MIDlet should not be holding a
+        // thread against a deadline it cannot act on. resume() reconnects, and
+        // the ONLINE transition drains and reschedules from the store.
+        outboxRetry.cancel();
         connectionDiagnostics.closed();
         setConnectionState(PAUSED, 0, "MIDlet backgrounded");
     }
@@ -991,6 +1016,11 @@ public final class Telegram
         // between a send and its record update either writes before the erase
         // or not at all, never after it.
         synchronized (outboxLock) { accountEpoch++; }
+        // Nothing pending may wake into an account that is being erased. The
+        // drain re-checks the epoch anyway, so this is not what makes it safe -
+        // it is what stops a thread sitting on a five-minute FLOOD_WAIT for a
+        // message that no longer exists.
+        outboxRetry.cancel();
         updates.close();
         updates.deactivate();
         peers.clear();
@@ -1684,17 +1714,23 @@ public final class Telegram
         }
     }
 
-    private void scheduleOutboxDrain(final long delay)
+    /**
+     * Come back to the outbox in {@code delay} milliseconds.
+     *
+     * The earliest deadline wins and there is only ever one waiter; see
+     * {@link DelayedWake}. A later duplicate is dropped rather than pushing the
+     * sooner retry back, which is what a FLOOD_WAIT on a second message would
+     * otherwise do to the first one.
+     */
+    private void scheduleOutboxDrain(long delay)
     {
-        new Thread(new Runnable()
-        {
-            public void run()
-            {
-                try { Thread.sleep(delay); }
-                catch (InterruptedException ignored) { }
-                startOutboxDrain();
-            }
-        }).start();
+        outboxRetry.schedule(delay);
+    }
+
+    /** Milliseconds until the pending outbox retry, or -1. For diagnostics. */
+    public long outboxRetryInMs()
+    {
+        return outboxRetry.pendingMs();
     }
 
     private void notifyOutboxChanged()
