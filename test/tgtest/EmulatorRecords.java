@@ -65,9 +65,23 @@ public final class EmulatorRecords
      */
     public static void installUnreadable()
     {
+        swapIn(new Unreadable());
+    }
+
+    /**
+     * Swap in any record store, until {@link #restore}.
+     *
+     * The general form of {@link #installUnreadable}, for {@link FaultyRecords}
+     * - which can fail one primitive on one store on its third call, rather
+     * than failing everything at the door.
+     *
+     * Same warning: always pair with {@link #restore} in a finally block.
+     */
+    public static void swapIn(RecordStoreManager records)
+    {
         install();
         if (displaced == null) { displaced = MIDletBridge.getMicroEmulator(); }
-        MIDletBridge.setMicroEmulator(new Emulator(new Unreadable()));
+        MIDletBridge.setMicroEmulator(new Emulator(records));
     }
 
     /** Put the working record store back. Safe to call when nothing is broken. */

@@ -482,6 +482,40 @@ CLDC has no monotonic clock, and one of the three handsets resets its clock to
 fourteen-year one, so a single `wait` is capped at 30 s and the deadline re-read
 afterwards.
 
+### Proving a store survives a power cut
+
+A store that survives one has to be written in an order where every
+interruption leaves the old value or the new one, never half of either. Nothing
+about that is visible from a passing test: a correct implementation and a broken
+one have the same happy path and only diverge on a phone that lost battery
+between two RMS calls.
+
+`tgtest.FaultyRecords` manufactures that. It is a complete in-memory
+`RecordStore` model behind MicroEmulator's `RecordStoreManager` — the seam
+`EmulatorRecords` already used, so none of it reaches the JAR and `src/` gains
+no indirection. It can:
+
+* fail the *n*-th call of any primitive on any store, or every call;
+* fail **after** the change as well as before — "the write landed and the call
+  reported failure" is a real outcome and the one implementations mishandle;
+* `restart()`, which drops every open handle and keeps the records, because a
+  handset that lost power did not call `closeRecordStore`;
+* vary enumeration order (ascending / descending / insertion), since the
+  specification promises none and code that resolves duplicates by "whichever
+  came out first" is wrong on some handset;
+* corrupt: truncate, flip a bit, duplicate a record, garble it.
+
+The assertion it exists to support: **after a restart a critical store exposes
+old-valid or new-valid state, never a false success and never half of either.**
+`RmsAuthKeyStore` is the first store held to it — refused write keeps the old
+key, a write that landed but reported failure is still readable, an interrupted
+cleanup leaves a duplicate and the newest record wins regardless of enumeration
+order, and an unreadable store still reports "unreadable" rather than "empty".
+
+`RmsFaultTest` ends by running a deliberately unsafe delete-then-add through the
+same injector and asserting that it loses both values. A fault injector that
+cannot fail a wrong implementation is not evidence that the right one is right.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate
