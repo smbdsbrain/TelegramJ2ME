@@ -161,6 +161,16 @@ public final class UpdateSyncTest implements Test
         Assert.equal("edited date", 22, capture.lastEdit.editDate);
         Assert.equal("edit pts", 13, waitPts(sync, 13));
 
+        // On a real connection the unsolicited edit can win the race with the
+        // rpc_result.  The cursor must stay deduplicated, while the edit
+        // confirmed by the sender's RPC must still reach its open transcript.
+        sync.acceptEdit(editedUpdate(false, 1, 200, "sender sees edit", 23,
+                13, 1), other, 1);
+        capture.waitEdits(2);
+        Assert.equal("local edit result remains visible after duplicate pts",
+                "sender sees edit", capture.lastEdit.text);
+        Assert.equal("duplicate local edit leaves pts", 13, waitPts(sync, 13));
+
         sync.accept(shortMessage(2, 200, "gap", 15, 1, 23));
         waitDifferenceCalls(rpc, 2);
         Assert.equal("gap message not applied", 1, capture.messageCount);

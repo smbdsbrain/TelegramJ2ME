@@ -134,8 +134,8 @@ byte-identical on every platform. CI enforces that: after bootstrap,
 | Artifact | Size | Contents | Use |
 |---|---|---|---|
 | `dist/probe.jar` | ~172 KB | `ProbeMidlet` + diagnostics + the crypto stack | first install on unknown hardware: platform, heap, RMS, entropy, seeding barrier, crypto vectors and benchmarks, keys, network |
-| `dist/tg.jar` | ~464 KB | full client | the messenger |
-| `dist/tg.jar` with `-Release` | ~339 KB | full client, optimised + obfuscated | when the handset caps install size |
+| `dist/tg.jar` | ~523 KB | full client | the messenger |
+| `dist/tg.jar` with `-Release` | ~374 KB | full client, optimised + obfuscated | when the handset caps install size |
 
 ```bash
 ./tools/build.sh -Target probe
@@ -177,8 +177,9 @@ OK   default MTProxy present but NOT embedded (pass -EmbedDevSecrets to include 
 ```
 
 With the flag, both lines become `WARN EMBEDDED …` and the build ends with a
-`DO NOT PUBLISH IT` banner. Combining the flag with a versioned
-`-ArtifactName` — the shape a release uses — is refused outright.
+`DO NOT PUBLISH IT` banner. Combining the flag with any public-looking
+`TelegramJ2ME-*` artifact name is refused outright, including non-numeric names
+such as `TelegramJ2ME-c3-00`.
 
 The check that matters is not the flag but the one after packaging: the JAR is
 read back and searched for the values it was not asked to embed, and the build
@@ -194,8 +195,8 @@ published carrying the collector token and the proxy secret.
 is how releases produce versioned filenames:
 
 ```bash
-./tools/build.sh -Target tg -Env production -ArtifactName TelegramJ2ME-0.2.0
-pwsh -File tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.2.0
+./tools/build.sh -Target tg -Env production -ArtifactName TelegramJ2ME-1.0.0-rc1
+pwsh -File tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-1.0.0-rc1
 ```
 
 ### The two build profiles
@@ -228,13 +229,14 @@ of every compiled class and rejects anything outside
 ## Test
 
 ```bash
-./tools/test.sh                # all 46 suites
+./tools/test.sh                # 57 Java suites + 46 Python tests
 ./tools/test.sh -Filter bigint # substring match on the suite name
 ```
 
-46 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
+57 hand-registered suites in `test/tgtest/AllTests.java` cover crypto,
 serialization, transport, persistence, authorization, content, UI logic and the
-memory budgets.
+memory budgets. Python tests cover schema/tool behaviour and the stability
+gate's own pass/fail/matrix modes.
 There is no JUnit and no reflection — the registry is explicit so the same cases
 can later be linked into an on-device self-test MIDlet unchanged.
 
@@ -309,6 +311,18 @@ build against `-Env` and stops with `WRONG BUILD` instead.
 
 See [emulator-notes.md](emulator-notes.md) for what an emulator pass does and
 does not prove.
+
+For a release candidate, run the fail-closed aggregate instead of selecting
+steps by hand:
+
+```powershell
+.\tools\stability-gate.ps1
+```
+
+It validates the complete failure-matrix ID set, runs the desktop/Python/schema
+tests, builds normal and minified production artifacts, applies the CLDC audit,
+starts both packaged JARs with `-Xmx32m`, and runs the public audit. Its
+`-SelfTest Matrix`, `Pass`, and `Fail` modes test the gate without a full build.
 
 ---
 

@@ -63,7 +63,7 @@ public final class Message
             }
             m.reactions = ReactionSummary.from(
                     obj.obj(Api.F_MESSAGE__REACTIONS));
-            m.entities = MessageEntity.from(
+            m.entities = MessageEntity.fromOrDetect(
                     obj.vec(Api.F_MESSAGE__ENTITIES), m.text,
                     MemoryBudget.messageEntityLimit());
             m.sender = resolveSender(obj.obj(Api.F_MESSAGE__FROM_ID), peers);
@@ -111,6 +111,21 @@ public final class Message
             return "You";
         }
         return sender == null ? "" : sender.title;
+    }
+
+    /**
+     * Populate safe actions for cache records written before entities existed.
+     * A non-empty server/cache vector always wins; detection only fills the
+     * compatibility default used by v1 and by servers that omit entities.
+     */
+    public MessageEntity[] ensureEntities()
+    {
+        if (entities == null || entities.length == 0)
+        {
+            entities = MessageEntity.detect(text,
+                    MemoryBudget.messageEntityLimit());
+        }
+        return entities;
     }
 
     /** Local visibility rule; the server remains authoritative on permissions. */

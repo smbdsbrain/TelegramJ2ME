@@ -81,7 +81,9 @@ public final class SocketConnectScreen extends Form
                                 + "Restart the MIDlet before retrying.");
                         Diag.warn("Telegram socket probe timed out at "
                                   + host + ":" + port);
-                        worker.interrupt();
+                        // CLDC 1.1 has no Thread.interrupt(), and the blocked
+                        // Connector cannot be cancelled portably. The attempt
+                        // id above is the only safe late-result guard.
                     }
                 }
             }

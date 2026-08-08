@@ -116,6 +116,100 @@ public final class SourceGuardTest implements Test
         }
         everySubmitAnswerIsRead(sources);
         theOpenChatHasOneAssignmentPoint(sources);
+        historyPrefetchStaysOffTheUserWorker();
+        reactionUiDoesNotWaitOnForegroundWork();
+    }
+
+    /** Opening/inspecting reactions must never create an invisible busy task. */
+    private static void reactionUiDoesNotWaitOnForegroundWork()
+            throws IOException
+    {
+        String source = read(new File("src/tg/app/TgMidlet.java"));
+        int palette = source.indexOf("private void showReactionPalette(");
+        int ready = source.indexOf("private void showReactionPaletteReady(",
+                palette);
+        Assert.isTrue("reaction palette source markers",
+                palette >= 0 && ready > palette);
+        String open = source.substring(palette, ready);
+        Assert.isTrue("opening the reaction palette is local",
+                open.indexOf("submit(") < 0
+                && open.indexOf("getAllowedReactions") < 0);
+
+        int actors = source.indexOf("private void showReactionActors(");
+        int forward = source.indexOf("private void openForwardSource(", actors);
+        Assert.isTrue("reaction actors source markers",
+                actors >= 0 && forward > actors);
+        String details = source.substring(actors, forward);
+        Assert.isTrue("reaction actors show Loading before submission",
+                details.indexOf("pushScreen(actorsScreen)") >= 0);
+        Assert.isTrue("reaction actors use the maintenance worker",
+                details.indexOf("syncWorker.submit(") >= 0);
+        Assert.isTrue("reaction actor contention waits without refusal",
+                details.indexOf("reactionActorsRetry.schedule(") >= 0
+                && details.indexOf("showRefused(") < 0);
+
+        String api = read(new File("src/tg/api/Telegram.java"));
+        Assert.isTrue("one slow RPC must not serialize unrelated user RPCs",
+                api.indexOf("private synchronized byte[] invoke(") < 0
+                && api.indexOf("MtClient active = client;") >= 0
+                && api.indexOf("active.invokeWithSaltRetry(query)") >= 0);
+    }
+
+    /** Automatic history paging must not refuse a foreground keypress. */
+    private static void historyPrefetchStaysOffTheUserWorker()
+            throws IOException
+    {
+        String source = read(new File("src/tg/app/TgMidlet.java"));
+        int dialogs = source.indexOf("private void loadDialogs()");
+        int showDialogs = source.indexOf("private void showDialogList()",
+                dialogs);
+        Assert.isTrue("initial dialogs source markers", dialogs >= 0
+                && showDialogs > dialogs);
+        String initialDialogs = source.substring(dialogs, showDialogs);
+        Assert.isTrue("initial/cached dialog refresh uses syncWorker",
+                initialDialogs.indexOf("syncWorker.submit(") >= 0);
+        Assert.isTrue("dialog refresh contention retries without a user alert",
+                initialDialogs.indexOf("initialRefreshRetry.schedule(") >= 0
+                && initialDialogs.indexOf("showRefused(") < 0);
+
+        int open = source.indexOf("private void loadOpenHistory");
+        int maybe = source.indexOf("private void maybeLoadHistory", open);
+        Assert.isTrue("open history source markers", open >= 0 && maybe > open);
+        String openHistory = source.substring(open, maybe);
+        Assert.isTrue("initial/cached history refresh uses syncWorker",
+                openHistory.indexOf("syncWorker.submit(") >= 0);
+        Assert.isTrue("history refresh contention retries without a user alert",
+                openHistory.indexOf("initialRefreshRetry.schedule(") >= 0
+                && openHistory.indexOf("showRefused(") < 0);
+
+        int older = source.indexOf("private void loadOlderPage");
+        int merge = source.indexOf("private void mergeHistoryPage", older);
+        int newer = source.indexOf("private void loadNewerPage");
+        int newest = source.indexOf("private int newestOpenId", newer);
+        Assert.isTrue("loadOlderPage source markers", older >= 0 && merge > older);
+        Assert.isTrue("automatic older history uses syncWorker while manual"
+                + " Older remains foreground",
+                source.substring(older, merge).indexOf(
+                        "manual ? worker : syncWorker") >= 0);
+        Assert.isTrue("automatic newer history uses syncWorker",
+                newer >= 0 && newest > newer
+                && source.substring(newer, newest).indexOf(
+                        "syncWorker.submit(") >= 0);
+
+        int dialogsBack = source.indexOf("private void restoreDialogsAbove");
+        int dialogsMore = source.indexOf("private void loadMoreDialogs",
+                dialogsBack);
+        int saved = source.indexOf("private void openSavedMessages",
+                dialogsMore);
+        Assert.isTrue("dialog paging source markers", dialogsBack >= 0
+                && dialogsMore > dialogsBack && saved > dialogsMore);
+        Assert.isTrue("automatic backwards dialog paging uses syncWorker",
+                source.substring(dialogsBack, dialogsMore).indexOf(
+                        "syncWorker.submit(") >= 0);
+        Assert.isTrue("automatic further dialog paging uses syncWorker while"
+                + " manual More remains foreground",
+                source.substring(dialogsMore, saved).indexOf(
+                        "manual ? worker : syncWorker") >= 0);
     }
 
     /**

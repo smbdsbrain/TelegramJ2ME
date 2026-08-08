@@ -1,6 +1,7 @@
 package tgtest;
 
 import tg.api.Api;
+import tg.api.Message;
 import tg.api.MessageEntity;
 import tg.app.ExternalAction;
 import tg.tl.TlObj;
@@ -14,8 +15,60 @@ public final class MessageEntityTest implements Test
     {
         parsesSupportedEntities();
         rejectsBrokenUtf16AndOverlap();
+        detectsBoundedOutboundEntities();
+        detectsWhenServerVectorIsEmpty();
+        upgradesCachedMessageOnDemand();
         normalizesSafeTargets();
         launchOutcomeIsExplicit();
+    }
+
+    private static void upgradesCachedMessageOnDemand()
+    {
+        Message cached = new Message();
+        cached.text = "https://cached.test e@x.test +12025550123";
+        Assert.equal("legacy cache starts without entities", 0,
+                cached.entities.length);
+        Assert.equal("legacy cache gains safe actions", 3,
+                cached.ensureEntities().length);
+        Assert.isTrue("detected vector is retained",
+                cached.ensureEntities() == cached.entities);
+    }
+
+    private static void detectsWhenServerVectorIsEmpty()
+    {
+        String text = "visit https://fallback.test";
+        MessageEntity[] fallback = MessageEntity.fromOrDetect(
+                new TlObj[0], text, 4);
+        Assert.equal("empty server vector uses bounded detector", 1,
+                fallback.length);
+        Assert.equal("fallback URL text", "https://fallback.test",
+                fallback[0].text(text));
+
+        TlObj authoritative = entity(Api.MESSAGE_ENTITY_EMAIL, 0, 5);
+        MessageEntity[] parsed = MessageEntity.fromOrDetect(
+                new TlObj[] { authoritative }, "a@b.c https://ignored.test", 4);
+        Assert.equal("server entities take precedence", 1, parsed.length);
+        Assert.equal("server entity type retained", MessageEntity.EMAIL,
+                parsed[0].type);
+    }
+
+    private static void detectsBoundedOutboundEntities()
+    {
+        String text = "x \ud83d\ude00 (HTTPS://example.test), a+b@x.test"
+                + " +12025550123 @alice ignored";
+        MessageEntity[] detected = MessageEntity.detect(text, 8);
+        Assert.equal("detected actionable count", 4, detected.length);
+        Assert.equal("URL type", MessageEntity.URL, detected[0].type);
+        Assert.equal("URL excludes punctuation", "HTTPS://example.test",
+                detected[0].text(text));
+        Assert.equal("email type", MessageEntity.EMAIL, detected[1].type);
+        Assert.equal("phone type", MessageEntity.PHONE, detected[2].type);
+        Assert.equal("mention type", MessageEntity.MENTION, detected[3].type);
+
+        detected = MessageEntity.detect(text, 2);
+        Assert.equal("detector obeys budget", 2, detected.length);
+        Assert.equal("bad tokens ignored", 0,
+                MessageEntity.detect("http:// x@y +123 @!", 8).length);
     }
 
     private static void parsesSupportedEntities()

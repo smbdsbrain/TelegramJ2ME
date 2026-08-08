@@ -14,7 +14,21 @@ import tg.crypto.X25519;
  */
 public final class FakeTlsTransport implements Transport
 {
-    private static final int MAX_RECORD = 16384;
+    /** Maximum TLSInnerPlaintext carried in one record. */
+    private static final int MAX_PLAINTEXT_RECORD = 16384;
+
+    /**
+     * TLS 1.3 permits up to 256 bytes of ciphertext expansion above the
+     * 16 KiB plaintext ceiling.  FakeTLS does not decrypt that outer record,
+     * so its receiver must accept the wire (TLSCiphertext) limit rather than
+     * applying the plaintext limit to the record header.
+     *
+     * A production MTProxy sent a 16,640-byte application record to a Nokia
+     * C3-00; rejecting it tore down an otherwise healthy MTProto session and
+     * made the following request fail with the misleading "not connected".
+     */
+    private static final int MAX_CIPHERTEXT_RECORD =
+            MAX_PLAINTEXT_RECORD + 256;
 
     /** Above this a record buffer is used once and dropped rather than retained. */
     private static final int MAX_REUSED_RECORD = 4096;
@@ -79,7 +93,7 @@ public final class FakeTlsTransport implements Transport
     {
         while (len > 0)
         {
-            int n = Math.min(len, MAX_RECORD);
+            int n = Math.min(len, MAX_PLAINTEXT_RECORD);
             if (firstWrite)
             {
                 byte[] ccs = { 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 };
@@ -267,7 +281,8 @@ public final class FakeTlsTransport implements Transport
         byte[] h = new byte[5];
         delegate.readFully(h, 0, 5);
         int len = ((h[3] & 0xff) << 8) | (h[4] & 0xff);
-        if ((h[0] & 0xff) != expectedType || h[1] != 3 || h[2] != 3 || len > MAX_RECORD)
+        if ((h[0] & 0xff) != expectedType || h[1] != 3 || h[2] != 3
+                || len > MAX_CIPHERTEXT_RECORD)
         {
             throw new IOException("invalid FakeTLS handshake record, "
                     + describeRecord(h, len) + alertBody(h, len)
@@ -364,7 +379,8 @@ public final class FakeTlsTransport implements Transport
             delegate.readFully(h, 0, 5);
             int type = h[0] & 0xff;
             int len = ((h[3] & 0xff) << 8) | (h[4] & 0xff);
-            if (h[1] != 3 || h[2] != 3 || len <= 0 || len > MAX_RECORD)
+            if (h[1] != 3 || h[2] != 3 || len <= 0
+                    || len > MAX_CIPHERTEXT_RECORD)
             {
                 throw new IOException("invalid FakeTLS application record, "
                         + describeRecord(h, len));

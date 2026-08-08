@@ -3,6 +3,7 @@ package tg.api;
 import tg.app.Secrets;
 import tg.mt.Layer;
 import tg.mt.Srp;
+import tg.mem.MemoryBudget;
 import tg.tl.TlWriter;
 
 /**
@@ -402,9 +403,13 @@ public final class Requests
     public static byte[] sendMessage(Peer peer, String text, long randomId,
                                      int replyToMessageId)
     {
+        MessageEntity[] entities = MessageEntity.detect(text,
+                MemoryBudget.messageEntityLimit());
         TlWriter w = new TlWriter(text.length() * 2 + 64);
         w.writeInt(Api.MESSAGES_SEND_MESSAGE);
-        w.writeInt(replyToMessageId > 0 ? 1 : 0);
+        int flags = replyToMessageId > 0 ? 1 : 0;
+        if (entities.length > 0) { flags |= 1 << 3; }
+        w.writeInt(flags);
         writeInputPeer(w, peer);
         if (replyToMessageId > 0)
         {
@@ -414,19 +419,35 @@ public final class Requests
         }
         w.writeString(text);
         w.writeLong(randomId);
+        writeEntities(w, entities);
         return w.toByteArray();
     }
 
-    /** Text-only messages.editMessage; no media, entities or scheduling. */
+    /** Text-only messages.editMessage with bounded actionable entities. */
     public static byte[] editMessage(Peer peer, int messageId, String text)
     {
+        MessageEntity[] entities = MessageEntity.detect(text,
+                MemoryBudget.messageEntityLimit());
         TlWriter w = new TlWriter(64 + text.length() * 3);
         w.writeInt(Api.MESSAGES_EDIT_MESSAGE);
-        w.writeInt(1 << 11);                 // flags.11: message present
+        int flags = 1 << 11;                 // flags.11: message present
+        if (entities.length > 0) { flags |= 1 << 3; }
+        w.writeInt(flags);
         writeInputPeer(w, peer);
         w.writeInt(messageId);
         w.writeString(text);
+        writeEntities(w, entities);
         return w.toByteArray();
+    }
+
+    private static void writeEntities(TlWriter writer, MessageEntity[] entities)
+    {
+        if (entities.length == 0) { return; }
+        writer.writeVectorHeader(entities.length);
+        for (int i = 0; i < entities.length; i++)
+        {
+            entities[i].writeTo(writer);
+        }
     }
 
     public static byte[] forwardMessage(Peer from, int messageId,

@@ -82,7 +82,11 @@ public class ReactionScreen extends Canvas
     {
         showViewReactions = viewReactions;
         viewSourceLabel = sourceLabel;
-        selected = 0;
+        // Actions are useful, but the screen was opened to choose a reaction.
+        // With an existing reaction "View reactions" occupies row zero; making
+        // row zero the default meant the C3-00 Select soft key started a slow
+        // network list when the reader expected to choose the first emoji.
+        selected = emoji.length == 0 ? 0 : actionCount();
         top = 0;
         repaint();
     }

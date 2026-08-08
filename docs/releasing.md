@@ -25,7 +25,52 @@ forks work.
 > the pair is bound to the Telegram account that registered the application, so
 > abuse of the released client lands on that account.
 
-## Cutting a release
+## Preparing the 1.0 release candidate
+
+An RC is a local handoff artifact, not a tag. The order is mandatory:
+
+1. Run `tools/stability-gate.ps1` and fix any deterministic failure.
+2. Build `TelegramJ2ME-1.0.0-rc1` and
+   `TelegramJ2ME-1.0.0-rc1-min`, both with `-Env production` and without
+   `-EmbedDevSecrets`.
+3. Run offline packaged smoke for both exact RC JARs with `-Xmx32m`.
+4. Run the read-only `live`/`bigchats` scenarios and the marked two-account
+   send/search/full-text/entity/edit/delete scenario on the normal RC; repeat
+   the full marked scenario on the minified RC with a new marker.
+5. Run `tools/rc-slow-e2e.ps1`, which repeats both exact packaged variants at
+   `-Xmx32m` with deterministic 10 ms / 1024-byte receive shaping, paced writes,
+   and the
+   reaction loading/Back/foreground race.
+6. Repeat the public audit, verify JAD URLs/sizes, record SHA-256 and byte sizes,
+   and require a clean Git status.
+7. Hand the normal pair to the user as the Nokia upgrade candidate and the
+   minified pair as fallback, with
+   [the manual checklist](testing/device-evidence-template.md).
+
+If any mandatory emulator E2E step fails, no JAR is handed off: fix it and
+repeat the whole final gate. Do not create a tag or GitHub Release until the
+Nokia C3-00 upgrade checklist has been run and its evidence recorded. See the
+[1.0 stability contract](1.0-stability-contract.md).
+
+```powershell
+.\tools\stability-gate.ps1
+.\tools\build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-1.0.0-rc1
+.\tools\build.ps1 -Target tg -Env production -Release -ArtifactName TelegramJ2ME-1.0.0-rc1-min
+.\tools\smoke-emulator.ps1 -SkipBuild -ArtifactName TelegramJ2ME-1.0.0-rc1,TelegramJ2ME-1.0.0-rc1-min -JavaArgs -Xmx32m
+.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1
+.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1-min
+.\tools\rc-slow-e2e.ps1
+```
+
+The manifest and JAD version is `1.0.0`; `rc1` belongs to the filename only.
+Keeping `MIDlet-Name: TelegramJ2ME`, `MIDlet-Vendor: smbdsbrain`, and the
+production environment makes the normal RC an in-place 0.8.1 upgrade candidate.
+`rc-e2e.ps1` drives the exact packaged JAR rather than desktop production
+classes. It obtains both usernames from authorized self-profile screens, keeps
+them under ignored `local/`, verifies the profiles are distinct without
+printing identities, and deletes them after the run.
+
+## Cutting a release after device approval
 
 1. Bump `$AppVersion` in [tools/build.ps1](../tools/build.ps1). It is the single
    source of truth: it becomes `MIDlet-Version` in the JAD and `BuildInfo.VERSION`
@@ -34,7 +79,7 @@ forks work.
 3. Tag and push:
 
    ```console
-   git tag v0.2.0
+   git tag v1.0.0
    git push origin main --tags
    ```
 
@@ -79,12 +124,12 @@ Locally, from any of the three supported build hosts:
 ```powershell
 .\tools\build.ps1 -Target tg -Env production
 .\tools\build.ps1 -Target tg -Env production -Release -ArtifactName tg-min
-.\tools\smoke-emulator.ps1
+.\tools\smoke-emulator.ps1 -JavaArgs -Xmx32m
 ```
 ```bash
 ./tools/build.sh -Target tg -Env production
 ./tools/build.sh -Target tg -Env production -Release -ArtifactName tg-min
-pwsh -File tools/smoke-emulator.ps1
+pwsh -File tools/smoke-emulator.ps1 -JavaArgs -Xmx32m
 ```
 
 The release workflow itself runs on `windows-latest`, which is the reference
@@ -92,6 +137,6 @@ host. A Linux build of the same commit produces JARs with the same entry list
 and class count, but not the same bytes — `jar` records a modification time per
 entry — so release artifacts should keep coming from one platform.
 
-Still worth doing by hand before a release that changes the UI — sign in, open a
-dialog, send a message — because the smoke test deliberately stays offline and never
-presses Connect.
+The offline smoke deliberately never presses Connect. The emulator E2E and
+physical-device approval above are therefore release requirements, not optional
+confidence checks.

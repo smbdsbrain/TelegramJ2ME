@@ -18,7 +18,7 @@ body:
     attributes:
       label: Version
       description: From the release you downloaded, or the commit you built.
-      placeholder: e.g. 0.2.0, or 0.2.0+abc1234
+      placeholder: e.g. 1.0.0, or 1.0.0+abc1234
     validations:
       required: true
 

@@ -51,6 +51,37 @@ public final class TransportPhase1Test implements Test
         tls.readFully(rejoined, 0, rejoined.length);
         Assert.bytesEqual("packet rejoined across a record boundary", whole, rejoined);
 
+        // TLS 1.3's wire record may be 256 bytes larger than its 16 KiB
+        // plaintext.  This exact upper boundary was observed from the
+        // production MTProxy on a Nokia C3-00.  Treating it as oversized
+        // disconnected the session and left the next RPC saying only
+        // "not connected".
+        byte[] wireMaximum = new byte[16384 + 256];
+        wireMaximum[0] = 0x31;
+        wireMaximum[wireMaximum.length - 1] = 0x72;
+        ByteArrayOutputStream maximumRecord = new ByteArrayOutputStream();
+        appendRecord(maximumRecord, 0x17, wireMaximum, 0, wireMaximum.length);
+        raw.queueRaw(maximumRecord.toByteArray());
+        byte[] acceptedMaximum = new byte[wireMaximum.length];
+        tls.readFully(acceptedMaximum, 0, acceptedMaximum.length);
+        Assert.bytesEqual("TLS 1.3 ciphertext upper boundary accepted",
+                wireMaximum, acceptedMaximum);
+
+        ByteArrayOutputStream oversizedRecord = new ByteArrayOutputStream();
+        byte[] overMaximum = new byte[wireMaximum.length + 1];
+        appendRecord(oversizedRecord, 0x17, overMaximum, 0, overMaximum.length);
+        raw.queueRaw(oversizedRecord.toByteArray());
+        try
+        {
+            tls.read(new byte[1], 0, 1);
+            Assert.fail("TLS record above ciphertext limit accepted");
+        }
+        catch (IOException expected)
+        {
+            Assert.isTrue("oversized TLS record reports its wire length",
+                    expected.getMessage().indexOf("length 16641") >= 0);
+        }
+
         // The send side, through the same stack the MTProxy route builds. It
         // needs its own server: ObfuscatedTransport.connect reruns the FakeTLS
         // handshake underneath it.

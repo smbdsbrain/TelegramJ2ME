@@ -211,8 +211,11 @@ def load_allow_list(path):
     denied_members = set()
     section = None
     for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+        line = raw.strip()
+        # '#' is also the owner/member separator in [deny-members], so only
+        # whole comment lines may be discarded here. Splitting every line at
+        # '#' silently emptied the deny list and let J2SE-only calls through.
+        if not line or line.startswith("#"):
             continue
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1]

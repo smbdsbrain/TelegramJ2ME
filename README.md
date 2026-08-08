@@ -49,14 +49,16 @@ the client is talking to Telegram over a GPRS link like any other MTProto
 client.
 
 A second handset — a Samsung GT-C3592, also GPRS-only — now runs it too, and it
-is the more interesting of the two, because it broke things the first one never
+is interesting because it broke things the first one never
 did. Its platform cannot decode JPEG at all, and it refuses to hold two sockets
 at once, which is what a naive media download needs. Both are handled;
 [the measurements are written up in full](docs/hardware/samsung-gt-c3592.md),
 including the numbers that killed a memory theory the project had been carrying
-for months.
+for months. A third, the Nokia C3-00, runs the client in a 2 MB heap and exposed
+slow-link session recovery and soft-key-only navigation constraints; its
+[measurements are recorded separately](docs/hardware/nokia-c3-00.md).
 
-That is **two devices on two networks**, and it establishes nothing about yours.
+That is **three devices on a handful of networks**, and it establishes nothing about yours.
 Installing it and reporting what happens is genuinely the most useful thing
 anyone can do for this project right now.
 
@@ -88,12 +90,16 @@ anyone can do for this project right now.
 
 **Messages**
 - Read history and scroll back through it, loading older pages as you go
+- Search inside the current chat and open a result in its history context
 - Send text
 - Reply
+- Edit eligible own outgoing text messages
 - Forward to another chat
 - Delete for yourself, for everyone, or from a channel
 - Read receipts, incoming and outgoing, channels included
 - Send and remove reactions, with the picker and the "who reacted" list
+- View the complete text and inspect supported URL, username, phone, and email
+  targets before a confirmed external action
 - Live updates with gap recovery — a real update state machine, not polling
 
 **On a bad connection**
@@ -148,7 +154,6 @@ background execution and a CPU without a JIT.
 
 **Sending — outbound is text only**
 - Photos, files, voice, any attachment at all
-- Editing a message you already sent
 
 **Opening incoming media other than photos.** The message itself arrives
 normally, text and all, but where the attachment should be there is only a label
@@ -163,7 +168,6 @@ Photos are the one exception: those download and open.
 - Notifications of any kind, including background alerts
 - Secret chats (end-to-end)
 - Voice and video calls
-- Server-side message search
 - Folders, polls, scheduled messages, typing indicators
 - Group and channel administration
 - Contact management
@@ -211,8 +215,8 @@ extract the session.
 | | |
 |---|---|
 | **MIDP 2.0 and CLDC 1.1** | Both are declared in the manifest. CLDC 1.0 will not run it. |
-| **About 1 MB of free Java heap** | Measured by driving the client against a real account with the heap squeezed in steps: everything works above ~1.7 MB free; near 1.5 MB an avatar decode starts being refused, and from then on avatars and inline previews are drawn as placeholders while the chat itself still opens; below ~1.1 MB the client connects but little after that survives, and near 0.95 MB sign-in itself runs out of memory. Both handsets tested have ~5 MB, so they are nowhere near it. Turning avatars and inline previews off in Settings gives back the ~340 KB those caches retain, and stops the decodes that need room on top of it. |
-| **A JAR size limit above ~350 KB** | The `-min` build is 339 KB and the normal one is 464 KB. |
+| **About 1 MB of free Java heap** | Measured by driving the client against a real account with the heap squeezed in steps: everything works above ~1.7 MB free; near 1.5 MB an avatar decode starts being refused, and from then on avatars and inline previews are drawn as placeholders while the chat itself still opens; below ~1.1 MB the client connects but little after that survives, and near 0.95 MB sign-in itself runs out of memory. Two measured handsets have ~5 MB and the Nokia C3-00 has 2 MB. Turning avatars and inline previews off in Settings gives back the ~340 KB those caches retain, and stops the decodes that need room on top of it. |
+| **A JAR size limit above ~375 KB** | The 1.0 RC minified build is about 374 KB and the normal one about 523 KB. |
 | **Raw TCP (`socket://`), or HTTP** | Raw sockets are the good path. There is an MTProto-over-HTTP fallback for handsets that refuse them outright. |
 
 That rules out the early 2000s. A phone with a 64 KB JAR cap and a few hundred
@@ -241,8 +245,8 @@ instead — most will install it directly.
 
 | | |
 |---|---|
-| **`TelegramJ2ME-<version>.jar` + `.jad`**<br>~400 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
-| **`TelegramJ2ME-<version>-min.jar` + `.jad`**<br>~291 KB | The same client, optimised and obfuscated — about 27% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
+| **`TelegramJ2ME-<version>.jar` + `.jad`**<br>~523 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
+| **`TelegramJ2ME-<version>-min.jar` + `.jad`**<br>~374 KB | The same client, optimised and obfuscated — about 29% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
 
 Both are checked by an automated emulator run before release, obfuscated one
 included.
@@ -260,8 +264,7 @@ TLS, which these handsets do not have. Copy the files across instead.
 ## Feedback
 
 This is the part the project actually needs. Every handset is different, and
-right now there are exactly two data points — and the second one contradicted
-things the first had established, which is rather the point.
+three measured devices are still only three data points.
 
 - **[Report your phone](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=device-report.yml)**
   — even if everything worked. Install `TelegramJ2ME Probe` first (it is tiny and
@@ -288,7 +291,7 @@ git clone https://github.com/smbdsbrain/TelegramJ2ME.git
 cd TelegramJ2ME
 ./tools/bootstrap.sh            # JDK 8 check + pinned, SHA-256-verified downloads
 ./tools/build.sh -Target tg     # -> dist/tg.jar + dist/tg.jad
-./tools/test.sh                 # 27 desktop suites
+./tools/test.sh                 # 57 Java suites + 46 Python tests
 ```
 ```powershell
 .\tools\bootstrap.ps1
@@ -304,12 +307,15 @@ testing against Telegram's servers: **[docs/building.md](docs/building.md)**.
 | | |
 |---|---|
 | [building.md](docs/building.md) | prerequisites, build, test, credentials, live testing |
+| [installing.md](docs/installing.md) | RC files, 0.8.1 upgrade path, and handset checklist |
 | [architecture.md](docs/architecture.md) | how it is put together, and an honest security posture |
+| [1.0-stability-contract.md](docs/1.0-stability-contract.md) | what 1.0 guarantees, cache compatibility, and the RC handoff gate |
 | [toolchain.md](docs/toolchain.md) | pinned versions, why JDK 8, preverification |
 | [emulator-notes.md](docs/emulator-notes.md) | what an emulator proves and what it does not |
 | [diagnostics.md](docs/diagnostics.md) | getting measurements and crash tails off a handset with no console |
 | [hardware/](docs/hardware/) | what has actually been measured, per device |
 | [releasing.md](docs/releasing.md) | cutting a release |
+| [CHANGELOG.md](CHANGELOG.md) | release-candidate changes and compatibility notes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | the CLDC subset rule, and what to run before a PR |
 
 ---

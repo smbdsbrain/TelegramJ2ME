@@ -170,28 +170,11 @@ public final class EmulatorHarness
     public static String describe(Displayable screen)
     {
         if (screen == null) { return "(none)"; }
-        String t = title(screen);
-        String out = screen.getClass().getName() + (t == null ? "" : " \"" + t + "\"");
-        // An Alert's text is the whole message. Reporting only its class turns
-        // "the history budget said 120" into "an Alert appeared".
-        if (screen instanceof Alert)
-        {
-            String body = ((Alert) screen).getString();
-            if (body != null) { out = out + " :: " + oneLine(body); }
-        }
-        return out;
-    }
-
-    /** Alert text is multi-line; a log line is not. */
-    private static String oneLine(String text)
-    {
-        StringBuffer sb = new StringBuffer(text.length());
-        for (int i = 0; i < text.length(); i++)
-        {
-            char c = text.charAt(i);
-            sb.append(c < ' ' ? ' ' : c);
-        }
-        return sb.toString().trim();
+        // Titles and Alert bodies can contain a peer title or message summary.
+        // Driver output is release evidence, so screen class is the privacy-safe
+        // diagnostic boundary. Feature-specific assertions read bounded status
+        // flags directly instead of dumping user-visible text.
+        return screen.getClass().getName();
     }
 
     /**

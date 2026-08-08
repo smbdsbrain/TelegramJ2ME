@@ -41,6 +41,8 @@ public final class UpdateSync
         byte[] body;
         Peer sentPeer;
         String sentText;
+        Peer editedPeer;
+        int editedMessageId;
 
         Envelope(byte[] body) { this.body = body; }
     }
@@ -233,6 +235,23 @@ public final class UpdateSync
         Envelope envelope = new Envelope(body);
         envelope.sentPeer = peer;
         envelope.sentText = text;
+        enqueue(envelope);
+    }
+
+    /**
+     * Feed an editMessage Updates result and retain which visible edit the RPC
+     * itself confirmed.
+     *
+     * The same update can arrive unsolicited just before the rpc_result.  Its
+     * pts is then correctly rejected as a duplicate, but the sender still
+     * needs the authoritative message carried by its own RPC response.  The
+     * cursor remains deduplicated; only that matching edit is republished.
+     */
+    public void acceptEdit(byte[] body, Peer peer, int messageId)
+    {
+        Envelope envelope = new Envelope(body);
+        envelope.editedPeer = peer;
+        envelope.editedMessageId = messageId;
         enqueue(envelope);
     }
 
@@ -683,8 +702,64 @@ public final class UpdateSync
             changed = applyEffect(obj, envelope.sentPeer, batch, false);
         }
 
+        appendConfirmedEdit(obj, envelope, batch);
         if (changed) { saveState(); }
         publish(batch);
+    }
+
+    /** Publish the edit confirmed by a local RPC even when its pts is stale. */
+    private void appendConfirmedEdit(TlObj obj, Envelope envelope,
+            PendingBatch batch)
+    {
+        if (obj == null || envelope.editedPeer == null
+                || envelope.editedMessageId <= 0)
+        {
+            return;
+        }
+        if (obj.id == Api.UPDATE_SHORT)
+        {
+            appendConfirmedEdit(obj.obj(Api.F_UPDATE_SHORT__UPDATE), envelope,
+                    batch);
+            return;
+        }
+        if (obj.id == Api.UPDATES || obj.id == Api.UPDATES_COMBINED)
+        {
+            TlObj[] items = obj.vec(obj.id == Api.UPDATES
+                    ? Api.F_UPDATES__UPDATES
+                    : Api.F_UPDATES_COMBINED__UPDATES);
+            for (int i = 0; i < items.length; i++)
+            {
+                appendConfirmedEdit(items[i], envelope, batch);
+            }
+            return;
+        }
+        if (obj.id != Api.UPDATE_EDIT_MESSAGE
+                && obj.id != Api.UPDATE_EDIT_CHANNEL_MESSAGE)
+        {
+            return;
+        }
+        Message message = Message.from(obj.obj(obj.id == Api.UPDATE_EDIT_MESSAGE
+                ? Api.F_UPDATE_EDIT_MESSAGE__MESSAGE
+                : Api.F_UPDATE_EDIT_CHANNEL_MESSAGE__MESSAGE), peers);
+        if (message == null || message.peer == null
+                || message.id != envelope.editedMessageId
+                || message.peer.kind != envelope.editedPeer.kind
+                || message.peer.id != envelope.editedPeer.id)
+        {
+            return;
+        }
+        for (int i = 0; i < batch.edits.size(); i++)
+        {
+            Message existing = (Message) batch.edits.elementAt(i);
+            if (existing != null && existing.id == message.id
+                    && existing.peer != null
+                    && existing.peer.kind == message.peer.kind
+                    && existing.peer.id == message.peer.id)
+            {
+                return;
+            }
+        }
+        batch.edits.addElement(message);
     }
 
     /**

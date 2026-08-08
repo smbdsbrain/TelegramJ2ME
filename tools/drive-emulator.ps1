@@ -49,6 +49,10 @@
              which - if any - comes back messages.dialogsNotModified. Uses the
              profile's stored session but does not start the client. -Pages is
              the page size here. Lists dialogs and nothing else.
+    rc-identity, rc-sender, rc-receiver and rc-cleanup are private roles used by
+             tools/rc-e2e.ps1 against an exact packaged normal or minified JAR.
+             They exchange usernames only through -StateDir and never print
+             them. Do not invoke these roles by hand.
 
     Everything except probe contacts real Telegram servers.
 
@@ -85,7 +89,9 @@
     likely to be exercised by hand.
 
 .PARAMETER Pages
-    scroll only. Screens to page up before turning round. Each one is a real
+    scroll only. Screens to page up before turning round. With no -ChatTitle,
+    the already-selected first chat is used and its title is never printed.
+    Each one is a real
     keypress with a settle delay, so this is also roughly the run time in
     seconds times two.
 
@@ -136,7 +142,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap',
-                 'scroll', 'chats', 'hashprobe', 'navigate')]
+                 'scroll', 'chats', 'hashprobe', 'navigate', 'rc-identity',
+                 'rc-sender', 'rc-receiver', 'rc-cleanup')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
     [string]$Phone = '',
@@ -153,8 +160,26 @@ param(
     [switch]$Remeasure,
     [switch]$NoDiagTail,
     [switch]$SkipBuild,
+    [string]$ArtifactName = '',
+    [string]$StateDir = '',
+    [ValidateSet('', 'a', 'b')][string]$Role = '',
     [string[]]$JavaArgs = @()
 )
+
+# A background RC receiver is started through pwsh -File. PowerShell cannot
+# bind several dash-prefixed values to one string[] parameter across that
+# native process boundary: the second -D... is parsed as a script parameter.
+# The slow-network wrapper therefore supplies additional JVM options through a
+# narrow inherited environment variable. Ordinary runs leave it absent.
+$e2eJavaArgs = [Environment]::GetEnvironmentVariable(
+        'TGJ2ME_E2E_JAVA_ARGS')
+# Identity and best-effort cleanup are orchestration pre/postconditions, not
+# part of the slow-link interaction under test. Keeping them on the ordinary
+# route avoids turning a transient profile lookup into a false NET-04 result;
+# both live sender and receiver remain shaped for the entire marked flow.
+if ($e2eJavaArgs -and $Scenario -in @('rc-sender', 'rc-receiver')) {
+    $JavaArgs += @($e2eJavaArgs.Split('|') | Where-Object { $_ })
+}
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_env.ps1")
@@ -166,6 +191,16 @@ if (-not $Jdk8Home) {
 
 if ($Scenario -eq 'login' -and (-not $Phone -or -not $CodeFile)) {
     Write-Bad "-Scenario login needs -Phone and -CodeFile"
+    exit 1
+}
+
+$isRcRole = $Scenario.StartsWith('rc-')
+if ($isRcRole -and (-not $ArtifactName -or -not $StateDir -or -not $Role)) {
+    Write-Bad "$Scenario needs -ArtifactName, -StateDir and -Role"
+    exit 1
+}
+if ($isRcRole -and -not $SkipBuild) {
+    Write-Bad "$Scenario drives an exact packaged JAR and requires -SkipBuild"
     exit 1
 }
 
@@ -246,6 +281,10 @@ switch ($Scenario) {
     'chats'   { $driverArgs += @("$Pages", $Pictures) }
     'hashprobe' { $driverArgs += "$Pages" }
     'navigate'  { $driverArgs += @($Mode, $ChatTitle) }
+    'rc-identity' { $driverArgs = @('identity', $StateDir, $Role) }
+    'rc-sender'   { $driverArgs = @('sender', $StateDir, $Role) }
+    'rc-receiver' { $driverArgs = @('receiver', $StateDir, $Role) }
+    'rc-cleanup'  { $driverArgs = @('cleanup', $StateDir, $Role) }
 }
 
 Write-Step "emulator driver [$profileLabel] :: $Scenario ($Env)"
@@ -256,7 +295,19 @@ Write-Warn2 "emulator success is not hardware evidence - see docs/emulator-notes
 Write-Host ""
 
 # res/ on the classpath so the emoji sheet resolves the way it does from a jar.
-$runtimeCp = (@($classes, $tests, $res) + $MicroEmuJars) -join $PathSep
+# RC roles put the exact packaged artifact first and omit desktop production
+# classes. Their driver imports only the kept MIDlet entry point and MIDP APIs,
+# so the same bytecode works when the rest of the JAR is obfuscated.
+if ($isRcRole) {
+    $artifactJar = Join-RepoPath 'dist' "$ArtifactName.jar"
+    if (-not (Test-Path -LiteralPath $artifactJar)) {
+        Write-Bad "dist/$ArtifactName.jar not found"
+        exit 1
+    }
+    $runtimeCp = (@($artifactJar, $tests, $res) + $MicroEmuJars) -join $PathSep
+} else {
+    $runtimeCp = (@($classes, $tests, $res) + $MicroEmuJars) -join $PathSep
+}
 # [string[]] is load-bearing. A one-element array on the right of an if()
 # is unwrapped to a scalar, and += on a string concatenates instead of
 # appending - the two -D options end up glued into one unusable argument.
@@ -281,8 +332,10 @@ if ($NoDiagTail) {
     $diagLog = Join-Path $diagDir "$EmulatorProfile-$Scenario-$stamp.log"
     $measureArgs += "-Dtg.driver.diaglog=$diagLog"
 }
+$driverClass = if ($isRcRole) { 'tgtest.PackagedRcE2EDriver' }
+               else { 'tgtest.EmulatorDriver' }
 $invocation = @("-Djava.awt.headless=true") + $javaProfileArgs + $measureArgs + $JavaArgs `
-              + @("-cp", $runtimeCp, "tgtest.EmulatorDriver") + $driverArgs
+              + @("-cp", $runtimeCp, $driverClass) + $driverArgs
 & $Jdk8Java @invocation
 $driverExit = $LASTEXITCODE
 Restore-KeyStoreIfEmptied

@@ -8,6 +8,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATE = ROOT / "tools" / "stability-gate.ps1"
 MATRIX = ROOT / "docs" / "testing" / "1.0-failure-matrix.md"
+BUILD = ROOT / "tools" / "build.ps1"
 
 
 class StabilityGateSelfTest(unittest.TestCase):
@@ -50,6 +51,15 @@ class StabilityGateSelfTest(unittest.TestCase):
             result = self.run_gate("Matrix", broken)
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("AUTH-01", result.stdout)
+
+    def test_public_looking_artifact_refuses_development_secrets(self):
+        result = subprocess.run(
+            [self.pwsh, "-NoProfile", "-File", str(BUILD), "-Target", "tg",
+             "-EmbedDevSecrets", "-ArtifactName", "TelegramJ2ME-c3-00"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=30)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("cannot be combined", result.stdout)
 
 
 if __name__ == "__main__":

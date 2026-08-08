@@ -221,13 +221,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /**
      * Background maintenance, so it cannot refuse a user.
      *
-     * The snapshot refresh is not something anyone asked for: it runs after an
-     * update burst to reconcile the retained window with the server. Sharing
-     * the foreground worker meant that every time updates arrived - which is
-     * most of the time on a live account - opening a chat, searching or
-     * jumping to the latest was refused with "Finishing updates.snapshotRefresh
-     * first", and the user was told to press Refresh for something they had not
-     * started.
+     * Snapshot refresh and viewport history prefetch are not things anyone
+     * explicitly asked for. Sharing the foreground worker meant that every
+     * time either ran - which is most of the time on a live account - opening a
+     * chat, reacting, searching or jumping was refused, and the user was told
+     * to retry work they had already requested.
      *
      * A second Worker for the same reason avatarWorker is one: a decorative or
      * housekeeping request must never take the worker out from under a
@@ -294,10 +292,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private ReactionScreen reactionScreen;
     private TextScreen reactionActorsScreen;
     private int reactionMessageId;
-    private Peer reactionOptionsPeer;
+    private Peer reactionActorsPeer;
+    private int reactionActorsMessageId;
     private String[] reactionPalette = ReactionCatalog.EMOJI;
     private String[] reactionLabels = ReactionCatalog.LABELS;
-    private boolean reactionOptionsLoading;
     private PhotoScreen photoScreen;
     private DownloadToken photoToken;
     private Message photoMessage;
@@ -485,6 +483,74 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** What the store already holds for {@link #composer}; same three threads. */
     private volatile String lastSavedDraft = "";
     private volatile boolean snapshotRefreshScheduled;
+
+    /** Initial/cached dialog refresh waiting for syncWorker. */
+    private boolean pendingDialogsRefresh;
+
+    /** Chat whose initial/cached history refresh is waiting for syncWorker. */
+    private Peer pendingHistoryRefreshPeer;
+
+    /** One bounded retry when another maintenance request owns syncWorker. */
+    private final DelayedWake initialRefreshRetry = new DelayedWake(
+            "initial-refresh", new DelayedWake.Wake()
+    {
+        public void onWake()
+        {
+            ui.post(new Runnable()
+            {
+                public void run()
+                {
+                    boolean dialogs = pendingDialogsRefresh;
+                    pendingDialogsRefresh = false;
+                    Peer want = pendingHistoryRefreshPeer;
+                    pendingHistoryRefreshPeer = null;
+                    if (want != null && chatScreen != null
+                            && samePeer(openPeer, want))
+                    {
+                        loadOpenHistory(want);
+                    }
+                    if (dialogs && accountActive) { loadDialogs(); }
+                }
+            });
+        }
+    });
+
+    /** A refused maintenance refresh waits for history prefetch to release. */
+    private final DelayedWake snapshotRefreshRetry = new DelayedWake(
+            "snapshot-refresh", new DelayedWake.Wake()
+    {
+        public void onWake()
+        {
+            ui.post(new Runnable()
+            {
+                public void run()
+                {
+                    // finishLoggedOut drops dialogList and cancels this wake.
+                    // Re-check anyway: cancel may race a callback past its
+                    // deadline, which is part of DelayedWake's contract.
+                    if (dialogList != null) { scheduleSnapshotRefresh(); }
+                }
+            });
+        }
+    });
+
+    /**
+     * A user-opened reaction-detail screen waits visibly for the maintenance
+     * lane instead of failing with "Finishing ... first".  There is only one
+     * such screen and DelayedWake keeps only one waiter, so repeated taps do
+     * not create sleeping threads on the handset's small heap.
+     */
+    private final DelayedWake reactionActorsRetry = new DelayedWake(
+            "reaction-actors", new DelayedWake.Wake()
+    {
+        public void onWake()
+        {
+            ui.post(new Runnable()
+            {
+                public void run() { retryReactionActors(); }
+            });
+        }
+    });
 
     /**
      * How old the cached data on screen was when it was read.
@@ -783,6 +849,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         MemoryPressure.setRelief(null);
         saveDraftNow();
         draftAutosaveRunning = false;
+        pendingDialogsRefresh = false;
+        pendingHistoryRefreshPeer = null;
+        initialRefreshRetry.cancel();
+        snapshotRefreshRetry.cancel();
+        reactionActorsRetry.cancel();
         stopRemoteLog();
         if (telegram != null)
         {
@@ -1206,6 +1277,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (from == photoScreen)
         {
             if (photoToken != null) { photoToken.cancel(); }
+        }
+        if (from == reactionActorsScreen)
+        {
+            reactionActorsRetry.cancel();
+            reactionActorsScreen = null;
+            reactionActorsPeer = null;
+            reactionActorsMessageId = 0;
         }
         if (navigation.isRoot())
         {
@@ -1817,7 +1895,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (photoToken != null) { photoToken.cancel(); }
         // A refresh waiting for the worker has nothing left to refresh, and its
         // submission would land on the phone box.
+        pendingDialogsRefresh = false;
+        pendingHistoryRefreshPeer = null;
+        initialRefreshRetry.cancel();
         snapshotRefreshScheduled = false;
+        snapshotRefreshRetry.cancel();
+        reactionActorsRetry.cancel();
         localReads.clear();
         readQueue.clear();
 
@@ -1851,8 +1934,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         reactionScreen = null;
         reactionActorsScreen = null;
         reactionMessageId = 0;
-        reactionOptionsPeer = null;
-        reactionOptionsLoading = false;
+        reactionActorsPeer = null;
+        reactionActorsMessageId = 0;
         reactionPalette = ReactionCatalog.EMOJI;
         reactionLabels = ReactionCatalog.LABELS;
 
@@ -2049,7 +2132,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         final boolean hasFallback = fallback;
         final AsyncScope.Token asked = scope.capture();
-        boolean submitted = worker.submit(new Worker.Task()
+        // Cached rows are already interactive. Their refresh must not refuse a
+        // peer search or chat open selected from them, so it shares the
+        // read/maintenance lane with the other automatic pages.
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs"; }
 
@@ -2098,26 +2184,31 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 else { showRetryableError("Could not load chats", error); }
             }
         });
-        if (!submitted)
+        if (submitted)
         {
+            pendingDialogsRefresh = false;
+            cancelInitialRefreshRetryIfIdle();
+        }
+        else
+        {
+            pendingDialogsRefresh = true;
+            initialRefreshRetry.schedule(400L);
             if (hasFallback && dialogList != null)
             {
-                // The list on screen is the cached one and stays usable; only
-                // the refresh did not happen, so the status line has to stop
-                // claiming it is happening.
-                dialogList.setStatus(connectionLabel, updateLabel);
-                showRefused("Chats not refreshed",
-                        "Press Refresh again in a moment.", dialogList);
+                dialogList.setStatus("refresh waiting", updateLabel);
             }
             else
             {
-                // Nothing to fall back to, and the busy screen has no way out.
-                // This is the same form the failure path uses, and its Refresh
-                // command comes straight back here.
-                showRetryableError("Could not load chats",
-                        new IllegalStateException("still finishing "
-                                + worker.busyWith()));
+                showBusy("Chats", "Waiting to load chats...");
             }
+        }
+    }
+
+    private void cancelInitialRefreshRetryIfIdle()
+    {
+        if (!pendingDialogsRefresh && pendingHistoryRefreshPeer == null)
+        {
+            initialRefreshRetry.cancel();
         }
     }
 
@@ -3082,9 +3173,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // Deliberately not gated on avatarWorker.isBusy(). It is busy for most
         // of any scroll - that is what it is for - so waiting on it would
         // starve the fetch exactly when the reader reaches an edge. The two are
-        // separate workers over one multiplexed connection; the contention that
-        // does exist is `worker` being busy, and submit() returning false
-        // already handles that.
+        // separate workers over one multiplexed connection. Maintenance-lane
+        // contention is harmless: submit() returns false, clears the latch and
+        // the next viewport event retries.
         int margin = MemoryBudget.dialogPrefetchMargin();
 
         // Upwards first. A reader coming back up is retracing a path they have
@@ -3131,7 +3222,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogPageInFlight = true;
         dialogList.setStatus("loading...", updateLabel);
         final AsyncScope.Token asked = scope.capture();
-        boolean submitted = worker.submit(new Worker.Task()
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs/back"; }
             public Object run() throws Exception
@@ -3241,7 +3332,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogPageInFlight = true;
         dialogList.setStatus("loading...", updateLabel);
         final AsyncScope.Token asked = scope.capture();
-        boolean submitted = worker.submit(new Worker.Task()
+        Worker pageWorker = manual ? worker : syncWorker;
+        boolean submitted = pageWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getDialogs/more"; }
             public Object run() throws Exception
@@ -3575,7 +3667,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 : ("loading... / " + connectionLabel));
         final boolean hasFallback = fallback;
         final AsyncScope.Token asked = scope.capture(peer);
-        boolean submitted = worker.submit(new Worker.Task()
+        // Once cached rows are painted this is a refresh, not a reason to
+        // reject a reaction selected from those rows. Even without a cache the
+        // request only populates the already-open screen, so it belongs on the
+        // read/maintenance lane and can overlap a foreground keypress.
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory"; }
 
@@ -3633,17 +3729,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
             }
         });
-        if (!submitted)
+        if (submitted)
         {
-            // No in-flight latch on this path, so there is nothing to clear -
-            // only a status line that would otherwise say "loading..." for the
-            // life of the screen. The chat itself stays usable and carries
-            // Refresh, which is the retry.
+            if (samePeer(pendingHistoryRefreshPeer, peer))
+            {
+                pendingHistoryRefreshPeer = null;
+            }
+            cancelInitialRefreshRetryIfIdle();
+        }
+        else
+        {
+            // Never turn maintenance-lane contention into a foreground alert:
+            // that alert was precisely what made a reaction appear to fail.
+            // Retain only the current chat and come back through one bounded
+            // waiter; a later open overwrites it and the generation check above
+            // discards the old one.
+            pendingHistoryRefreshPeer = peer;
+            initialRefreshRetry.schedule(400L);
             chatScreen.setStatus(hasFallback
-                    ? (cachedHistoryLabel + ", not refreshed")
-                    : (connectionLabel + "/" + updateLabel));
-            showRefused("Chat not loaded", "Press Refresh in a moment.",
-                    chatScreen);
+                    ? (cachedHistoryLabel + ", refresh waiting")
+                    : "waiting for history...");
         }
     }
 
@@ -3720,7 +3825,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         chatScreen.setStatus("loading older messages...");
         final AsyncScope.Token asked = scope.capture(peer);
         final int atRequest = historyNavigation;
-        boolean submitted = worker.submit(new Worker.Task()
+        // Viewport paging is speculative background work. Letting it occupy
+        // the user's worker made a reaction (and even the next chat open)
+        // bounce with "Finishing messages.getHistory/older first" immediately
+        // after a chat was painted. A manual Older command is still a
+        // foreground action; scrolling prefetch shares the housekeeping lane.
+        Worker pageWorker = manual ? worker : syncWorker;
+        boolean submitted = pageWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/older"; }
             public Object run() throws Exception
@@ -4168,7 +4279,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         chatScreen.setStatus("loading newer messages...");
         final AsyncScope.Token asked = scope.capture(peer);
         final int atRequest = historyNavigation;
-        boolean submitted = worker.submit(new Worker.Task()
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/newer"; }
             public Object run() throws Exception
@@ -4936,10 +5047,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
         if (!submitted)
         {
-            // The only thing that can be holding this worker is another
-            // snapshot refresh, so there is nothing to come back for: the run
-            // already under way will reconcile the same window.
+            // History prefetch may be holding the shared maintenance lane. A
+            // snapshot also refreshes dialogs and therefore cannot simply be
+            // credited to that history-only request; retain one bounded retry.
             snapshotRefreshScheduled = false;
+            snapshotRefreshRetry.schedule(400L);
         }
     }
 
@@ -5029,9 +5141,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         entityMessage = selectedOpenMessage();
         if (entityMessage == null) { return; }
         String text = entityMessage.text == null ? "" : entityMessage.text;
+        MessageEntity[] actions = entityMessage.ensureEntities();
         fullTextBox = new TextBox("Message #" + entityMessage.id, text,
                 Math.max(1, text.length()), TextField.ANY);
-        if (entityMessage.entities != null && entityMessage.entities.length > 0)
+        if (actions.length > 0)
         {
             fullTextBox.addCommand(cmdEntityActions);
         }
@@ -5046,7 +5159,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             entityMessage = selectedOpenMessage();
         }
-        if (entityMessage == null || entityMessage.entities == null) { return; }
+        if (entityMessage == null) { return; }
+        entityMessage.ensureEntities();
         MessageEntity[] candidates = new MessageEntity[entityMessage.entities.length];
         String[] labels = new String[entityMessage.entities.length];
         int count = 0;
@@ -5715,89 +5829,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         Message message = findOpenMessage(messageId);
         if (message == null) { return; }
         reactionMessageId = messageId;
-        if (!samePeer(reactionOptionsPeer, openPeer))
-        {
-            loadReactionOptions(messageId);
-            return;
-        }
+        // Opening a picker is a local transition.  It used to wait for
+        // messages.getAvailableReactions and, for groups, getFullChat before
+        // drawing anything.  On the C3-00 that made a twelve-item local menu
+        // feel frozen for many seconds.  The server still validates the set on
+        // send and REACTION_INVALID is handled below, so network policy can
+        // never be a prerequisite for seeing or leaving this screen.
+        reactionPalette = ReactionCatalog.EMOJI;
+        reactionLabels = ReactionCatalog.LABELS;
         showReactionPaletteReady(message);
-    }
-
-    private void loadReactionOptions(final int messageId)
-    {
-        if (reactionOptionsLoading || openPeer == null) { return; }
-        final Peer peer = openPeer;
-        reactionOptionsLoading = true;
-        chatScreen.setStatus("loading reactions...");
-        final AsyncScope.Token asked = scope.capture(peer);
-        boolean submitted = worker.submit(new Worker.Task()
-        {
-            public String name() { return "available reactions"; }
-            public Object run() throws Exception
-            {
-                return telegram.getAllowedReactions(peer);
-            }
-        }, new Worker.Callback()
-        {
-            public void onSuccess(Object result)
-            {
-                if (!asked.sameSession())
-                {
-                    dropStale("available reactions");
-                    return;
-                }
-                reactionOptionsLoading = false;
-                if (!asked.sameChat(openPeer))
-                {
-                    dropStale("available reactions");
-                    return;
-                }
-                reactionOptionsPeer = peer;
-                reactionPalette = (String[]) result;
-                reactionLabels = ReactionCatalog.labelsFor(reactionPalette);
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                Message message = findOpenMessage(messageId);
-                if (message != null)
-                {
-                    reactionMessageId = messageId;
-                    showReactionPaletteReady(message);
-                }
-            }
-
-            public void onFailure(Throwable error)
-            {
-                if (!asked.sameSession())
-                {
-                    dropStale("available reactions");
-                    return;
-                }
-                reactionOptionsLoading = false;
-                if (!asked.sameChat(openPeer))
-                {
-                    dropStale("available reactions");
-                    return;
-                }
-                reactionOptionsPeer = peer;
-                reactionPalette = ReactionCatalog.EMOJI;
-                reactionLabels = ReactionCatalog.LABELS;
-                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                Diag.warn("reaction policy fallback: " + shortMessage(error));
-                Message message = findOpenMessage(messageId);
-                if (message != null)
-                {
-                    reactionMessageId = messageId;
-                    showReactionPaletteReady(message);
-                }
-            }
-        });
-        if (!submitted)
-        {
-            reactionOptionsLoading = false;
-            reactionOptionsPeer = peer;
-            reactionPalette = ReactionCatalog.EMOJI;
-            reactionLabels = ReactionCatalog.LABELS;
-            showReactionPaletteReady(findOpenMessage(messageId));
-        }
     }
 
     private void showReactionPaletteReady(Message message)
@@ -5879,31 +5919,65 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         reactionActorsScreen = new TextScreen("Reactions",
                 new String[] { "Loading..." }, currentTheme());
         reactionActorsScreen.withBack(cmdBack, this);
-        // The screen instance itself is the guard here: this is the one screen
-        // pushed before its submission, so a result must land on the screen it
-        // was pushed for or on nothing at all.
         final TextScreen actorsScreen = reactionActorsScreen;
+        reactionActorsPeer = peer;
+        reactionActorsMessageId = message.id;
+        // A user asked for remote data, so make the wait explicit and
+        // cancellable with Back before trying to acquire a worker.  This push
+        // was accidentally missing while the comment below claimed it existed:
+        // the request then ran invisibly behind the still-active palette.
+        pushScreen(actorsScreen);
+        submitReactionActors(actorsScreen, peer, message.id);
+    }
+
+    private void retryReactionActors()
+    {
+        TextScreen screen = reactionActorsScreen;
+        Peer peer = reactionActorsPeer;
+        if (screen == null || peer == null
+                || navigation.current() != screen
+                || !samePeer(openPeer, peer))
+        {
+            return;
+        }
+        submitReactionActors(screen, peer, reactionActorsMessageId);
+    }
+
+    private void submitReactionActors(final TextScreen actorsScreen,
+                                      final Peer peer, final int messageId)
+    {
+        if (actorsScreen == null || navigation.current() != actorsScreen
+                || !samePeer(openPeer, peer))
+        {
+            return;
+        }
+        // The screen instance itself is part of the guard: a result must land
+        // on the exact Loading screen it was requested for, or nowhere.
+        actorsScreen.setLines(new String[] { "Loading reaction details..." });
         final AsyncScope.Token asked = scope.capture(peer);
-        boolean submitted = worker.submit(new Worker.Task()
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getMessageReactionsList"; }
             public Object run() throws Exception
             {
-                return telegram.getMessageReactions(peer, message.id, 100);
+                return telegram.getMessageReactions(peer, messageId, 100);
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object result)
             {
                 if (!asked.sameChat(openPeer)
-                        || reactionActorsScreen != actorsScreen)
+                        || reactionActorsScreen != actorsScreen
+                        || navigation.current() != actorsScreen)
                 {
                     dropStale("messages.getMessageReactionsList");
                     return;
                 }
+                reactionActorsRetry.cancel();
                 ReactionActorsPage page = (ReactionActorsPage) result;
                 int extra = page.totalCount > page.actors.length ? 1 : 0;
-                String[] lines = new String[page.actors.length + extra];
+                int empty = page.actors.length == 0 ? 1 : 0;
+                String[] lines = new String[page.actors.length + extra + empty];
                 for (int i = 0; i < page.actors.length; i++)
                 {
                     ReactionActor actor = page.actors[i];
@@ -5915,42 +5989,52 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
                 if (extra != 0)
                 {
-                    lines[lines.length - 1] = "Showing "
+                    lines[page.actors.length] = "Showing "
                             + page.actors.length + " of " + page.totalCount;
                 }
-                reactionActorsScreen.setLines(lines);
+                if (empty != 0) { lines[0] = "No reaction details."; }
+                actorsScreen.setLines(lines);
             }
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer) || reactionScreen == null)
+                if (!asked.sameChat(openPeer)
+                        || reactionActorsScreen != actorsScreen
+                        || navigation.current() != actorsScreen)
                 {
                     dropStale("messages.getMessageReactionsList");
                     return;
                 }
+                reactionActorsRetry.cancel();
                 String detail = shortMessage(error);
                 if (detail != null
                         && detail.indexOf("BROADCAST_FORBIDDEN") >= 0)
                 {
-                    showAlert("Reaction details are unavailable in this chat.",
-                            AlertType.INFO, reactionScreen);
+                    actorsScreen.setLines(new String[] {
+                            "Reaction details are unavailable in this chat."
+                    });
                 }
                 else
                 {
-                    showAlertThen("Cannot view reactions",
-                            error, reactionScreen);
+                    actorsScreen.setLines(new String[] {
+                            "Could not load reaction details.",
+                            detail == null ? "Network error" : detail,
+                            "Press Back to return."
+                    });
                 }
             }
         });
         if (!submitted)
         {
-            // This is the one screen pushed before the submission rather than
-            // after it, so the undo is a pop. It stays that way round on
-            // purpose: the callbacks run on the worker thread and one of them
-            // shows an alert, which a push happening afterwards would wipe.
-            restoreScreen(navigation.pop());
-            showRefused("Reactions not loaded",
-                    "Try View reactions again in a moment.");
+            // Another automatic history/update request owns the maintenance
+            // lane.  Keep the visible Loading screen and retry; never turn
+            // background contention into a modal "Finishing ... first".
+            actorsScreen.setLines(new String[] {
+                    "Waiting for background sync...",
+                    "Loading will continue automatically.",
+                    "Press Back to return."
+            });
+            reactionActorsRetry.schedule(400L);
         }
     }
 
@@ -6116,7 +6200,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 {
                     // Admin/global policy may have changed after the palette
                     // was opened. Force a fresh policy read next time.
-                    reactionOptionsPeer = null;
                     showAlert("This reaction is no longer available in this "
                             + "chat. Reopen Reactions to refresh the list.",
                             AlertType.INFO, chatScreen);

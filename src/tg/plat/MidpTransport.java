@@ -28,9 +28,14 @@ public final class MidpTransport implements Transport
     private long rx;
     private long tx;
 
+    /** Test-only shaping; zero in every ordinary handset/emulator launch. */
+    private int e2eDelayMs;
+    private int e2eChunkBytes;
+
     public void connect(String host, int port, int timeoutMs) throws IOException
     {
         close();
+        configureE2eShaping();
 
         String url = "socket://" + host + ":" + port;
         Diag.info("net connect " + url);
@@ -64,6 +69,11 @@ public final class MidpTransport implements Transport
     public int read(byte[] buf, int off, int len) throws IOException
     {
         if (in == null) { throw new IOException("not connected"); }
+        if (e2eChunkBytes > 0 && len > e2eChunkBytes)
+        {
+            len = e2eChunkBytes;
+        }
+        e2eDelay();
         int n = in.read(buf, off, len);
         if (n > 0) { rx += n; }
         return n;
@@ -86,6 +96,11 @@ public final class MidpTransport implements Transport
     public void write(byte[] buf, int off, int len) throws IOException
     {
         if (out == null) { throw new IOException("not connected"); }
+        // Pace each application write, but preserve its original boundary.
+        // Splitting TLS/obfuscated carrier writes here tests a materially
+        // different transport and can make the emulator socket close a valid
+        // authorization stream instead of merely making it slow.
+        e2eDelay();
         out.write(buf, off, len);
         tx += len;
     }
@@ -129,6 +144,58 @@ public final class MidpTransport implements Transport
     public long bytesWritten()
     {
         return tx;
+    }
+
+    /**
+     * Shape the exact packaged MIDP transport during emulator E2E.
+     *
+     * This is deliberately opt-in through a property no AMS supplies. Keeping
+     * the seam here means the release JAR, ProGuard output, FakeTLS framing and
+     * UI workers all experience the same slow, fragmented receive stream;
+     * swapping in the desktop SeTransport would stop being an exact-package
+     * test.
+     */
+    private void configureE2eShaping()
+    {
+        e2eDelayMs = 0;
+        e2eChunkBytes = 0;
+        try
+        {
+            if (!"slow".equals(System.getProperty("tg.e2e.network"))) { return; }
+            e2eDelayMs = boundedProperty("tg.e2e.delayMs", 10, 0, 1000);
+            e2eChunkBytes = boundedProperty("tg.e2e.chunkBytes", 1024,
+                    32, 16384);
+            Diag.info("E2E network shaping: " + e2eDelayMs + " ms per "
+                    + e2eChunkBytes + " byte chunk");
+        }
+        catch (Throwable t)
+        {
+            e2eDelayMs = 0;
+            e2eChunkBytes = 0;
+            Diag.warn("E2E network shaping disabled: " + Diag.className(t));
+        }
+    }
+
+    private static int boundedProperty(String name, int fallback,
+                                       int low, int high)
+    {
+        String raw = System.getProperty(name);
+        int value = fallback;
+        if (raw != null)
+        {
+            try { value = Integer.parseInt(raw); }
+            catch (Throwable ignored) { value = fallback; }
+        }
+        if (value < low) { return low; }
+        if (value > high) { return high; }
+        return value;
+    }
+
+    private void e2eDelay()
+    {
+        if (e2eDelayMs <= 0) { return; }
+        try { Thread.sleep(e2eDelayMs); }
+        catch (InterruptedException ignored) { }
     }
 
     /** Peer address as the handset resolved it - useful when DNS is suspect. */

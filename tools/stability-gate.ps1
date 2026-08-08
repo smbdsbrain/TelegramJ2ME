@@ -29,7 +29,7 @@ if (-not $MatrixPath) {
 $RequiredIds = @(
     'AUTH-01', 'AUTH-02', 'AUTH-03',
     'OUTBOX-01', 'OUTBOX-02',
-    'NET-01', 'NET-02', 'NET-03',
+    'NET-01', 'NET-02', 'NET-03', 'NET-04',
     'UPDATE-01', 'UPDATE-02', 'UPDATE-03',
     'RMS-01', 'RMS-02', 'ACCOUNT-01', 'STALE-01',
     'HISTORY-01', 'HISTORY-02', 'SEARCH-01', 'SEARCH-02',

@@ -55,7 +55,7 @@ Two MIDlets, one source tree, ProGuard keeps deciding what each JAR contains.
 | Target | Entry point | Size | Purpose |
 |---|---|---|---|
 | `probe` | `tg.app.ProbeMidlet` | ~172 KB | platform, heap, RMS, entropy, seeding barrier, crypto vectors and benchmarks, keys, sockets, images, pause/resume |
-| `tg` | `tg.app.TgMidlet` | ~464 KB, ~339 KB with `-Release` | messenger with connection settings/diagnostics |
+| `tg` | `tg.app.TgMidlet` | ~523 KB, ~374 KB with `-Release` | messenger with connection settings/diagnostics |
 
 There used to be a third, `crypto`, holding the vectors and the modPow and
 PBKDF2 benchmarks, kept separate so the first install on an unknown handset
@@ -81,7 +81,7 @@ can run at several layers, each answering a different question:
 | the desktop harness (`tools/test.sh` / `.ps1`) | is the algorithm right |
 | the shipped `dist/probe.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
 | MicroEmulator | does it survive a MIDP runtime |
-| a physical device | does it survive a vendor VM and AMS - run once, on one handset, and it did |
+| a physical device | does it survive a vendor VM and AMS - measured on three handsets, with evidence bounded per device |
 
 A failure at a later stage that passed an earlier one localises the bug to the
 toolchain rather than the mathematics - which is worth a great deal when the
@@ -97,7 +97,7 @@ and compares against that.
 ## Memory discipline
 
 Every subsystem is written as if the heap were small. It is measured now — about
-5 MB on both handsets tested — and `tg.mem.MemoryBudget` is the one place a size
+5 MB on two handsets and 2 MB on the Nokia C3-00 — and `tg.mem.MemoryBudget` is the one place a size
 literal is allowed to live. Everything else asks it.
 
 The client measures its own heap once, on first launch, with `HeapProbe` on a
@@ -109,10 +109,11 @@ so later launches read a number instead of repeating the measurement. An attempt
 counter is written before the probe and cleared after, so a handset where the
 probe does not come back stops being asked after two tries.
 
-Budgets are the reference profile — the values validated on those two handsets —
-scaled down by `ceiling / 4 MiB`, clamped to a floor, and never scaled up. At or
-above 4 MB the client behaves exactly as it did before any of this existed, which
-is the only configuration hardware has ever confirmed; a handset that
+Budgets start from the 4 MiB reference profile validated on the two larger
+handsets, then scale down by `ceiling / 4 MiB`, clamp to a floor, and never scale
+up; that proportional path is also exercised on the 2 MiB Nokia C3-00. At or
+above 4 MB the client preserves the reference behaviour confirmed on the larger
+handsets. A handset that
 over-reports its heap cannot talk the client into a buffer the VM will not give
 it. Budgets that bound a single allocation are additionally capped at half the
 largest contiguous block the probe obtained, because total free heap and largest
@@ -399,13 +400,18 @@ can be doing Telegram work at once, and that is by design:
 | `TgMidlet.avatarWorker` | one per task | `worker` | A second `Worker` on purpose: a decorative avatar must never refuse a chat open, and the two multiplex over the same connection. It is also the reason an avatar callback re-reads the account id — a logout can land during its download. |
 | `ReadQueue` drain | one, long-lived | `worker` | Read acknowledgements are fire-and-forget and must not consume the foreground worker; a queued one waits its turn rather than being overwritten. |
 | `UpdateSync` | one serial worker | `worker` | The `MtClient` reader only enqueues unsolicited bodies. Parsing, difference RPCs and state persistence cannot run on that reader, because it is what delivers their `rpc_result`. |
-| `TgMidlet.syncWorker` | one per task | `worker` | The snapshot refresh that reconciles the retained window after an update burst. Nobody asked for it, so it must never take the worker out from under a keypress - sharing one meant every chat open, search and jump during a sync was refused with "Finishing updates.snapshotRefresh first". Same connection, no second socket. |
+| `TgMidlet.syncWorker` | one per task | `worker` | Initial/cached dialog and history refresh, snapshot refresh, viewport-triggered history/dialog prefetch, and the explicitly opened reaction-actor list. Once cached rows are painted their refresh must not refuse a peer search, chat open or reaction selected from them; maintenance contention retains one bounded session/chat-scoped retry instead of showing an alert. A user-opened remote view stays on a Back-able `Loading` screen while waiting for this lane. Pressed `Older`/`More chats` commands remain on `worker`. Same connection, no second socket. |
 | Thumbnail decoder | one at a time, latched | `worker` | Decoding is CPU, not network. Guarded by a generation counter so results for a chat the reader has left are dropped. |
-| Heap probe, draft autosave, snapshot-refresh wait | one each | — | None of them talks to Telegram. The snapshot wait polls `worker.isBusy()` and then posts its submission to the display thread rather than submitting from where it waited. |
+| Heap probe, draft autosave, bounded maintenance retries | one each | — | None of them talks to Telegram. A retry posts its submission back to the display thread and rechecks the current session/chat before doing anything. |
 
 A further worker is not admissible without adding a row here first. The refusal
 contract above only means something against a written-down list of what is
 allowed to be in flight beside it.
+
+The matching UI rule is: background work waits silently, while an explicit
+remote read first establishes a visible, Back-able loading screen and then
+waits for its lane. Neither path asks the reader to repeat a keypress merely
+because another request was already in flight.
 
 ### A result can be correct and still not belong here
 
@@ -576,6 +582,15 @@ read. The outbox migrates them into the current format on first sweep, keeping
 that silently dropped the user's unsent messages would not be acceptable for
 either.
 
+Conversation caches are deliberately a separate, discardable compatibility
+line. Dialog cache stays v1. History v1 contains the bounded message core, v2
+adds bounded entities, and v3 adds `edit_date`; the current reader accepts all
+three and the writer emits v3. Missing newer fields default empty/zero. A
+downgrade to 0.8.1 may discard v3 history and refetch it, so downgrade cache
+retention is not part of the 1.0 contract. Auth keys, outbox, drafts, settings,
+and update cursors are not conversation-cache records and are not discarded by
+that migration.
+
 ## Durable user state
 
 Authorization/config remains in `tgkeys`. Reliability state uses two separate
@@ -613,6 +628,33 @@ open chat under it. Only the id is kept, never the `Message`, so the reply label
 stays correct and short after the message it answers has been evicted from the
 retained history window. A refused `Worker.submit` leaves the text and the reply
 target exactly where they were, and says so.
+
+Edit is a third composer mode, not a second interpretation of the reply id. It
+captures the peer, positive server message id, and original text; reply and edit
+therefore cannot be active together. The UI does not replace text when the RPC
+is submitted. Only `updateEditMessage` or `updateEditChannelMessage` reaches
+`UpdateBatch.edits`, replaces the matching history/cache row without reordering
+it, and supplies the edit date used by the compact `edited` label. If the same
+edit arrives unsolicited before its RPC result, cursor deduplication still
+applies, but the matching edit carried by that RPC result is republished for
+the sender's visible transcript. A failure or worker refusal leaves the edit
+composer and proposed text intact.
+
+**Message search is a disposable page, not a second history.** The search
+session retains only peer, query, offset/range, and the current bounded result
+page. Page bodies are released before the next request. Empty, repeated, or
+short pages terminate paging. Opening a result uses `messages.getHistory`
+around its id, binds the chat through the single peer-binding path, and then
+focuses that message. Session/chat/query tokens reject stale callbacks.
+
+**Entities are bounded annotations over UTF-16 text.** URL, text URL,
+username, mention-name, phone, and email entities are retained only when their
+offsets, lengths, optional values, overlap, and surrogate boundaries validate.
+The full-text screen is a copy: editing its `TextBox` cannot mutate the message.
+External actions show both label and actual target, validate HTTP(S), `tel:`, or
+`mailto:`, require confirmation, and keep the target screen open when the
+platform refuses the launch. Username resolution is an RPC and deliberately has
+no web fallback on failure.
 
 **A read mark belongs to one chat too, and is a maximum rather than a first
 answer.** `Mark all read` used to take the retained dialog's `topMessageId` and

@@ -93,6 +93,23 @@ public final class Phase6Test implements Test
         Assert.equal("reply text", "hello", reply.readString());
         Assert.equal("reply random", 123L, reply.readLong());
 
+        TlReader entitySend = new TlReader(Requests.sendMessage(from,
+                "https://x.test a@b.test +12025550123", 124L));
+        entitySend.readInt();
+        Assert.equal("send entity flag", 1 << 3, entitySend.readInt());
+        entitySend.readInt();
+        entitySend.readLong();
+        entitySend.readLong();
+        entitySend.readString();
+        entitySend.readLong();
+        Assert.equal("send entities vector", 0x1cb5c415,
+                entitySend.readInt());
+        Assert.equal("send entities count", 3, entitySend.readInt());
+        Assert.equal("send URL entity", Api.MESSAGE_ENTITY_URL,
+                entitySend.readInt());
+        Assert.equal("send URL offset", 0, entitySend.readInt());
+        Assert.equal("send URL length", 14, entitySend.readInt());
+
         TlReader forward = new TlReader(Requests.forwardMessage(
                 from, 88, to, 999L));
         Assert.equal("forward method", Api.MESSAGES_FORWARD_MESSAGES,
@@ -121,14 +138,21 @@ public final class Phase6Test implements Test
                 channel.readInt());
         Assert.equal("input channel", Api.INPUT_CHANNEL, channel.readInt());
 
-        TlReader edit = new TlReader(Requests.editMessage(to, 91, "changed"));
+        TlReader edit = new TlReader(Requests.editMessage(to, 91,
+                "changed e@x.test"));
         Assert.equal("edit method", Api.MESSAGES_EDIT_MESSAGE, edit.readInt());
-        Assert.equal("edit flags", 1 << 11, edit.readInt());
+        Assert.equal("edit flags", (1 << 11) | (1 << 3), edit.readInt());
         Assert.equal("edit peer", Api.INPUT_PEER_CHANNEL, edit.readInt());
         Assert.equal("edit channel", 33L, edit.readLong());
         Assert.equal("edit hash", 44L, edit.readLong());
         Assert.equal("edit message id", 91, edit.readInt());
-        Assert.equal("edit text", "changed", edit.readString());
+        Assert.equal("edit text", "changed e@x.test", edit.readString());
+        Assert.equal("edit entities vector", 0x1cb5c415, edit.readInt());
+        Assert.equal("edit entity count", 1, edit.readInt());
+        Assert.equal("edit email entity", Api.MESSAGE_ENTITY_EMAIL,
+                edit.readInt());
+        Assert.equal("edit email offset", 8, edit.readInt());
+        Assert.equal("edit email length", 8, edit.readInt());
     }
 
     private static void editEligibility()

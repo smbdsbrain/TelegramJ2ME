@@ -120,6 +120,11 @@ public final class ChatScreenPhase4Test implements Test
         Assert.equal("message actions precede reaction palette",
                 5, picker.itemCount());
         picker.press(Canvas.KEY_NUM5);
+        Assert.equal("reaction remains the default when actions are present",
+                0, selectedReaction[0]);
+        picker.press(Canvas.KEY_NUM2);
+        picker.press(Canvas.KEY_NUM2);
+        picker.press(Canvas.KEY_NUM5);
         Assert.equal("view reactions action", 98, selectedReaction[0]);
         picker.press(Canvas.KEY_NUM8);
         picker.press(Canvas.KEY_NUM5);

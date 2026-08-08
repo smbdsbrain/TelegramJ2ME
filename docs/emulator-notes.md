@@ -103,6 +103,38 @@ ProGuard configuration and can break on its own.
 The run is offline - it never presses Connect - so no network, Telegram account
 or RMS profile is involved.
 
+### Exact packaged RC E2E
+
+`tools/drive-emulator.ps1` normally drives desktop production classes, which is
+right for diagnostics but cannot prove that an obfuscated RC behaves the same.
+The two-account release gate instead runs:
+
+```powershell
+.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1
+.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1-min
+.\tools\rc-slow-e2e.ps1
+```
+
+Its driver class imports only the kept MIDlet entry point and standard MIDP UI,
+then puts the exact artifact JAR first on the classpath. It therefore survives
+renaming of every implementation class. The receiver stays connected while the
+sender sends and edits; a reflection check looks for the marked text and the
+rendered `edited` line without depending on private member names. Usernames are
+exchanged only through ignored private files and never printed. This is still
+emulator evidence, not handset evidence.
+
+`rc-slow-e2e.ps1` repeats both exact packaged variants with `-Xmx32m` while
+`MidpTransport` fragments socket reads into 1024-byte chunks, paces writes, and
+waits 10 ms at each I/O boundary. Shaping is inactive unless the E2E JVM
+property is set.
+Its extra reaction flow opens the local palette, starts the remote actor list,
+presses Back while that request is still in flight, and immediately toggles a
+reaction. A delayed palette, invisible loading view, `Finishing ... first`
+alert, stuck status, or transport desynchronisation fails the run.
+Use `-DelayMs 20 -ChunkBytes 512` for a harsher manual GPRS-like stress run;
+the release gate keeps the calibrated profile above so unrelated live Telegram
+timeouts do not masquerade as a deterministic UI regression.
+
 ### The menu-ordering rule it enforces
 
 MIDP only promises to honour a command's priority *within* one command type;

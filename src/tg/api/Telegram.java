@@ -90,7 +90,8 @@ public final class Telegram
     private volatile int accountEpoch;
     private volatile WipeReport lastWipe;
 
-    private MtClient client;
+    /** Replaced as one reference when a connection is rebuilt. */
+    private volatile MtClient client;
     private OutgoingStore outgoingStore;
     private OutgoingListener outgoingListener;
     private boolean outboxDraining;
@@ -1627,7 +1628,7 @@ public final class Telegram
             throw new IOException("edited message exceeds 1000 characters");
         }
         byte[] result = invoke(Requests.editMessage(peer, messageId, text));
-        updates.accept(result);
+        updates.acceptEdit(result, peer, messageId);
     }
 
     private void sendMessage(Peer peer, String text, long randomId,
@@ -1973,9 +1974,16 @@ public final class Telegram
      * Salt/time corrections are the sole exception: the server explicitly says
      * it discarded that MTProto envelope, so MtClient can safely rebuild it.
      */
-    private synchronized byte[] invoke(byte[] query) throws IOException
+    private byte[] invoke(byte[] query) throws IOException
     {
-        if (client == null)
+        // MtClient has its own bounded concurrent-request table and one writer
+        // thread. Serialising here defeated that design: a slow informational
+        // request (notably messages.getMessageReactionsList) blocked an
+        // unrelated user reaction even after the reader had pressed Back.
+        // Capture the connection once so a concurrent reconnect cannot make
+        // the null check and invocation refer to different clients.
+        MtClient active = client;
+        if (active == null)
         {
             // "not connected" is true but useless while the session is
             // deliberately parked: the user sees an error on a chat they just
@@ -1990,7 +1998,7 @@ public final class Telegram
         }
         try
         {
-            return client.invokeWithSaltRetry(query);
+            return active.invokeWithSaltRetry(query);
         }
         catch (IOException e)
         {

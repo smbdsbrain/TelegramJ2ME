@@ -917,11 +917,6 @@ public final class EmulatorDriver
                                   String pagesArg, String singleSocket)
             throws Exception
     {
-        if (chatTitle == null || chatTitle.length() == 0)
-        {
-            System.out.println("usage: scroll <chat title> [pages] [single]");
-            return false;
-        }
         int pages = 40;
         try { if (pagesArg != null) { pages = Integer.parseInt(pagesArg.trim()); } }
         catch (Throwable ignored) { }
@@ -1452,18 +1447,19 @@ public final class EmulatorDriver
         {
             Peer peer = screen.selectedPeer();
             String name = peer == null ? null : peer.title;
-            if (name != null && name.indexOf(title) >= 0)
+            if ((title == null || title.length() == 0)
+                    || (name != null && name.indexOf(title) >= 0))
             {
-                System.out.println("selected chat: " + name);
+                System.out.println("selected requested chat (title withheld)");
                 if (!app.press("Open")) { System.out.println("no Open"); return false; }
                 Displayable chat = app.awaitChange(list, 60000);
-                System.out.println("opened: " + EmulatorHarness.describe(chat));
+                System.out.println("opened requested chat");
                 return app.awaitCommand("Older", 60000);
             }
             if (!app.key(Canvas.KEY_NUM8)) { break; }
             Thread.sleep(60);
         }
-        System.out.println("no chat matching \"" + title + "\" in the list");
+        System.out.println("requested chat was not found (title withheld)");
         return false;
     }
 
@@ -1567,7 +1563,7 @@ public final class EmulatorDriver
             throws Exception
     {
         if (!returnToDialogList(app)) { return false; }
-        if (query == null || query.length() < 2) { query = "a"; }
+        if (query == null || query.length() < 2) { query = "te"; }
 
         if (!app.press("Find chat"))
         {

@@ -102,7 +102,7 @@ On a branch:
 `tools/generate-tl.py` reads both files plus
 [`config/tl-whitelist.txt`](../config/tl-whitelist.txt) and emits
 `generated/tg/api/{Api,TlSchema}.java` - the whitelisted methods and the
-constructor closure they reach: currently 34 methods pulling in 864 of the 1582
+constructor closure they reach: currently 37 methods pulling in 882 of the 1582
 constructors the two files define between them (1546 + 38, less `message` and
 `vector`, which appear in both). The output is deterministic and gitignored;
 `tools/bootstrap.ps1` regenerates it.

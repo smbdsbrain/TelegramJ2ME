@@ -437,6 +437,64 @@ Platform JPEG fails on all three handsets, which is why the client carries
 records and the report path all round-trip it byte for byte. Nothing on this
 handset falls back to the platform default.
 
+## 1.0 RC upgrade observations (2026-08-09)
+
+Series 40 names the on-card RMS files from the installed JAR basename, not just
+the MIDlet Name/Vendor pair. Installing `TelegramJ2ME-1.0.0-rc1.jar` therefore
+created a fresh RMS namespace beside the existing `c3-00-proxy` stores. Building
+the same signed identity as `c3-00-proxy.jar` restored the saved authorization
+and caches without copying or rewriting any RMS file. The legacy basename is
+therefore part of the upgrade contract for this handset.
+
+That first upgrade run also exposed a CLDC audit hole: `Character.isWhitespace`
+compiled on the desktop but is absent from this VM, and opening the chat list
+failed with `NoSuchMethodError`. The call was replaced with a local CLDC-safe
+predicate and the audit parser was fixed so inline `#` comments can no longer
+silently empty its forbidden-member table.
+
+A later device pass found two application races. Viewport-triggered
+`messages.getHistory/older` occupied the foreground worker, so choosing a
+reaction—or opening another chat while the page was still in flight—was refused
+with `Finishing messages.getHistory/older first`. Automatic older/newer paging
+now uses the maintenance worker; a pressed `Older` command remains foreground.
+An edit could also be accepted without changing the sender's visible row when
+the unsolicited update won the race with the edit RPC result and made the
+second copy look like duplicate `pts`. Cursor deduplication remains intact, but
+the matching authoritative edit in the local RPC result is now republished to
+the transcript. Both fixes have deterministic coverage and await a repeat of
+this handset pass.
+
+The repeat exposed the same ownership error one step earlier: cached history
+made the chat immediately interactive while its initial `messages.getHistory`
+refresh still occupied the foreground worker. A reaction selected in that
+window was refused with `Finishing messages.getHistory first`. Initial/cached
+history refresh now shares the maintenance lane too; if that lane is occupied,
+one chat-scoped retry waits without presenting a foreground error.
+
+The next repeat reached the asynchronous reaction RPC but first failed while
+loading the allowed-reaction policy. The crash RMS preserved the primary error:
+the proxy sent a well-formed FakeTLS application-data record whose wire length
+was exactly 16,640 bytes. The receiver incorrectly applied TLS's 16,384-byte
+plaintext ceiling to `TLSCiphertext`; TLS 1.3 permits another 256 bytes of
+ciphertext expansion. Rejecting that boundary closed the session, so the
+following `messages.sendReaction` surfaced only the secondary `not connected`.
+The carrier now keeps the 16 KiB outbound plaintext split but accepts incoming
+records through 16,640 bytes and deterministically rejects 16,641.
+
+That transport fix exposed a separate reaction-flow defect rather than curing
+it. Opening the palette still waited for the global catalog and chat policy,
+and a message with existing reactions focused `View reactions` instead of the
+first emoji. Worse, the detail request's intended `Loading...` screen was never
+pushed, so it ran invisibly on the foreground worker and the next Select showed
+`Finishing messages.getMessageReactionsList first`. The picker now opens from
+the bounded local catalog, initially focuses an emoji, and the explicit detail
+view shows a Back-able loading screen while its maintenance-lane request waits
+or runs.
+
+`No report sink in this build` in Diagnostics is expected for the production
+candidate. It means the private development report-upload endpoint was not
+embedded; it does not mean the MIDlet is using Telegram's test DC.
+
 ## What this changes
 
 - **The dynamic memory budget is load-bearing, and now proven at half the heap

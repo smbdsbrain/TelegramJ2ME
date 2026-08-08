@@ -97,7 +97,7 @@ jobs:
       # the last point before the artifacts are public.
       - name: Emulator smoke test
         shell: pwsh
-        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName "TelegramJ2ME-${env:APP_VERSION}","TelegramJ2ME-${env:APP_VERSION}-min"
+        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName "TelegramJ2ME-${env:APP_VERSION}","TelegramJ2ME-${env:APP_VERSION}-min" -JavaArgs -Xmx32m
 
       - name: Verify JAD/JAR consistency
         shell: pwsh
