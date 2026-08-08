@@ -53,6 +53,12 @@ upload.getFile
 # --- reactions ---
 messages.sendReaction
 
+# --- search ---
+# contacts.search is the peer search: it answers over the account rather than
+# over the retained dialog window, which is the whole point - a chat the reader
+# has not scrolled to is not in the window and cannot be found there.
+contacts.search
+
 [types]
 # Extra types to include even when no whitelisted method names them directly.
 # Updates arrive unsolicited, so their whole tree has to be parseable.
@@ -355,6 +361,14 @@ chatReactionsSome.reactions
 contacts.resolvedPeer.peer
 contacts.resolvedPeer.chats
 contacts.resolvedPeer.users
+
+# Peer search. my_results is contacts and saved chats, results is the public
+# directory; both are read, in that order, because a chat the user is already
+# in is the likelier target and should not sit under strangers.
+contacts.found.my_results
+contacts.found.results
+contacts.found.chats
+contacts.found.users
 
 auth.exportedAuthorization.id
 auth.exportedAuthorization.bytes

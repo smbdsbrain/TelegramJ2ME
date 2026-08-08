@@ -1477,6 +1477,82 @@ public final class Telegram
     }
 
     /** Resolve and cache a public peer from its @username. */
+    /**
+     * Peers matching {@code query}, contacts first.
+     *
+     * my_results is what the account already knows - contacts, chats it is in,
+     * saved messages - and results is the public directory. Read in that order
+     * because a chat the user is already in is the likelier target and should
+     * not sit underneath strangers with similar names.
+     *
+     * Bounded twice over: the request asks for at most {@code limit}, and what
+     * comes back is trimmed again, because the server is entitled to send more
+     * than it was asked for and this array is built on a heap measured in
+     * megabytes.
+     */
+    public Peer[] searchPeers(String query, int limit) throws IOException
+    {
+        if (query == null || query.trim().length() == 0)
+        {
+            return new Peer[0];
+        }
+        if (limit < 1) { limit = 1; }
+        if (limit > MAX_PEER_RESULTS) { limit = MAX_PEER_RESULTS; }
+
+        TlObj res = TlParser.parse(new TlReader(
+                invoke(Requests.searchPeers(query.trim(), limit))));
+        if (res == null || res.id != Api.CONTACTS_FOUND)
+        {
+            throw new IOException("unexpected reply to contacts.search: "
+                    + describe(res));
+        }
+        // Before the peers are resolved: a result is only addressable once its
+        // access_hash is known, and the hash arrives in these two vectors.
+        peers.absorb(res.vec(Api.F_CONTACTS_FOUND__USERS),
+                res.vec(Api.F_CONTACTS_FOUND__CHATS));
+
+        Peer[] out = new Peer[limit];
+        int count = 0;
+        count = collect(res.vec(Api.F_CONTACTS_FOUND__MY_RESULTS), out, count);
+        count = collect(res.vec(Api.F_CONTACTS_FOUND__RESULTS), out, count);
+
+        Peer[] trimmed = new Peer[count];
+        System.arraycopy(out, 0, trimmed, 0, count);
+        return trimmed;
+    }
+
+    /** Longest a peer search result list may be. Bounded for the heap. */
+    private static final int MAX_PEER_RESULTS = 20;
+
+    /**
+     * Resolve peer references into addressable peers, skipping what cannot be.
+     *
+     * A result whose User or Chat did not come with the reply has no
+     * access_hash, so nothing can be sent to it and opening it would fail with
+     * a bare error. Dropping it here is what keeps the list to things that
+     * actually work when selected.
+     */
+    private int collect(TlObj[] refs, Peer[] out, int count)
+    {
+        if (refs == null) { return count; }
+        for (int i = 0; i < refs.length && count < out.length; i++)
+        {
+            Peer peer = peers.resolve(Peer.fromPeerObj(refs[i]));
+            if (peer == null || !peers.isAddressable(peer)) { continue; }
+            boolean already = false;
+            for (int j = 0; j < count; j++)
+            {
+                if (out[j].kind == peer.kind && out[j].id == peer.id)
+                {
+                    already = true;
+                    break;
+                }
+            }
+            if (!already) { out[count++] = peer; }
+        }
+        return count;
+    }
+
     public Peer resolveUsername(String username) throws IOException
     {
         if (username == null || username.length() == 0)

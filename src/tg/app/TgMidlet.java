@@ -158,6 +158,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             new Command("Filter loaded", Command.SCREEN, 3);
     private final Command cmdTopOfList =
             new Command("Top of list", Command.SCREEN, 2);
+    private final Command cmdFindChat =
+            new Command("Find chat", Command.SCREEN, 2);
+    private final Command cmdSearchGo = new Command("Search", Command.SCREEN, 1);
+    private final Command cmdOpenResult = new Command("Open", Command.ITEM, 1);
+    private final Command cmdForwardToResult =
+            new Command("Forward here", Command.SCREEN, 1);
     private final Command cmdApplyFilter = new Command("Apply", Command.SCREEN, 1);
     private final Command cmdClearFilter = new Command("Clear", Command.SCREEN, 2);
     private final Command cmdSaved = new Command("Saved Messages", Command.SCREEN, 2);
@@ -304,6 +310,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * and would otherwise bring the badge back moments after it was cleared.
      */
     private final LocalReads localReads = new LocalReads();
+
+    /**
+     * Peer search: the box, the results and what the results are for.
+     *
+     * Separate from the dialog filter on purpose. Filter narrows the retained
+     * window and cannot see past it; this asks Telegram and can return a chat
+     * the reader has never scrolled to. Conflating the two is how "not found"
+     * comes to mean two different things on one screen.
+     */
+    private TextBox searchBox;
+    private List searchResults;
+    private Peer[] searchPeers = new Peer[0];
+
+    /** True when the search was opened to pick a forward target. */
+    private boolean searchForForward;
 
     /**
      * The dialog immediately above the window, or null when the window starts
@@ -860,6 +881,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdTopOfList)
         {
             goToTopOfList();
+        }
+        else if (c == cmdFindChat)
+        {
+            showSearchBox(d == forwardList);
+        }
+        else if (c == cmdSearchGo)
+        {
+            runPeerSearch();
+        }
+        else if (c == cmdOpenResult && d == searchResults)
+        {
+            openSearchResult();
+        }
+        else if (c == cmdForwardToResult && d == searchResults)
+        {
+            Peer destination = selectedSearchPeer();
+            if (destination != null) { forwardMessageTo(destination); }
         }
         else if (c == cmdFilter)
         {
@@ -1657,6 +1695,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         historyExhausted = false;
         historyForwardStalled = false;
 
+        searchBox = null;
+        searchResults = null;
+        searchPeers = new Peer[0];
         outboxList = null;
         outboxItems = new OutgoingMessage[0];
         forwardList = null;
@@ -1957,6 +1998,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             dialogList.addCommand(cmdRefresh);
             dialogList.addCommand(cmdMoreDialogs);
             dialogList.addCommand(cmdTopOfList);
+            dialogList.addCommand(cmdFindChat);
             dialogList.addCommand(cmdFilter);
             dialogList.addCommand(cmdSaved);
             dialogList.addCommand(cmdMyProfile);
@@ -2047,6 +2089,140 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialogFilter = "";
         dialogOrderStale = false;
         loadDialogs();
+    }
+
+    /**
+     * Ask Telegram for a chat, rather than filtering the ones already here.
+     *
+     * @param forForward true when a forward target is being picked, which
+     *                   changes what selecting a result does and nothing else
+     */
+    private void showSearchBox(boolean forForward)
+    {
+        searchForForward = forForward;
+        if (searchBox == null)
+        {
+            searchBox = new TextBox("Find a chat on Telegram", "", 64,
+                    TextField.ANY);
+            searchBox.addCommand(cmdSearchGo);
+            searchBox.addCommand(cmdBack);
+            searchBox.setCommandListener(this);
+        }
+        else
+        {
+            searchBox.setString("");
+        }
+        searchBox.setTitle(forForward ? "Find a chat to forward to"
+                : "Find a chat on Telegram");
+        pushScreen(searchBox);
+    }
+
+    private void runPeerSearch()
+    {
+        if (searchBox == null) { return; }
+        final String query = searchBox.getString().trim();
+        if (query.length() < 2)
+        {
+            showAlert("Type at least two characters.", AlertType.WARNING,
+                    searchBox);
+            return;
+        }
+        final boolean forForward = searchForForward;
+        showBusy("Search", "Searching Telegram for \"" + query + "\"...");
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "contacts.search"; }
+            public Object run() throws Exception
+            {
+                return telegram.searchPeers(query, MemoryBudget.peerSearchLimit());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("contacts.search");
+                    return;
+                }
+                showSearchResults(query, (Peer[]) result, forForward);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession() || searchBox == null)
+                {
+                    dropStale("contacts.search");
+                    return;
+                }
+                showAlertThen("Search failed", error, searchBox);
+            }
+        });
+        if (!submitted)
+        {
+            // The query is still in the box and nothing was asked for, so
+            // pressing Search again is the whole retry.
+            showRefused("Not searched", "Press Search again in a moment.",
+                    searchBox);
+        }
+    }
+
+    private void showSearchResults(String query, Peer[] found, boolean forForward)
+    {
+        searchPeers = found == null ? new Peer[0] : found;
+        searchForForward = forForward;
+        searchResults = new List("Results for " + query, List.IMPLICIT);
+        for (int i = 0; i < searchPeers.length; i++)
+        {
+            searchResults.append(peerLabel(searchPeers[i]), null);
+        }
+        if (searchPeers.length == 0)
+        {
+            // Distinct from the Filter wording on purpose: this one really did
+            // ask Telegram, so "no chat by that name" is a claim it can make.
+            searchResults.append("(Telegram found no chat by that name)", null);
+        }
+        searchResults.addCommand(forForward ? cmdForwardToResult : cmdOpenResult);
+        searchResults.addCommand(cmdBack);
+        searchResults.setCommandListener(this);
+        // Replaces the query box rather than stacking on it: Back from the
+        // results belongs on the screen the search was started from, and a
+        // reader who wants a different query presses Find chat again.
+        navigation.pop();
+        replaceScreen(searchResults);
+    }
+
+    /** @return the selected result, or null when the row is the empty notice */
+    private Peer selectedSearchPeer()
+    {
+        if (searchResults == null) { return null; }
+        int index = searchResults.getSelectedIndex();
+        if (index < 0 || index >= searchPeers.length) { return null; }
+        return searchPeers[index];
+    }
+
+    private void openSearchResult()
+    {
+        Peer peer = selectedSearchPeer();
+        if (peer == null) { return; }
+        // Back onto the chat list first: a chat opened from a search belongs in
+        // the same place as one opened from the list, not on top of a results
+        // screen the reader would have to walk back through.
+        restoreScreen(navigation.pop());
+        openDialog(peer);
+    }
+
+    private static String peerLabel(Peer peer)
+    {
+        if (peer == null) { return "(unknown)"; }
+        String title = peer.title == null || peer.title.length() == 0
+                ? "(no name)" : peer.title;
+        if (peer.username != null && peer.username.length() > 0)
+        {
+            return title + "  @" + peer.username;
+        }
+        return title;
     }
 
     /** Load only avatars that can currently become visible. */
@@ -4213,6 +4389,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         System.arraycopy(targets, 0, forwardTargets, 0, count);
         if (count == 0) { forwardList.append("(no chats)", null); }
         forwardList.addCommand(cmdForwardHere);
+        forwardList.addCommand(cmdFindChat);
         forwardList.addCommand(cmdBack);
         forwardList.setCommandListener(this);
         pushScreen(forwardList);
@@ -4221,12 +4398,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void forwardToSelectedDialog()
     {
         int index = forwardList == null ? -1 : forwardList.getSelectedIndex();
-        if (index < 0 || index >= forwardTargets.length
-                || actionMessage == null || actionPeer == null)
+        if (index < 0 || index >= forwardTargets.length) { return; }
+        forwardMessageTo(forwardTargets[index]);
+    }
+
+    /**
+     * Forward the pending message to {@code destination}.
+     *
+     * Split from the picker so a search result is a forward target on exactly
+     * the same terms as a row of the loaded window - same request, same
+     * staleness guard, same recovery.
+     */
+    private void forwardMessageTo(final Peer destination)
+    {
+        if (destination == null || actionMessage == null || actionPeer == null)
         {
             return;
         }
-        final Peer destination = forwardTargets[index];
         final Message message = actionMessage;
         final Peer source = actionPeer;
         showBusy("Forward", "Forwarding message...");
@@ -4260,20 +4448,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
             public void onFailure(Throwable error)
             {
-                if (!asked.sameSession() || forwardList == null)
+                if (!asked.sameSession())
                 {
                     dropStale("messages.forwardMessages");
                     return;
                 }
-                showAlertThen("Could not forward message", error, forwardList);
+                showAlertThen("Could not forward message", error,
+                        navigation.current());
             }
         });
         // The chooser stays up with the same destination selected, and
         // actionMessage/actionPeer are untouched: Forward here is one keypress.
         if (!submitted)
         {
-            showRefused("Not forwarded", "Try Forward here again in a moment.",
-                    forwardList);
+            showRefused("Not forwarded", "Try Forward here again in a moment.");
         }
     }
 

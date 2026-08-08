@@ -524,6 +524,25 @@ public final class Requests
     }
 
     /** Resolve a public @username without a referral context. */
+    /**
+     * Ask Telegram for peers matching {@code query}.
+     *
+     * Not a message search: this answers over the account and the public
+     * directory, which is the whole point - a chat the reader has not scrolled
+     * to is not in the retained window and cannot be found there.
+     *
+     * The limit is small on purpose. Every result carries a User or Chat that
+     * has to be absorbed into the peer cache, and the cache is bounded.
+     */
+    public static byte[] searchPeers(String query, int limit)
+    {
+        TlWriter w = new TlWriter(32 + query.length() * 3);
+        w.writeInt(Api.CONTACTS_SEARCH);
+        w.writeString(query);
+        w.writeInt(limit);
+        return w.toByteArray();
+    }
+
     public static byte[] resolveUsername(String username)
     {
         TlWriter w = new TlWriter(32 + username.length() * 2);

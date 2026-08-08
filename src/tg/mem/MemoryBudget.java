@@ -173,6 +173,8 @@ public final class MemoryBudget
     private static final int MIN_DIALOGS         = 40;
     private static final int REF_DIALOG_PAGE     = 40;
     private static final int MIN_DIALOG_PAGE     = 10;
+    private static final int REF_PEER_SEARCH     = 20;
+    private static final int MIN_PEER_SEARCH     = 8;
     private static final int REF_DIALOG_MARGIN   = 20;
     private static final int MIN_DIALOG_MARGIN   = 5;
     private static final int REF_HISTORY         = 120;
@@ -326,6 +328,19 @@ public final class MemoryBudget
 
     /** Dialogs fetched per request. */
     public static int dialogPageSize() { return scale(REF_DIALOG_PAGE, MIN_DIALOG_PAGE); }
+
+    /**
+     * Peers a search may return.
+     *
+     * Small, and smaller still on a small heap: every result carries a User or
+     * Chat that has to be absorbed into the bounded peer cache, and a list a
+     * reader has to scroll through is not a better answer than a list they can
+     * read. Refining the query is the way to fewer results, not paging.
+     */
+    public static int peerSearchLimit()
+    {
+        return scale(REF_PEER_SEARCH, MIN_PEER_SEARCH);
+    }
 
     /**
      * Dialogs below the viewport before the next page is requested.
