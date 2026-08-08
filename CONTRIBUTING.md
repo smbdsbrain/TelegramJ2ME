@@ -31,7 +31,7 @@ requests from forks work.
 ## Before opening a pull request
 
 ```bash
-./tools/test.sh                            # 46 suites
+./tools/test.sh                            # 57 Java suites + 45 Python tests
 ./tools/build.sh -Target tg                # the device profile, incl. check-api
 pwsh -File tools/smoke-emulator.ps1        # runs the packaged JARs
 pwsh -File tools/audit-public.ps1          # secret and private-path audit
