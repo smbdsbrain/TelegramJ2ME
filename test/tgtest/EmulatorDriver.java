@@ -370,6 +370,15 @@ public final class EmulatorDriver
     private static boolean setMode(EmulatorHarness app, String modeLabel)
             throws Exception
     {
+        // AsIs means what the documentation says it means: do not open Settings
+        // at all, and connect on whatever the profile already has. It was only
+        // honoured by the scenarios that special-cased it before calling here,
+        // so every other one answered "no such mode: AsIs" and stopped - which
+        // is the one value a first-launch or a stored-configuration run needs,
+        // because saving Settings is itself the repair for a configuration that
+        // is wrong.
+        if ("AsIs".equals(modeLabel)) { return true; }
+
         Displayable start = app.current();
         if (!app.press("Settings"))
         {
