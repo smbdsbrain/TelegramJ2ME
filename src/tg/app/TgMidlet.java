@@ -196,6 +196,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private Worker worker;
     private Worker avatarWorker;
+
+    /**
+     * Background maintenance, so it cannot refuse a user.
+     *
+     * The snapshot refresh is not something anyone asked for: it runs after an
+     * update burst to reconcile the retained window with the server. Sharing
+     * the foreground worker meant that every time updates arrived - which is
+     * most of the time on a live account - opening a chat, searching or
+     * jumping to the latest was refused with "Finishing updates.snapshotRefresh
+     * first", and the user was told to press Refresh for something they had not
+     * started.
+     *
+     * A second Worker for the same reason avatarWorker is one: a decorative or
+     * housekeeping request must never take the worker out from under a
+     * keypress. Both deliver on the display thread, so the model is still
+     * mutated by one thread; what overlaps is the waiting, and the connection
+     * is multiplexed. No second socket is involved, so single-socket mode is
+     * unaffected.
+     */
+    private Worker syncWorker;
     /**
      * The display thread, as something that can be handed to a background
      * producer. Everything that mutates the model, the navigation stack or an
@@ -556,6 +576,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         ui = new DisplayDispatcher(display);
         worker = new Worker(ui);
         avatarWorker = new Worker(ui);
+        syncWorker = new Worker(ui);
 
         Diag.info("client " + BuildInfo.VERSION + " build " + BuildInfo.BUILD
                   + " env " + BuildInfo.ENV);
@@ -1713,7 +1734,6 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (photoToken != null) { photoToken.cancel(); }
         // A refresh waiting for the worker has nothing left to refresh, and its
         // submission would land on the phone box.
-        snapshotRetry.cancel();
         snapshotRefreshScheduled = false;
         localReads.clear();
         readQueue.clear();
@@ -4420,44 +4440,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (snapshotRefreshScheduled) { return; }
         snapshotRefreshScheduled = true;
-        snapshotBackoffMs = SNAPSHOT_RETRY_MS;
-        // Straight to the try, not through a wait: the common case is a worker
-        // that is free, and paying a thread and a sleep to discover that is
-        // what the loop this replaced did on every update burst.
+        // Straight to the try. It has its own worker now, so there is nothing
+        // to wait for and nothing to lose a race with: the old version spun a
+        // thread on worker.isBusy() to be polite to the foreground, and the
+        // version after that competed with it instead. Neither is needed once
+        // the two are not the same worker.
         submitSnapshotRefresh();
     }
-
-    /** First delay before re-offering the snapshot to a busy worker. */
-    private static final long SNAPSHOT_RETRY_MS = 250L;
-
-    /** Ceiling for the backoff. Refreshing is not latency-critical. */
-    private static final long SNAPSHOT_RETRY_MAX_MS = 4000L;
-
-    private long snapshotBackoffMs = SNAPSHOT_RETRY_MS;
-
-    /**
-     * One waiter for the snapshot retry, shared with nothing.
-     *
-     * This used to be a raw thread spinning on {@code worker.isBusy()} with
-     * 250 ms sleeps - the same defect the outbox had, one update burst away
-     * from a sleeping thread per refresh. Now the submission is simply tried,
-     * and a refusal - an ordinary outcome, because the user can act at any
-     * moment - schedules one wake to try again.
-     */
-    private final DelayedWake snapshotRetry = new DelayedWake("snapshot",
-            new DelayedWake.Wake()
-    {
-        public void onWake()
-        {
-            // Off the display thread, so the submission goes back to it:
-            // submitting is display-thread-owned, and a refusal has to be
-            // handled where the screen it must not disturb lives.
-            ui.post(new Runnable()
-            {
-                public void run() { submitSnapshotRefresh(); }
-            });
-        }
-    });
 
     /**
      * The submission half of {@link #scheduleSnapshotRefresh}, on the display
@@ -4471,7 +4460,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         final Peer target = openPeer;
         final AsyncScope.Token asked = scope.capture(target);
-        boolean submitted = worker.submit(new Worker.Task()
+        boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "updates.snapshotRefresh"; }
 
@@ -4575,13 +4564,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         });
         if (!submitted)
         {
-            // Refused, not failed: something else is on the worker. Come back
-            // rather than dropping the refresh, and back off so a long
-            // foreground operation is not polled at four times a second for the
-            // length of it.
-            snapshotRetry.schedule(snapshotBackoffMs);
-            snapshotBackoffMs = snapshotBackoffMs * 2 > SNAPSHOT_RETRY_MAX_MS
-                    ? SNAPSHOT_RETRY_MAX_MS : snapshotBackoffMs * 2;
+            // The only thing that can be holding this worker is another
+            // snapshot refresh, so there is nothing to come back for: the run
+            // already under way will reconcile the same window.
+            snapshotRefreshScheduled = false;
         }
     }
 

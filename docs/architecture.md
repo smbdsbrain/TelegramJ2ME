@@ -399,10 +399,11 @@ can be doing Telegram work at once, and that is by design:
 | `TgMidlet.avatarWorker` | one per task | `worker` | A second `Worker` on purpose: a decorative avatar must never refuse a chat open, and the two multiplex over the same connection. It is also the reason an avatar callback re-reads the account id — a logout can land during its download. |
 | `ReadQueue` drain | one, long-lived | `worker` | Read acknowledgements are fire-and-forget and must not consume the foreground worker; a queued one waits its turn rather than being overwritten. |
 | `UpdateSync` | one serial worker | `worker` | The `MtClient` reader only enqueues unsolicited bodies. Parsing, difference RPCs and state persistence cannot run on that reader, because it is what delivers their `rpc_result`. |
+| `TgMidlet.syncWorker` | one per task | `worker` | The snapshot refresh that reconciles the retained window after an update burst. Nobody asked for it, so it must never take the worker out from under a keypress - sharing one meant every chat open, search and jump during a sync was refused with "Finishing updates.snapshotRefresh first". Same connection, no second socket. |
 | Thumbnail decoder | one at a time, latched | `worker` | Decoding is CPU, not network. Guarded by a generation counter so results for a chat the reader has left are dropped. |
 | Heap probe, draft autosave, snapshot-refresh wait | one each | — | None of them talks to Telegram. The snapshot wait polls `worker.isBusy()` and then posts its submission to the display thread rather than submitting from where it waited. |
 
-A fifth worker is not admissible without adding a row here first. The refusal
+A further worker is not admissible without adding a row here first. The refusal
 contract above only means something against a written-down list of what is
 allowed to be in flight beside it.
 
