@@ -417,6 +417,18 @@ public final class Requests
         return w.toByteArray();
     }
 
+    /** Text-only messages.editMessage; no media, entities or scheduling. */
+    public static byte[] editMessage(Peer peer, int messageId, String text)
+    {
+        TlWriter w = new TlWriter(64 + text.length() * 3);
+        w.writeInt(Api.MESSAGES_EDIT_MESSAGE);
+        w.writeInt(1 << 11);                 // flags.11: message present
+        writeInputPeer(w, peer);
+        w.writeInt(messageId);
+        w.writeString(text);
+        return w.toByteArray();
+    }
+
     public static byte[] forwardMessage(Peer from, int messageId,
                                         Peer to, long randomId)
     {

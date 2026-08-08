@@ -13,6 +13,7 @@ public final class Message
 {
     public int id;
     public int date;
+    public int editDate;
     public boolean outgoing;
     public boolean service;
     public boolean read;
@@ -47,6 +48,7 @@ public final class Message
             Message m = new Message();
             m.id = obj.intAt(Api.F_MESSAGE__ID);
             m.date = obj.intAt(Api.F_MESSAGE__DATE);
+            m.editDate = obj.intAt(Api.F_MESSAGE__EDIT_DATE);
             m.outgoing = obj.num(Api.F_MESSAGE__OUT) != 0;
             m.text = obj.strOrEmpty(Api.F_MESSAGE__MESSAGE);
             m.peer = resolvePeer(obj.obj(Api.F_MESSAGE__PEER_ID), peers);
@@ -109,6 +111,13 @@ public final class Message
             return "You";
         }
         return sender == null ? "" : sender.title;
+    }
+
+    /** Local visibility rule; the server remains authoritative on permissions. */
+    public boolean canEditText()
+    {
+        return id > 0 && outgoing && !service && media == null
+                && text != null && text.length() > 0;
     }
 
     public String toString()

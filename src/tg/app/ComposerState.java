@@ -53,6 +53,7 @@ public final class ComposerState
 {
     private static final int MODE_WRITE = 0;
     private static final int MODE_REPLY = 1;
+    private static final int MODE_EDIT = 2;
 
     private final int mode;
 
@@ -65,14 +66,17 @@ public final class ComposerState
 
     /** The message this mode acts on, or 0 for an ordinary Write. */
     private final int targetMessageId;
+    private final String originalText;
 
-    private ComposerState(int mode, Peer peer, int targetMessageId)
+    private ComposerState(int mode, Peer peer, int targetMessageId,
+                          String originalText)
     {
         this.mode = mode;
         this.peer = peer;
         this.peerKind = peer.kind;
         this.peerId = peer.id;
         this.targetMessageId = targetMessageId;
+        this.originalText = originalText;
     }
 
     /**
@@ -83,7 +87,7 @@ public final class ComposerState
     public static ComposerState write(Peer peer)
     {
         if (peer == null) { return null; }
-        return new ComposerState(MODE_WRITE, peer, 0);
+        return new ComposerState(MODE_WRITE, peer, 0, null);
     }
 
     /**
@@ -100,7 +104,19 @@ public final class ComposerState
     public static ComposerState reply(Peer peer, int messageId)
     {
         if (peer == null || messageId <= 0) { return null; }
-        return new ComposerState(MODE_REPLY, peer, messageId);
+        return new ComposerState(MODE_REPLY, peer, messageId, null);
+    }
+
+    /** Edit one own server-side text message. */
+    public static ComposerState edit(Peer peer, int messageId,
+                                     String originalText)
+    {
+        if (peer == null || messageId <= 0 || originalText == null
+                || originalText.length() == 0)
+        {
+            return null;
+        }
+        return new ComposerState(MODE_EDIT, peer, messageId, originalText);
     }
 
     /** The chat this composer was opened for. Never null. */
@@ -121,6 +137,18 @@ public final class ComposerState
         return mode == MODE_REPLY ? targetMessageId : 0;
     }
 
+    public boolean isEdit() { return mode == MODE_EDIT; }
+
+    public int editMessageId()
+    {
+        return mode == MODE_EDIT ? targetMessageId : 0;
+    }
+
+    public String originalText()
+    {
+        return mode == MODE_EDIT ? originalText : null;
+    }
+
     /** The compose screen's title. Bounded, and holds no message text. */
     public String title()
     {
@@ -128,6 +156,8 @@ public final class ComposerState
         {
             case MODE_REPLY:
                 return "Reply to #" + targetMessageId;
+            case MODE_EDIT:
+                return "Edit #" + targetMessageId;
             default:
                 return "Message";
         }

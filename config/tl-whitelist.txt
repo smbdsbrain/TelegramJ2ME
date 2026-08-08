@@ -36,6 +36,7 @@ messages.getAvailableReactions
 messages.getFullChat
 channels.getFullChannel
 messages.sendMessage
+messages.editMessage
 messages.forwardMessages
 messages.deleteMessages
 messages.readHistory
@@ -145,6 +146,7 @@ message.fwd_from
 message.reply_to
 message.reactions
 message.entities
+message.edit_date
 messageReplyHeader.reply_to_msg_id
 messageService.id
 messageService.peer_id
@@ -185,6 +187,12 @@ updateNewMessage.pts_count
 updateNewChannelMessage.message
 updateNewChannelMessage.pts
 updateNewChannelMessage.pts_count
+updateEditMessage.message
+updateEditMessage.pts
+updateEditMessage.pts_count
+updateEditChannelMessage.message
+updateEditChannelMessage.pts
+updateEditChannelMessage.pts_count
 
 updateShort.update
 updateShort.date

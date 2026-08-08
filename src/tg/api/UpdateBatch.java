@@ -9,6 +9,7 @@ package tg.api;
 public final class UpdateBatch
 {
     public Message[] messages = new Message[0];
+    public Message[] edits = new Message[0];
     public ReadState[] reads = new ReadState[0];
     public ReactionUpdate[] reactions = new ReactionUpdate[0];
     public boolean fullRefresh;

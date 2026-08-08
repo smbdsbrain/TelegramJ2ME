@@ -31,6 +31,7 @@ public final class ComposerStateTest implements Test
     {
         writeStartsWithoutAReply();
         replyCapturesThePeerAndTheMessage();
+        editIsDistinctFromReply();
         invalidOpensAreRefused();
         blankSendThenWriteCarriesNoReply();
         aReplyIsNotOwnedByAnotherChat();
@@ -66,6 +67,21 @@ public final class ComposerStateTest implements Test
                 composer.title());
         Assert.isTrue("reply is owned by the chat it was opened for",
                 composer.ownedBy(anna));
+    }
+
+    private static void editIsDistinctFromReply()
+    {
+        Peer anna = user(10, "Anna");
+        ComposerState composer = ComposerState.edit(anna, 101, "before");
+        Assert.isTrue("edit mode", composer.isEdit());
+        Assert.equal("edit id", 101, composer.editMessageId());
+        Assert.equal("edit never leaks into reply", 0,
+                composer.replyToMessageId());
+        Assert.equal("original text retained", "before",
+                composer.originalText());
+        Assert.equal("edit title", "Edit #101", composer.title());
+        Assert.isTrue("missing edit text refused",
+                ComposerState.edit(anna, 101, "") == null);
     }
 
     private static void invalidOpensAreRefused()

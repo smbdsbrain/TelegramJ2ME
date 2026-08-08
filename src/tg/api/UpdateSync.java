@@ -48,6 +48,7 @@ public final class UpdateSync
     private static final class PendingBatch
     {
         final Vector messages = new Vector();
+        final Vector edits = new Vector();
         final Vector reads = new Vector();
         final Vector reactions = new Vector();
         boolean fullRefresh;
@@ -57,6 +58,8 @@ public final class UpdateSync
             UpdateBatch out = new UpdateBatch();
             out.messages = new Message[messages.size()];
             messages.copyInto(out.messages);
+            out.edits = new Message[edits.size()];
+            edits.copyInto(out.edits);
             out.reads = new ReadState[reads.size()];
             reads.copyInto(out.reads);
             out.reactions = new ReactionUpdate[reactions.size()];
@@ -67,7 +70,7 @@ public final class UpdateSync
 
         boolean isEmpty()
         {
-            return messages.size() == 0 && reads.size() == 0
+            return messages.size() == 0 && edits.size() == 0 && reads.size() == 0
                     && reactions.size() == 0 && !fullRefresh;
         }
     }
@@ -719,6 +722,35 @@ public final class UpdateSync
             }
             return false;
         }
+        if (update.id == Api.UPDATE_EDIT_MESSAGE)
+        {
+            if (authoritative || applyCommonPts(
+                    update.intAt(Api.F_UPDATE_EDIT_MESSAGE__PTS),
+                    update.intAt(Api.F_UPDATE_EDIT_MESSAGE__PTS_COUNT)))
+            {
+                Message message = Message.from(
+                        update.obj(Api.F_UPDATE_EDIT_MESSAGE__MESSAGE), peers);
+                if (message != null) { batch.edits.addElement(message); }
+                return true;
+            }
+            return false;
+        }
+        if (update.id == Api.UPDATE_EDIT_CHANNEL_MESSAGE)
+        {
+            Message message = Message.from(update.obj(
+                    Api.F_UPDATE_EDIT_CHANNEL_MESSAGE__MESSAGE), peers);
+            Peer channel = message == null ? channelHint : message.peer;
+            int remotePts = update.intAt(
+                    Api.F_UPDATE_EDIT_CHANNEL_MESSAGE__PTS);
+            int count = update.intAt(
+                    Api.F_UPDATE_EDIT_CHANNEL_MESSAGE__PTS_COUNT);
+            if (authoritative || applyChannelPts(channel, remotePts, count))
+            {
+                if (message != null) { batch.edits.addElement(message); }
+                return true;
+            }
+            return false;
+        }
         if (update.id == Api.UPDATE_READ_HISTORY_INBOX
                 || update.id == Api.UPDATE_READ_HISTORY_OUTBOX)
         {
@@ -799,9 +831,7 @@ public final class UpdateSync
             batch.reactions.addElement(changed);
             return true;
         }
-        if (update.id == Api.UPDATE_EDIT_MESSAGE
-                || update.id == Api.UPDATE_EDIT_CHANNEL_MESSAGE
-                || update.id == Api.UPDATE_DELETE_MESSAGES
+        if (update.id == Api.UPDATE_DELETE_MESSAGES
                 || update.id == Api.UPDATE_DELETE_CHANNEL_MESSAGES)
         {
             batch.fullRefresh = true;

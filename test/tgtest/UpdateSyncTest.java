@@ -155,7 +155,13 @@ public final class UpdateSyncTest implements Test
         Assert.equal("read outbox max", 1, capture.lastRead.outboxMaxId);
         Assert.equal("read pts", 12, waitPts(sync, 12));
 
-        sync.accept(shortMessage(2, 200, "gap", 14, 1, 23));
+        sync.accept(editedUpdate(false, 1, 200, "one edited", 22, 13, 1));
+        capture.waitEdits(1);
+        Assert.equal("edited text", "one edited", capture.lastEdit.text);
+        Assert.equal("edited date", 22, capture.lastEdit.editDate);
+        Assert.equal("edit pts", 13, waitPts(sync, 13));
+
+        sync.accept(shortMessage(2, 200, "gap", 15, 1, 23));
         waitDifferenceCalls(rpc, 2);
         Assert.equal("gap message not applied", 1, capture.messageCount);
         Assert.isTrue("gap diagnostic", sync.detail().indexOf("difference") >= 0
@@ -212,6 +218,20 @@ public final class UpdateSyncTest implements Test
         }
         Assert.equal("channel pts", 6, sync.snapshot().channelPts(300));
         Assert.equal("channel difference calls", 1, rpc.channelCalls);
+
+        sync.accept(editedUpdate(true, 9, 300, "channel edited", 31, 7, 1));
+        capture.waitEdits(1);
+        Assert.equal("channel edited text", "channel edited",
+                capture.lastEdit.text);
+        Assert.equal("channel edited peer", 300L, capture.lastEdit.peer.id);
+        long editUntil = System.currentTimeMillis() + 2000;
+        while (sync.snapshot().channelPts(300) != 7
+                && System.currentTimeMillis() < editUntil)
+        {
+            Thread.sleep(20);
+        }
+        Assert.equal("channel edit pts", 7,
+                sync.snapshot().channelPts(300));
         sync.close();
     }
 
@@ -260,19 +280,26 @@ public final class UpdateSyncTest implements Test
     private static final class Capture implements UpdateSync.Listener
     {
         volatile int messageCount;
+        volatile int editCount;
         volatile int readCount;
         volatile UpdateBatch last;
         volatile Message lastMessage;
+        volatile Message lastEdit;
         volatile tg.api.ReadState lastRead;
 
         public synchronized void onBatch(UpdateBatch batch)
         {
             last = batch;
             messageCount += batch.messages.length;
+            editCount += batch.edits.length;
             readCount += batch.reads.length;
             if (batch.messages.length > 0)
             {
                 lastMessage = batch.messages[batch.messages.length - 1];
+            }
+            if (batch.edits.length > 0)
+            {
+                lastEdit = batch.edits[batch.edits.length - 1];
             }
             if (batch.reads.length > 0)
             {
@@ -299,6 +326,16 @@ public final class UpdateSyncTest implements Test
                 wait(50);
             }
             Assert.equal("message callback count", expected, messageCount);
+        }
+
+        synchronized void waitEdits(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (editCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(50);
+            }
+            Assert.equal("edit callback count", expected, editCount);
         }
     }
 
@@ -347,6 +384,32 @@ public final class UpdateSyncTest implements Test
         w.writeInt(maxId);
         w.writeInt(pts);
         w.writeInt(count);
+        return w.toByteArray();
+    }
+
+    private static byte[] editedUpdate(boolean channel, int id, long peerId,
+            String text, int editDate, int pts, int count)
+    {
+        TlWriter w = new TlWriter(160);
+        w.writeInt(Api.UPDATES);
+        w.writeVectorHeader(1);
+        w.writeInt(channel ? Api.UPDATE_EDIT_CHANNEL_MESSAGE
+                : Api.UPDATE_EDIT_MESSAGE);
+        w.writeInt(Api.MESSAGE);
+        w.writeInt((1 << 1) | (1 << 15));    // out, edit_date
+        w.writeInt(0);                       // flags2
+        w.writeInt(id);
+        w.writeInt(channel ? Api.PEER_CHANNEL : Api.PEER_USER);
+        w.writeLong(peerId);
+        w.writeInt(editDate - 1);             // date
+        w.writeString(text);
+        w.writeInt(editDate);
+        w.writeInt(pts);
+        w.writeInt(count);
+        w.writeVectorHeader(0);              // users
+        w.writeVectorHeader(0);              // chats
+        w.writeInt(editDate);                // updates date
+        w.writeInt(0);                       // seq
         return w.toByteArray();
     }
 

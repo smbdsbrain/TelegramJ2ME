@@ -54,7 +54,7 @@ public final class RmsConversationCache implements AccountStore
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
     private static final int DIALOG_VERSION = 1;
-    private static final int HISTORY_VERSION = 2;
+    private static final int HISTORY_VERSION = 3;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
     private static final int MAX_HISTORIES = 6;
@@ -352,6 +352,7 @@ public final class RmsConversationCache implements AccountStore
             w.writeString(text(entity == null ? "" : entity.value));
             w.writeLong(entity == null ? 0 : entity.userId);
         }
+        w.writeInt(m.editDate);
     }
 
     private static Message readMessage(TlReader r, int version)
@@ -415,6 +416,7 @@ public final class RmsConversationCache implements AccountStore
                 m.entities[i] = entity;
             }
         }
+        if (version >= 3) { m.editDate = r.readInt(); }
         return m;
     }
 

@@ -24,6 +24,7 @@ public final class Phase6Test implements Test
     {
         paginationWire();
         messageActionWire();
+        editEligibility();
         profileWireAndParsing();
         pagingAndFilter();
         repliesAndDates();
@@ -119,6 +120,30 @@ public final class Phase6Test implements Test
         Assert.equal("channel delete method", Api.CHANNELS_DELETE_MESSAGES,
                 channel.readInt());
         Assert.equal("input channel", Api.INPUT_CHANNEL, channel.readInt());
+
+        TlReader edit = new TlReader(Requests.editMessage(to, 91, "changed"));
+        Assert.equal("edit method", Api.MESSAGES_EDIT_MESSAGE, edit.readInt());
+        Assert.equal("edit flags", 1 << 11, edit.readInt());
+        Assert.equal("edit peer", Api.INPUT_PEER_CHANNEL, edit.readInt());
+        Assert.equal("edit channel", 33L, edit.readLong());
+        Assert.equal("edit hash", 44L, edit.readLong());
+        Assert.equal("edit message id", 91, edit.readInt());
+        Assert.equal("edit text", "changed", edit.readString());
+    }
+
+    private static void editEligibility()
+    {
+        Message message = message(4, "text");
+        message.outgoing = true;
+        Assert.isTrue("own server text is editable", message.canEditText());
+        message.outgoing = false;
+        Assert.isFalse("incoming is not editable", message.canEditText());
+        message.outgoing = true;
+        message.service = true;
+        Assert.isFalse("service is not editable", message.canEditText());
+        message.service = false;
+        message.id = 0;
+        Assert.isFalse("pending local is not editable", message.canEditText());
     }
 
     private static void profileWireAndParsing() throws Exception

@@ -47,6 +47,7 @@ public final class CacheIntegrityTest implements Test
         aCachedListCarriesWhenItWasWritten();
         oneDamagedConversationDoesNotHideTheOthers();
         versionOneHistoryMigratesOnRead();
+        versionTwoHistoryMigratesOnRead();
         aDamagedRecordIsRemovedRatherThanLeftToFailAgain();
         anotherAccountCacheIsNeverShown();
         theOtherEnvironmentCacheIsNeverShown();
@@ -134,6 +135,7 @@ public final class CacheIntegrityTest implements Test
             entity.offset = 0;
             entity.length = withEntity.text.length();
             withEntity.entities = new MessageEntity[] { entity };
+            withEntity.editDate = 1235;
             cache.saveHistory(ACCOUNT, false, peer(8),
                     new Message[] { withEntity });
 
@@ -149,6 +151,8 @@ public final class CacheIntegrityTest implements Test
                     eight.messages()[0].text);
             Assert.equal("entity survives cache round trip", 1,
                     eight.messages()[0].entities.length);
+            Assert.equal("edit date survives cache round trip", 1235,
+                    eight.messages()[0].editDate);
             Assert.equal("and the damaged one was dropped", 1,
                     reopened.droppedRecords());
         }
@@ -166,11 +170,11 @@ public final class CacheIntegrityTest implements Test
                     new Message[] { message(3, "old cache") });
             int id = rms.recordIds(HISTORY)[0];
             byte[] raw = rms.peek(HISTORY, id);
-            RecordEnvelope v2 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
-                    2, 2, ACCOUNT, false);
-            Assert.isTrue("fixture starts as v2", v2.isOk());
-            byte[] oldPayload = new byte[v2.payload.length - 4];
-            System.arraycopy(v2.payload, 0, oldPayload, 0,
+            RecordEnvelope v3 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
+                    3, 3, ACCOUNT, false);
+            Assert.isTrue("fixture starts as v3", v3.isOk());
+            byte[] oldPayload = new byte[v3.payload.length - 8];
+            System.arraycopy(v3.payload, 0, oldPayload, 0,
                     oldPayload.length);
             rms.poke(HISTORY, id, RecordEnvelope.wrap(HISTORY_MAGIC, 1,
                     ACCOUNT, false, oldPayload));
@@ -182,6 +186,45 @@ public final class CacheIntegrityTest implements Test
             Assert.equal("v1 text", "old cache", loaded.messages()[0].text);
             Assert.equal("v1 entities default empty", 0,
                     loaded.messages()[0].entities.length);
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    private static void versionTwoHistoryMigratesOnRead() throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            RmsConversationCache cache = new RmsConversationCache();
+            Message current = message(4, "v2@example.test");
+            MessageEntity entity = new MessageEntity();
+            entity.type = MessageEntity.EMAIL;
+            entity.offset = 0;
+            entity.length = current.text.length();
+            current.entities = new MessageEntity[] { entity };
+            current.editDate = 1235;
+            cache.saveHistory(ACCOUNT, false, peer(7),
+                    new Message[] { current });
+            int id = rms.recordIds(HISTORY)[0];
+            byte[] raw = rms.peek(HISTORY, id);
+            RecordEnvelope v3 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
+                    3, 3, ACCOUNT, false);
+            Assert.isTrue("v2 fixture starts as v3", v3.isOk());
+            byte[] v2Payload = new byte[v3.payload.length - 4];
+            System.arraycopy(v3.payload, 0, v2Payload, 0,
+                    v2Payload.length);
+            rms.poke(HISTORY, id, RecordEnvelope.wrap(HISTORY_MAGIC, 2,
+                    ACCOUNT, false, v2Payload));
+            rms.restart();
+
+            Cached loaded = new RmsConversationCache().loadHistory(
+                    ACCOUNT, false, peer(7));
+            Assert.isTrue("v2 history remains readable", loaded != null);
+            Assert.equal("v2 entity survives", 1,
+                    loaded.messages()[0].entities.length);
+            Assert.equal("v2 edit date defaults to zero", 0,
+                    loaded.messages()[0].editDate);
         }
         finally { EmulatorRecords.restore(); }
     }

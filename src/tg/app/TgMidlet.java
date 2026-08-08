@@ -190,6 +190,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdMyProfile = new Command("My profile", Command.SCREEN, 3);
     private final Command cmdProfile = new Command("Profile", Command.SCREEN, 3);
     private final Command cmdReply = new Command("Reply", Command.SCREEN, 1);
+    private final Command cmdEditMessage =
+            new Command("Edit", Command.SCREEN, 2);
     private final Command cmdViewFullText =
             new Command("View full text", Command.SCREEN, 2);
     private final Command cmdEntityActions =
@@ -285,6 +287,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private TextBox filterBox;
     private String dialogFilter = "";
     private ChatScreen chatScreen;
+    private ChatScreen editCommandScreen;
+    private boolean editCommandVisible;
     private TextBox composeBox;
     private List outboxList;
     private ReactionScreen reactionScreen;
@@ -1049,6 +1053,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdReply)
         {
             beginReply();
+        }
+        else if (c == cmdEditMessage && d == chatScreen)
+        {
+            beginEdit();
         }
         else if (c == cmdViewFullText && d == chatScreen)
         {
@@ -3460,7 +3468,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private ChatScreen createChatScreen(Peer peer)
     {
-        ChatScreen screen = new ChatScreen(currentTheme());
+        final ChatScreen screen = new ChatScreen(currentTheme());
         screen.setPeer(peer);
         screen.setMediaPreviews(appSettings.mediaPreviews);
         screen.addCommand(cmdWrite);
@@ -3500,11 +3508,40 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onChatViewportChanged()
             {
+                updateEditCommand(screen);
                 maybeLoadHistory();
                 scheduleVisibleThumbnails();
             }
         });
         return screen;
+    }
+
+    /** Keep Edit out of the menu unless the focused row can actually use it. */
+    private void updateEditCommand(ChatScreen screen)
+    {
+        if (screen == null) { return; }
+        if (editCommandScreen != screen)
+        {
+            editCommandScreen = screen;
+            editCommandVisible = false;
+            screen.removeCommand(cmdEditMessage);
+        }
+        Message selected = null;
+        int id = screen.focusedMessageId();
+        Message[] shown = screen.messages();
+        for (int i = 0; i < shown.length; i++)
+        {
+            if (shown[i] != null && shown[i].id == id)
+            {
+                selected = shown[i];
+                break;
+            }
+        }
+        boolean visible = selected != null && selected.canEditText();
+        if (visible == editCommandVisible) { return; }
+        if (visible) { screen.addCommand(cmdEditMessage); }
+        else { screen.removeCommand(cmdEditMessage); }
+        editCommandVisible = visible;
     }
 
     private void loadOpenHistory(final Peer peer)
@@ -4426,6 +4463,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             if (!mergeMessage(batch.messages[i])) { refresh = true; }
         }
+        for (int i = 0; i < batch.edits.length; i++)
+        {
+            applyEditedMessage(batch.edits[i]);
+        }
         for (int i = 0; i < batch.reads.length; i++)
         {
             if (!applyReadState(batch.reads[i])) { refresh = true; }
@@ -4531,6 +4572,59 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
         }
         mergeHistoryPage(new Message[] { message });
+    }
+
+    /** Replace an edited message without treating it as new chronology. */
+    private void applyEditedMessage(Message edited)
+    {
+        if (edited == null || edited.peer == null || edited.id <= 0) { return; }
+        int dialogAt = findDialog(edited.peer);
+        if (dialogAt >= 0)
+        {
+            edited.peer = dialogs[dialogAt].peer;
+            if (dialogs[dialogAt].topMessageId == edited.id)
+            {
+                dialogs[dialogAt].lastMessage = Dialog.clipPreview(
+                        edited.summaryText());
+                dialogs[dialogAt].lastMessageOutgoing = edited.outgoing;
+            }
+        }
+        if (samePeer(openPeer, edited.peer))
+        {
+            for (int i = 0; i < openHistory.length; i++)
+            {
+                if (openHistory[i] != null && openHistory[i].id == edited.id)
+                {
+                    openHistory[i] = edited;
+                    return;
+                }
+            }
+            return;
+        }
+
+        long accountId = cacheAccountId();
+        if (accountId == 0 || conversationCache == null) { return; }
+        try
+        {
+            Cached cached = conversationCache.loadHistory(
+                    accountId, Dc.isTest(), edited.peer);
+            if (cached == null) { return; }
+            Message[] messages = cached.messages();
+            for (int i = 0; i < messages.length; i++)
+            {
+                if (messages[i] != null && messages[i].id == edited.id)
+                {
+                    messages[i] = edited;
+                    conversationCache.saveHistory(accountId, Dc.isTest(),
+                            edited.peer, messages);
+                    return;
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            Diag.warn("edited message cache update failed: " + shortMessage(t));
+        }
     }
 
     private boolean applyReadState(ReadState read)
@@ -4876,9 +4970,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             composeBox.addCommand(cmdBack);
             composeBox.setCommandListener(this);
         }
-        String draft = "";
-        try { draft = draftStore.load(next.peer()); }
-        catch (Throwable t) { Diag.error("draft load failed", t); }
+        String draft = next.isEdit() ? next.originalText() : "";
+        if (!next.isEdit())
+        {
+            try { draft = draftStore.load(next.peer()); }
+            catch (Throwable t) { Diag.error("draft load failed", t); }
+        }
         // Published before the screen goes up, so the autosave thread cannot
         // see the box current with the previous session still installed.
         composer = next;
@@ -4915,7 +5012,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void leaveComposer()
     {
-        saveDraftNow();
+        if (composer == null || !composer.isEdit()) { saveDraftNow(); }
         closeComposer();
     }
 
@@ -5127,6 +5224,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // whole message would keep a body alive past the history window that
         // evicted it.
         openComposer(ComposerState.reply(openPeer, message.id));
+    }
+
+    private void beginEdit()
+    {
+        Message message = selectedOpenMessage();
+        if (message == null || !message.canEditText())
+        {
+            showAlert("Only your sent text messages can be edited.",
+                    AlertType.INFO, chatScreen);
+            return;
+        }
+        openComposer(ComposerState.edit(openPeer, message.id, message.text));
     }
 
     private void beginForward()
@@ -6265,6 +6374,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final String text = composeBox.getString();
         if (text.trim().length() == 0)
         {
+            if (session.isEdit())
+            {
+                showAlert("An edited message cannot be empty.",
+                        AlertType.WARNING, composeBox);
+                return;
+            }
             // Send on an empty box is how a lot of people close a screen. It
             // has to mean exactly what Back means, cleanup included; it used to
             // be the one exit that left reply mode armed.
@@ -6282,9 +6397,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             leaveComposer();
             popComposer();
             showAlertThen("Chat changed",
-                    "That message was written for another chat, so it was not"
+                    session.isEdit()
+                    ? "That edit belonged to another chat, so it was not sent."
+                    : "That message was written for another chat, so it was not"
                     + " sent. It was kept as a draft there.",
                     display.getCurrent());
+            return;
+        }
+
+        if (session.isEdit())
+        {
+            sendEdited(session, text);
             return;
         }
 
@@ -6361,6 +6484,59 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // there to press Send on again.
             showRefused("Not queued",
                     "Your message is still here - try Send again.", composeBox);
+        }
+    }
+
+    private void sendEdited(final ComposerState session, final String text)
+    {
+        if (text.equals(session.originalText()))
+        {
+            closeComposer();
+            popComposer();
+            return;
+        }
+        final Peer peer = session.peer();
+        final AsyncScope.Token asked = scope.capture(peer);
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.editMessage"; }
+            public Object run() throws Exception
+            {
+                telegram.editMessage(peer, session.editMessageId(), text);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (composer != session)
+                {
+                    dropStale("messages.editMessage");
+                    return;
+                }
+                closeComposer();
+                popComposer();
+                if (asked.sameChat(openPeer) && chatScreen != null)
+                {
+                    chatScreen.setStatus("edit accepted / " + connectionLabel);
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (composer != session || composeBox == null
+                        || !asked.sameSession())
+                {
+                    dropStale("messages.editMessage");
+                    return;
+                }
+                showAlertThen("Could not edit message", error, composeBox);
+            }
+        });
+        if (!submitted)
+        {
+            showRefused("Not edited",
+                    "Your text is still here - try Send again.", composeBox);
         }
     }
 
@@ -6535,7 +6711,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void saveDraftNow()
     {
         final ComposerState session = composer;
-        if (draftStore == null || composeBox == null || session == null) { return; }
+        if (draftStore == null || composeBox == null || session == null
+                || session.isEdit()) { return; }
         try
         {
             String text = composeBox.getString();

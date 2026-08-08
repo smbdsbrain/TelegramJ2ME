@@ -1609,6 +1609,27 @@ public final class Telegram
         sendMessage(peer, text, rng.nextLong(), 0);
     }
 
+    /** Edit one server-side text message and feed its Updates through sync. */
+    public void editMessage(Peer peer, int messageId, String text)
+            throws IOException
+    {
+        if (peer == null || !peers.isAddressable(peer))
+        {
+            throw new IOException("edit peer is not addressable");
+        }
+        if (messageId <= 0) { throw new IOException("message is not sent yet"); }
+        if (text == null || text.trim().length() == 0)
+        {
+            throw new IOException("edited message is empty");
+        }
+        if (text.length() > 1000)
+        {
+            throw new IOException("edited message exceeds 1000 characters");
+        }
+        byte[] result = invoke(Requests.editMessage(peer, messageId, text));
+        updates.accept(result);
+    }
+
     private void sendMessage(Peer peer, String text, long randomId,
                              int replyToMessageId) throws IOException
     {

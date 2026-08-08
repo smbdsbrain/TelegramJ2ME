@@ -419,6 +419,12 @@ public class ChatScreen extends Canvas
                         }
                     }
                 }
+                if (m.editDate > 0)
+                {
+                    count = wrap("edited", width, pass, count, m.outgoing,
+                            m.id, 195);
+                    if (pass == 1) { meta[count - 1] = true; }
+                }
                 count = wrap(m.text, width, pass, count, m.outgoing, m.id,
                         200);
                 if (m.media != null)
