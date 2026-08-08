@@ -1,0 +1,10 @@
+{
+  "constructors": [
+    {"id": "-1132882121", "predicate": "boolFalse", "params": [], "type": "Bool"},
+    {"id": "-1720552011", "predicate": "boolTrue", "params": [], "type": "Bool"},
+    {"id": "1815593308", "predicate": "somethingNew", "params": [], "type": "Whatever"}
+  ],
+  "methods": [
+    {"id": "-1889761174", "method": "messages.getDialogs", "params": [], "type": "messages.Dialogs"}
+  ]
+}

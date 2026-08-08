@@ -1,0 +1,12 @@
+{
+  "layer": 223,
+  "constants": {
+    "PhotoSize.type values": {
+      "description": "Trimmed. The monitor reads nothing here but `layer`.",
+      "type": "map",
+      "entries": {
+        "s": "Server-side resized image, bounded by 100x100 pixels."
+      }
+    }
+  }
+}

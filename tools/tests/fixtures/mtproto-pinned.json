@@ -1,0 +1,8 @@
+{
+  "constructors": [
+    {"id": "85337187", "predicate": "resPQ", "params": [], "type": "ResPQ"}
+  ],
+  "methods": [
+    {"id": "-1099002127", "method": "req_pq_multi", "params": [], "type": "ResPQ"}
+  ]
+}

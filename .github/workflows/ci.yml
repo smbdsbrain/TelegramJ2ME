@@ -52,6 +52,13 @@ jobs:
         with:
           python-version: '3.x'
 
+      # Only tools/tests needs this, to parse the workflow files it asserts
+      # about - a workflow that fails to parse never runs, and GitHub reports
+      # that somewhere nobody is looking. Nothing in src/ or the build depends
+      # on it; without it those few tests skip.
+      - name: PyYAML for the tooling tests
+        run: python -m pip install --quiet "pyyaml>=6,<7"
+
       # MicroEmulator's J2SEFontManager builds AWT font metrics as soon as the
       # device is installed, so the headless smoke test still needs a font.
       - name: Fonts for the headless emulator

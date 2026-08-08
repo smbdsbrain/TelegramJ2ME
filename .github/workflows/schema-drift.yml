@@ -1,0 +1,147 @@
+name: Schema drift
+
+# Ask Telegram whether the pinned layer and schema are still current.
+#
+# Deliberately not part of CI. schema/api.json, schema/mtproto.json and
+# Layer.LAYER are pinned so that a clone builds the same JAR today and in two
+# years; a build step that downloaded the *current* schema would break every
+# clone the day the layer changes. So the network lives here instead: on a
+# schedule, on demand, and nowhere near a pull request.
+#
+# This workflow never edits schema/ or Layer.java. Raising the layer changes
+# constructor ids of types already parsed, which on a handset with no debugger
+# surfaces as a client that quietly misreads responses - it is a reviewed
+# commit with a regeneration, a size measurement and live testing, or it does
+# not happen.
+
+on:
+  # Mondays, early UTC. Weekly is enough: drift is measured in months and the
+  # cost of learning about it a few days late is a paragraph in UPSTREAM.md.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      open_issue:
+        description: 'Open or update the drift issue (scheduled runs always do)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schema-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write        # one deduplicated drift issue, nothing else
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # The script's exit code is the status, so a non-zero here is data, not a
+      # failure - the decision about what deserves a red run is made below.
+      - name: Compare the pinned schema with the official endpoints
+        id: check
+        shell: bash
+        run: |
+          set +e
+          python tools/check-schema-drift.py \
+            --online \
+            --json drift.json \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --issue-body issue-body.md
+          code=$?
+          set -e
+          status=$(python -c "import json; print(json.load(open('drift.json'))['status'])")
+          echo "code=$code"     >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "check-schema-drift exited $code ($status)"
+
+      # Exactly one open issue, ever. Deduplication is by label, which the API
+      # filters server-side: a title scan would depend on how many other issues
+      # happen to be open, and the search index is eventually consistent.
+      - name: Open or update the drift issue
+        if: >-
+          steps.check.outputs.status == 'drift' &&
+          (github.event_name == 'schedule' || inputs.open_issue)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: 'Schema drift: Telegram has moved past the pinned layer/schema'
+        run: |
+          gh label create schema-drift \
+            --color 'fbca04' \
+            --description 'Opened automatically when the pinned TL layer/schema falls behind' \
+            2>/dev/null || true
+
+          existing=$(gh issue list --state open --label schema-drift \
+                       --json number --jq '[.[].number] | first // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$TITLE" --body-file issue-body.md
+            echo "updated #$existing"
+          else
+            url=$(gh issue create --title "$TITLE" --label schema-drift \
+                    --body-file issue-body.md)
+            echo "opened $url"
+          fi
+
+      # Drift that has been fixed should not leave a stale issue behind, and
+      # "unavailable" must never close one - not being able to ask is not an
+      # answer.
+      - name: Close the drift issue once the pin is current again
+        if: >-
+          steps.check.outputs.status == 'ok' &&
+          (github.event_name == 'schedule' || inputs.open_issue)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list --state open --label schema-drift \
+                       --json number --jq '[.[].number] | first // empty' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment 'The pinned layer and both schema files match the official endpoints again.'
+            echo "closed #$existing"
+          else
+            echo "nothing to close"
+          fi
+
+      - name: Decide what deserves a failure
+        shell: bash
+        run: |
+          case "${{ steps.check.outputs.status }}" in
+            ok)
+              echo "pinned schema is current" ;;
+            drift)
+              # The issue is the signal. A red scheduled run every week on top
+              # of it is noise that trains people to ignore both.
+              echo "::notice::Schema drift detected - see the job summary and the tracking issue." ;;
+            unavailable)
+              echo "::warning::Could not reach core.telegram.org. This is not drift; the pin is unchecked this week." ;;
+            malformed)
+              echo "::error::core.telegram.org answered with something unreadable - the monitor may need fixing."
+              exit 1 ;;
+            pinned-mismatch)
+              echo "::error::This repository disagrees with itself about what is pinned."
+              exit 1 ;;
+            *)
+              echo "::error::unknown status"
+              exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-report
+          path: drift.json
+          if-no-files-found: warn

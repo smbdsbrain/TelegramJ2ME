@@ -1,0 +1,12 @@
+{
+  "layer": 225,
+  "constants": {
+    "PhotoSize.type values": {
+      "description": "Trimmed. This is the shape core.telegram.org actually served on 2026-08-08, when the pinned layer was 223.",
+      "type": "map",
+      "entries": {
+        "s": "Server-side resized image, bounded by 100x100 pixels."
+      }
+    }
+  }
+}

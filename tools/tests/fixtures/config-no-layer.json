@@ -1,0 +1,9 @@
+{
+  "constants": {
+    "PhotoSize.type values": {
+      "description": "Valid JSON, right endpoint, no layer. Reporting 0 here would be worse than reporting nothing.",
+      "type": "map",
+      "entries": {}
+    }
+  }
+}
