@@ -310,7 +310,8 @@ CLDC has no `java.util.concurrent`. The rules are:
 
 * `lcdui` callbacks (`commandAction`, `paint`) must not block. Anything that can
   take more than a few milliseconds - a connect, the heap probe, the modPow
-  benchmark - runs on its own `Thread` and writes results back into the screen.
+  benchmark - runs on its own `Thread` and posts its result back to the display
+  thread through `UiDispatcher`; see *One thread owns the screen* below.
 * `Diag` is fully synchronized; the network thread and the UI thread both log.
 * `MtClient` has one writer/maintenance loop and one reader. The writer is the
   sole owner of message encryption, `seq_no` allocation and outbound framing;
@@ -350,6 +351,60 @@ foreground action restores its screen and says what did not happen.
 between the refusal and the message — and `TgMidlet.showRefused` supplies only
 the wording and the landing, never the undo. `SourceGuardTest` fails the build if
 a new call site ignores the answer.
+
+### One thread owns the screen
+
+The rule, in full:
+
+> Application model, navigation stack and `lcdui` mutations happen on the display
+> thread, and so do ordinary `Worker.submit` calls. Blocking I/O does not. A
+> producer on any other thread posts through `UiDispatcher` first.
+
+`lcdui` is documented as thread safe for mutating a `Displayable`, and that is
+true and beside the point. Safety per method call says nothing about a
+*transition*: "replace the dialog array, rebuild the list, then swap the screen"
+is three calls, and a second transition landing between any two of them leaves
+the client showing one account's dialogs under another account's title. What
+removes that is a single owning thread, not a lock per widget.
+
+`UiDispatcher` is one method, `post`. `DisplayDispatcher` implements it with
+`Display.callSerially` and is the only file in `src/` allowed to name that call —
+`SourceGuardTest` enforces it. The desktop suite substitutes `TestDispatcher`,
+a queue it drains by hand, which is the only way to assert an ordering that on a
+device is decided by the AMS.
+
+`Worker` delivers both callbacks through the dispatcher, so a callback may touch
+navigation and `lcdui` directly. It stays busy while the result is queued and
+releases itself on the display thread one statement before the callback body.
+That ordering is the fix for a real gap: the old code released on the worker
+thread *before* the transition, so between the release and the transition being
+applied a keypress could be admitted and act on state the previous result had
+not written yet. A callback can still chain the next task — connect submits
+`getDialogs`, sign-in does the same, a chat open submits its history fetch from
+inside the callback before it — but nothing else can get in, because everything
+else would have to arrive on the thread that is currently inside the callback.
+
+If dispatching itself throws, the worker is released and the result is lost.
+That is the deliberate trade: a page the user can ask for again, rather than a
+worker that refuses every action for the rest of the session.
+
+### Which of them may overlap
+
+"One operation at a time" is true of a `Worker`, not of the client. Four threads
+can be doing Telegram work at once, and that is by design:
+
+| Owner | Thread | May overlap with | Why |
+|---|---|---|---|
+| `TgMidlet.worker` | one per task | everything below | The foreground operation. Serial with itself, which is what the refusal contract is about. |
+| `TgMidlet.avatarWorker` | one per task | `worker` | A second `Worker` on purpose: a decorative avatar must never refuse a chat open, and the two multiplex over the same connection. It is also the reason an avatar callback re-reads the account id — a logout can land during its download. |
+| `ReadQueue` drain | one, long-lived | `worker` | Read acknowledgements are fire-and-forget and must not consume the foreground worker; a queued one waits its turn rather than being overwritten. |
+| `UpdateSync` | one serial worker | `worker` | The `MtClient` reader only enqueues unsolicited bodies. Parsing, difference RPCs and state persistence cannot run on that reader, because it is what delivers their `rpc_result`. |
+| Thumbnail decoder | one at a time, latched | `worker` | Decoding is CPU, not network. Guarded by a generation counter so results for a chat the reader has left are dropped. |
+| Heap probe, draft autosave, snapshot-refresh wait | one each | — | None of them talks to Telegram. The snapshot wait polls `worker.isBusy()` and then posts its submission to the display thread rather than submitting from where it waited. |
+
+A fifth worker is not admissible without adding a row here first. The refusal
+contract above only means something against a written-down list of what is
+allowed to be in flight beside it.
 
 ## Durable user state
 

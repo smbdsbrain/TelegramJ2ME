@@ -45,6 +45,16 @@ import java.util.List;
  * noticed is the code that was not written. What each caller has to undo differs
  * too much to check mechanically; what can be checked is that the answer is
  * given a name, which is the line the recovery has to hang off.
+ *
+ * The fifth rule keeps one thread owning the screen. Everything that mutates the
+ * model, the navigation stack or an lcdui object runs on the display thread, and
+ * a producer that is on another one posts through {@code UiDispatcher}. Nineteen
+ * scattered {@code callSerially} calls made that rule unreadable - some Worker
+ * callbacks wrapped their body and some did not, and the ones that did wrapped
+ * work that was already on the display thread, deferring it into a later turn
+ * where a keypress could arrive first. So the call now lives in exactly one
+ * file, and "which thread is this on" has one answer per call site instead of
+ * one per reader.
  */
 public final class SourceGuardTest implements Test
 {
@@ -72,6 +82,10 @@ public final class SourceGuardTest implements Test
             "AuthKey.fromHandshake(",
             "src/tg/mt/AuthKey.java",           // the declaration itself
             "src/tg/mt/Handshake.java"          // crossed the barrier, may say so
+        },
+        {
+            "callSerially(",
+            "src/tg/app/DisplayDispatcher.java" // the one implementation
         }
     };
 

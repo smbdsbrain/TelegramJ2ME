@@ -171,8 +171,18 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdEditProfile = new Command("Edit profile", Command.SCREEN, 1);
     private final Command cmdSaveProfile = new Command("Save", Command.SCREEN, 1);
 
-    private final Worker worker = new Worker();
-    private final Worker avatarWorker = new Worker();
+    /*
+     * Not built here either: both deliver their callbacks through the display,
+     * and a MIDlet has no Display until startApp(). See ui below.
+     */
+    private Worker worker;
+    private Worker avatarWorker;
+    /**
+     * The display thread, as something that can be handed to a background
+     * producer. Everything that mutates the model, the navigation stack or an
+     * lcdui object goes through here or is already on it.
+     */
+    private UiDispatcher ui;
     /*
      * Not final, and not built here. Both size their arrays from
      * MemoryBudget, and instance field initialisers run in the constructor -
@@ -414,8 +424,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      *
      * {@code heapMeasured} is written by the probe thread and read by the UI
      * thread, hence volatile. {@code heapProbeRunning} is only ever touched on
-     * the UI thread - set before the probe starts, cleared in the callSerially
-     * that follows it.
+     * the UI thread - set before the probe starts, cleared in the dispatched
+     * runnable that follows it.
      */
     private volatile boolean heapMeasured;
     private boolean heapProbeRunning;
@@ -457,6 +467,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;                            // returning from pause
         }
         display = Display.getDisplay(this);
+        ui = new DisplayDispatcher(display);
+        worker = new Worker(ui);
+        avatarWorker = new Worker(ui);
 
         Diag.info("client " + BuildInfo.VERSION + " build " + BuildInfo.BUILD
                   + " env " + BuildInfo.ENV);
@@ -501,12 +514,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         telegram.accountWipe().add("drafts", draftStore);
         telegram.accountWipe().add("avatars", avatarDiskCache);
         telegram.accountWipe().add("chat cache", conversationCache);
+        // The three producers that are on none of this client's own threads:
+        // the reconnect loop, the outbox drain and the update queue each raise
+        // these from wherever they happen to be. Posted, not applied, for the
+        // reason UiDispatcher exists - each one is a multi-step transition.
         telegram.setConnectionListener(new Telegram.ConnectionListener()
         {
             public void onConnectionState(final int state, final int retrySeconds,
                                           final String detail)
             {
-                display.callSerially(new Runnable()
+                ui.post(new Runnable()
                 {
                     public void run()
                     {
@@ -519,7 +536,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onOutboxChanged()
             {
-                display.callSerially(new Runnable()
+                ui.post(new Runnable()
                 {
                     public void run() { updateOutboxUi(); }
                 });
@@ -529,7 +546,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onUpdates(final UpdateBatch batch)
             {
-                display.callSerially(new Runnable()
+                ui.post(new Runnable()
                 {
                     public void run() { applyUpdateBatch(batch); }
                 });
@@ -566,7 +583,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 final boolean changed = HeapMeasurement.measure(store);
                 heapMeasured = true;
-                display.callSerially(new Runnable()
+                ui.post(new Runnable()
                 {
                     public void run() { finishHeapProbe(changed); }
                 });
@@ -1960,30 +1977,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 public void onSuccess(final Object result)
                 {
-                    display.callSerially(new Runnable()
+                    AvatarLoad loaded = (AvatarLoad) result;
+                    if (generation == avatarGeneration
+                            && loaded.peer.avatar != null
+                            && loaded.peer.avatar.photoId == loaded.photoId)
                     {
-                        public void run()
+                        avatarCache.put(loaded.peer, loaded.image);
+                        if (dialogList != null)
                         {
-                            AvatarLoad loaded = (AvatarLoad) result;
-                            if (generation == avatarGeneration
-                                    && loaded.peer.avatar != null
-                                    && loaded.peer.avatar.photoId
-                                            == loaded.photoId)
-                            {
-                                avatarCache.put(loaded.peer, loaded.image);
-                                if (dialogList != null)
-                                {
-                                    dialogList.avatarsChanged();
-                                }
-                                loadVisibleAvatars();
-                            }
-                            else
-                            {
-                                try { avatarDiskCache.clear(); }
-                                catch (Throwable ignored) { }
-                            }
+                            dialogList.avatarsChanged();
                         }
-                    });
+                        loadVisibleAvatars();
+                    }
+                    else
+                    {
+                        try { avatarDiskCache.clear(); }
+                        catch (Throwable ignored) { }
+                    }
                 }
 
                 public void onFailure(final Throwable error)
@@ -2023,35 +2033,28 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     final boolean noRoom = error instanceof NoRoom
                             || error instanceof OutOfMemoryError;
 
-                    display.callSerially(new Runnable()
+                    if (generation == avatarGeneration)
                     {
-                        public void run()
+                        avatarCache.fail(peer);
+                        if (dialogList != null)
                         {
-                            if (generation == avatarGeneration)
-                            {
-                                avatarCache.fail(peer);
-                                if (dialogList != null)
-                                {
-                                    dialogList.avatarsChanged();
-                                }
-                                Diag.warn("avatar " + peer.key() + ": "
-                                        + shortMessage(error));
-                                if (avatarsUnavailable)
-                                {
-                                    Diag.warn("avatars disabled for this session:"
-                                            + " this handset refused a second"
-                                            + " connection");
-                                }
-                                // Chained on every other failure, because the
-                                // next row may well succeed. Not on a memory
-                                // refusal: that would walk the whole visible
-                                // list refusing one row at a time. The next
-                                // scroll asks again, by which time the collect
-                                // this already ran may have changed the answer.
-                                if (!noRoom) { loadVisibleAvatars(); }
-                            }
+                            dialogList.avatarsChanged();
                         }
-                    });
+                        Diag.warn("avatar " + peer.key() + ": "
+                                + shortMessage(error));
+                        if (avatarsUnavailable)
+                        {
+                            Diag.warn("avatars disabled for this session:"
+                                    + " this handset refused a second"
+                                    + " connection");
+                        }
+                        // Chained on every other failure, because the next row
+                        // may well succeed. Not on a memory refusal: that would
+                        // walk the whole visible list refusing one row at a
+                        // time. The next scroll asks again, by which time the
+                        // collect this already ran may have changed the answer.
+                        if (!noRoom) { loadVisibleAvatars(); }
+                    }
                 }
             });
             if (!submitted) { avatarCache.fail(peer); }
@@ -2394,44 +2397,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                display.callSerially(new Runnable()
+                dialogPageInFlight = false;
+                if (!canRestoreDialogs()) { return; }
+                DialogPage page = (DialogPage) result;
+                if (page.size() == 0)
                 {
-                    public void run()
-                    {
-                        dialogPageInFlight = false;
-                        if (!canRestoreDialogs()) { return; }
-                        DialogPage page = (DialogPage) result;
-                        if (page.size() == 0)
-                        {
-                            // The run is gone from the server's list. Drop the
-                            // restore point rather than asking for it again on
-                            // every keypress.
-                            dialogAboveDepth--;
-                            dialogAbove = from;
-                            return;
-                        }
-                        dialogAboveDepth--;
-                        if (page.total > dialogTotal) { dialogTotal = page.total; }
-                        prependDialogPage(page.dialogs, from);
-                        showDialogList(selected);
-                    }
-                });
+                    // The run is gone from the server's list. Drop the restore
+                    // point rather than asking for it again on every keypress.
+                    dialogAboveDepth--;
+                    dialogAbove = from;
+                    return;
+                }
+                dialogAboveDepth--;
+                if (page.total > dialogTotal) { dialogTotal = page.total; }
+                prependDialogPage(page.dialogs, from);
+                showDialogList(selected);
             }
             public void onFailure(final Throwable error)
             {
-                display.callSerially(new Runnable()
+                dialogPageInFlight = false;
+                if (dialogList != null)
                 {
-                    public void run()
-                    {
-                        dialogPageInFlight = false;
-                        if (dialogList != null)
-                        {
-                            dialogList.setStatus(connectionLabel, updateLabel);
-                        }
-                        Diag.warn("dialog page back failed: "
-                                + shortMessage(error));
-                    }
-                });
+                    dialogList.setStatus(connectionLabel, updateLabel);
+                }
+                Diag.warn("dialog page back failed: " + shortMessage(error));
             }
         });
         if (!submitted)
@@ -2500,68 +2489,48 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                // callSerially for the reason the older-history page needs it:
-                // `dialogs` is also read-modify-written by the update queue on
-                // the UI thread, and two threads doing that to the same array
-                // reference is how a promoted chat disappears.
-                display.callSerially(new Runnable()
+                dialogPageInFlight = false;
+                DialogPage page = (DialogPage) result;
+                // Whether the page carried anything the window did not already
+                // hold. Deliberately not "did the window grow": the window is a
+                // fixed size, so once it is full its length stops moving while
+                // its contents keep sliding down - and reading that as "no more
+                // chats" would stop the list dead at exactly the point this
+                // change exists to get past.
+                int fresh = countNewDialogs(page.dialogs);
+                if (page.total > dialogTotal) { dialogTotal = page.total; }
+                appendDialogPage(page.dialogs);
+                cacheDialogs(dialogs);
+                showDialogList(selected);
+                // Latched rather than retried: without this the viewport sits
+                // against the end of a fully loaded list and asks for the same
+                // empty page on every keypress.
+                if (fresh == 0 || page.complete
+                        || (dialogTotal > 0
+                            && dialogsAbove + dialogs.length >= dialogTotal))
                 {
-                    public void run()
+                    dialogsExhausted = true;
+                    if (manual && fresh == 0)
                     {
-                        dialogPageInFlight = false;
-                        DialogPage page = (DialogPage) result;
-                        // Whether the page carried anything the window did not
-                        // already hold. Deliberately not "did the window grow":
-                        // the window is a fixed size, so once it is full its
-                        // length stops moving while its contents keep sliding
-                        // down - and reading that as "no more chats" would stop
-                        // the list dead at exactly the point this change
-                        // exists to get past.
-                        int fresh = countNewDialogs(page.dialogs);
-                        if (page.total > dialogTotal) { dialogTotal = page.total; }
-                        appendDialogPage(page.dialogs);
-                        cacheDialogs(dialogs);
-                        showDialogList(selected);
-                        // Latched rather than retried: without this the
-                        // viewport sits against the end of a fully loaded list
-                        // and asks for the same empty page on every keypress.
-                        if (fresh == 0 || page.complete
-                                || (dialogTotal > 0
-                                    && dialogsAbove + dialogs.length >= dialogTotal))
-                        {
-                            dialogsExhausted = true;
-                            if (manual && fresh == 0)
-                            {
-                                showAlert("No more chats.", AlertType.INFO,
-                                        dialogList);
-                            }
-                        }
+                        showAlert("No more chats.", AlertType.INFO, dialogList);
                     }
-                });
+                }
             }
             public void onFailure(final Throwable error)
             {
-                display.callSerially(new Runnable()
+                dialogPageInFlight = false;
+                if (dialogList != null)
                 {
-                    public void run()
-                    {
-                        dialogPageInFlight = false;
-                        if (dialogList != null)
-                        {
-                            dialogList.setStatus(connectionLabel, updateLabel);
-                        }
-                        if (manual)
-                        {
-                            showAlertThen("Could not load more chats", error,
-                                    dialogList);
-                        }
-                        else
-                        {
-                            Diag.warn("dialog page failed: "
-                                    + shortMessage(error));
-                        }
-                    }
-                });
+                    dialogList.setStatus(connectionLabel, updateLabel);
+                }
+                if (manual)
+                {
+                    showAlertThen("Could not load more chats", error, dialogList);
+                }
+                else
+                {
+                    Diag.warn("dialog page failed: " + shortMessage(error));
+                }
             }
         });
         if (!submitted)
@@ -2813,35 +2782,25 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                // callSerially, not straight in: openHistory is also written by
-                // the update queue, which arrives on the UI thread. Two threads
-                // doing read-modify-write on the same array reference is how a
-                // message that lands mid-fetch disappears.
-                display.callSerially(new Runnable()
+                if (!samePeer(openPeer, peer)) { return; }
+                try
                 {
-                    public void run()
-                    {
-                        if (!samePeer(openPeer, peer)) { return; }
-                        try
-                        {
-                            setOpenHistory((Message[]) result);
-                            cacheHistory(peer, openHistory);
-                            applyKnownReadState(openHistory, peer);
-                            // setMessages word-wraps the window and is where the
-                            // heap peaks; the guard is here rather than around
-                            // the fetch for that reason.
-                            chatScreen.setMessages(openHistory);
-                            scheduleInlineThumbnails(peer);
-                            appendPendingForOpenPeer();
-                            chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                            markRead();
-                        }
-                        catch (Throwable t)
-                        {
-                            openChatFailed(t);
-                        }
-                    }
-                });
+                    setOpenHistory((Message[]) result);
+                    cacheHistory(peer, openHistory);
+                    applyKnownReadState(openHistory, peer);
+                    // setMessages word-wraps the window and is where the heap
+                    // peaks; the guard is here rather than around the fetch for
+                    // that reason.
+                    chatScreen.setMessages(openHistory);
+                    scheduleInlineThumbnails(peer);
+                    appendPendingForOpenPeer();
+                    chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                    markRead();
+                }
+                catch (Throwable t)
+                {
+                    openChatFailed(t);
+                }
             }
 
             public void onFailure(Throwable error)
@@ -2958,66 +2917,52 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                display.callSerially(new Runnable()
+                historyPageInFlight = false;
+                if (!samePeer(openPeer, peer)) { return; }
+                Message[] page = (Message[]) result;
+                // Whether the page itself carried anything older than what was
+                // held. Deliberately not "did the retained array change": the
+                // retention window is a fixed size, so once it is full its
+                // length stops moving while its contents keep sliding backwards
+                // - and reading that as "no older messages" stopped paging five
+                // pages into a channel that had thousands. Deliberately not
+                // "did the retained oldest move" either, because a page fetched
+                // while the viewport is elsewhere can be windowed straight back
+                // out again without being news.
+                boolean older = carriesOlderThan(page, oldestOpenId());
+                mergeHistoryPage(page);
+                cacheHistory(peer, openHistory);
+                applyKnownReadState(openHistory, peer);
+                chatScreen.setMessages(openHistory);
+                scheduleInlineThumbnails(peer);
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                if (!older)
                 {
-                    public void run()
+                    // Latched rather than retried: without this the viewport
+                    // sits against the top of a fully loaded conversation and
+                    // asks for the same empty page on every keypress.
+                    historyExhausted = true;
+                    if (manual)
                     {
-                        historyPageInFlight = false;
-                        if (!samePeer(openPeer, peer)) { return; }
-                        Message[] page = (Message[]) result;
-                        // Whether the page itself carried anything older than
-                        // what was held. Deliberately not "did the retained
-                        // array change": the retention window is a fixed size,
-                        // so once it is full its length stops moving while its
-                        // contents keep sliding backwards - and reading that as
-                        // "no older messages" stopped paging five pages into a
-                        // channel that had thousands. Deliberately not "did the
-                        // retained oldest move" either, because a page fetched
-                        // while the viewport is elsewhere can be windowed
-                        // straight back out again without being news.
-                        boolean older = carriesOlderThan(page, oldestOpenId());
-                        mergeHistoryPage(page);
-                        cacheHistory(peer, openHistory);
-                        applyKnownReadState(openHistory, peer);
-                        chatScreen.setMessages(openHistory);
-                        scheduleInlineThumbnails(peer);
-                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                        if (!older)
-                        {
-                            // Latched rather than retried: without this the
-                            // viewport sits against the top of a fully loaded
-                            // conversation and asks for the same empty page on
-                            // every keypress.
-                            historyExhausted = true;
-                            if (manual)
-                            {
-                                showAlert("No older messages.", AlertType.INFO,
-                                        chatScreen);
-                            }
-                        }
+                        showAlert("No older messages.", AlertType.INFO,
+                                chatScreen);
                     }
-                });
+                }
             }
             public void onFailure(final Throwable error)
             {
-                display.callSerially(new Runnable()
+                historyPageInFlight = false;
+                if (!samePeer(openPeer, peer)) { return; }
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                if (manual)
                 {
-                    public void run()
-                    {
-                        historyPageInFlight = false;
-                        if (!samePeer(openPeer, peer)) { return; }
-                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                        if (manual)
-                        {
-                            showAlertThen("Could not load older messages", error,
-                                    chatScreen);
-                        }
-                        else
-                        {
-                            Diag.warn("older page failed: " + shortMessage(error));
-                        }
-                    }
-                });
+                    showAlertThen("Could not load older messages", error,
+                            chatScreen);
+                }
+                else
+                {
+                    Diag.warn("older page failed: " + shortMessage(error));
+                }
             }
         });
         if (!submitted)
@@ -3134,39 +3079,27 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(final Object result)
             {
-                display.callSerially(new Runnable()
-                {
-                    public void run()
-                    {
-                        historyPageInFlight = false;
-                        if (!samePeer(openPeer, peer)) { return; }
-                        Message[] page = (Message[]) result;
-                        int before = newestOpenId();
-                        mergeHistoryPage(page);
-                        cacheHistory(peer, openHistory);
-                        applyKnownReadState(openHistory, peer);
-                        chatScreen.setMessages(openHistory);
-                        scheduleInlineThumbnails(peer);
-                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                        // Nothing newer came back: the mark is ahead of what
-                        // the server will hand over, and asking again on every
-                        // keypress would be a request per scroll step.
-                        historyForwardStalled = newestOpenId() <= before;
-                    }
-                });
+                historyPageInFlight = false;
+                if (!samePeer(openPeer, peer)) { return; }
+                Message[] page = (Message[]) result;
+                int before = newestOpenId();
+                mergeHistoryPage(page);
+                cacheHistory(peer, openHistory);
+                applyKnownReadState(openHistory, peer);
+                chatScreen.setMessages(openHistory);
+                scheduleInlineThumbnails(peer);
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                // Nothing newer came back: the mark is ahead of what the server
+                // will hand over, and asking again on every keypress would be a
+                // request per scroll step.
+                historyForwardStalled = newestOpenId() <= before;
             }
             public void onFailure(final Throwable error)
             {
-                display.callSerially(new Runnable()
-                {
-                    public void run()
-                    {
-                        historyPageInFlight = false;
-                        if (!samePeer(openPeer, peer)) { return; }
-                        chatScreen.setStatus(connectionLabel + "/" + updateLabel);
-                        Diag.warn("newer page failed: " + shortMessage(error));
-                    }
-                });
+                historyPageInFlight = false;
+                if (!samePeer(openPeer, peer)) { return; }
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                Diag.warn("newer page failed: " + shortMessage(error));
             }
         });
         if (!submitted)
@@ -3323,7 +3256,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                         final Image thumbnail = ImageScaler.fitBox(image,
                                 chatScreen.thumbnailWidth(),
                                 chatScreen.thumbnailHeight());
-                        display.callSerially(new Runnable()
+                        ui.post(new Runnable()
                         {
                             public void run()
                             {
@@ -3658,6 +3591,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (snapshotRefreshScheduled) { return; }
         snapshotRefreshScheduled = true;
+        // The wait is a poll with sleeps, so it has to be off the display
+        // thread. The submission does not follow it there: submitting is
+        // display-thread-owned, so that a refusal - an ordinary outcome here,
+        // because the user can start something during the wait - is handled on
+        // the thread that owns the screen it would have to leave alone.
         new Thread(new Runnable()
         {
             public void run()
@@ -3667,111 +3605,111 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     try { Thread.sleep(250); }
                     catch (InterruptedException ignored) { }
                 }
-                final Peer target = openPeer;
-                boolean submitted = worker.submit(new Worker.Task()
+                ui.post(new Runnable()
                 {
-                    public String name() { return "updates.snapshotRefresh"; }
-
-                    public Object run() throws Exception
-                    {
-                        UpdateSnapshot snapshot = new UpdateSnapshot();
-                        snapshot.peer = target;
-                        // One page, not the whole retained list. Asking for
-                        // dialogs.length was always a request the server would
-                        // not honour - it caps a getDialogs page well below the
-                        // number a reader can now scroll to - and the reply was
-                        // then assigned, so every update burst truncated the
-                        // list back to one page under whoever was reading it.
-                        snapshot.dialogs = telegram.getDialogs(
-                                MemoryBudget.dialogPageSize());
-                        if (target != null)
-                        {
-                            snapshot.history = telegram.getHistory(target,
-                                    Math.min(MemoryBudget.maxHistory(), Math.max(
-                                    MemoryBudget.historyPageSize(), openHistory.length)));
-                        }
-                        return snapshot;
-                    }
-                }, new Worker.Callback()
-                {
-                    public void onSuccess(final Object result)
-                    {
-                        display.callSerially(new Runnable()
-                        {
-                            public void run()
-                            {
-                                UpdateSnapshot snapshot = (UpdateSnapshot) result;
-                                Peer selectedPeer = null;
-                                if (dialogList != null
-                                        && display.getCurrent() == dialogList)
-                                {
-                                    selectedPeer = selectedDialogPeer();
-                                }
-                                // Merged, not assigned - the same correction
-                                // the history half of this snapshot already
-                                // carries. This is the newest page; assigning
-                                // it would throw away every further page a
-                                // reader had scrolled to and drop them at the
-                                // top again.
-                                if (snapshot.dialogs.total > dialogTotal)
-                                {
-                                    dialogTotal = snapshot.dialogs.total;
-                                }
-                                if (dialogsAbove > 0)
-                                {
-                                    // The window is not at the top, so the
-                                    // newest page is not adjacent to it and
-                                    // must not be spliced on. Content only.
-                                    dialogs = PageMerge.restate(
-                                            snapshot.dialogs.dialogs, dialogs);
-                                }
-                                else
-                                {
-                                    dialogs = PageMerge.refresh(
-                                            snapshot.dialogs.dialogs, dialogs,
-                                            MemoryBudget.maxDialogs());
-                                }
-                                cacheDialogs(dialogs);
-                                if (snapshot.history != null
-                                        && samePeer(openPeer, snapshot.peer))
-                                {
-                                    // Merged, not assigned. This is the newest
-                                    // page; assigning it would throw away every
-                                    // older page a reader had scrolled back to
-                                    // and drop them at the bottom again.
-                                    mergeHistoryPage(snapshot.history);
-                                    applyKnownReadState(openHistory, openPeer);
-                                    cacheHistory(openPeer, openHistory);
-                                }
-                                snapshotRefreshScheduled = false;
-                                if (dialogList != null
-                                        && display.getCurrent() == dialogList)
-                                {
-                                    showDialogList(selectedPeer);
-                                }
-                                if (chatScreen != null
-                                        && display.getCurrent() == chatScreen)
-                                {
-                                    chatScreen.setMessages(openHistory);
-                                    scheduleInlineThumbnails(openPeer);
-                                    appendPendingForOpenPeer();
-                                    chatScreen.setStatus(connectionLabel + "/"
-                                            + updateLabel);
-                                }
-                            }
-                        });
-                    }
-
-                    public void onFailure(final Throwable error)
-                    {
-                        snapshotRefreshScheduled = false;
-                        Diag.warn("update snapshot refresh failed: "
-                                + shortMessage(error));
-                    }
+                    public void run() { submitSnapshotRefresh(); }
                 });
-                if (!submitted) { snapshotRefreshScheduled = false; }
             }
         }).start();
+    }
+
+    /**
+     * The submission half of {@link #scheduleSnapshotRefresh}, on the display
+     * thread.
+     *
+     * {@code openPeer} is read here rather than on the waiting thread, so the
+     * snapshot is taken against the chat the user is in when the request is
+     * actually made, not the one they were in when the wait began.
+     */
+    private void submitSnapshotRefresh()
+    {
+        final Peer target = openPeer;
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "updates.snapshotRefresh"; }
+
+            public Object run() throws Exception
+            {
+                UpdateSnapshot snapshot = new UpdateSnapshot();
+                snapshot.peer = target;
+                // One page, not the whole retained list. Asking for
+                // dialogs.length was always a request the server would not
+                // honour - it caps a getDialogs page well below the number a
+                // reader can now scroll to - and the reply was then assigned,
+                // so every update burst truncated the list back to one page
+                // under whoever was reading it.
+                snapshot.dialogs = telegram.getDialogs(
+                        MemoryBudget.dialogPageSize());
+                if (target != null)
+                {
+                    snapshot.history = telegram.getHistory(target,
+                            Math.min(MemoryBudget.maxHistory(), Math.max(
+                            MemoryBudget.historyPageSize(), openHistory.length)));
+                }
+                return snapshot;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(final Object result)
+            {
+                UpdateSnapshot snapshot = (UpdateSnapshot) result;
+                Peer selectedPeer = null;
+                if (dialogList != null && display.getCurrent() == dialogList)
+                {
+                    selectedPeer = selectedDialogPeer();
+                }
+                // Merged, not assigned - the same correction the history half
+                // of this snapshot already carries. This is the newest page;
+                // assigning it would throw away every further page a reader had
+                // scrolled to and drop them at the top again.
+                if (snapshot.dialogs.total > dialogTotal)
+                {
+                    dialogTotal = snapshot.dialogs.total;
+                }
+                if (dialogsAbove > 0)
+                {
+                    // The window is not at the top, so the newest page is not
+                    // adjacent to it and must not be spliced on. Content only.
+                    dialogs = PageMerge.restate(snapshot.dialogs.dialogs, dialogs);
+                }
+                else
+                {
+                    dialogs = PageMerge.refresh(snapshot.dialogs.dialogs, dialogs,
+                            MemoryBudget.maxDialogs());
+                }
+                cacheDialogs(dialogs);
+                if (snapshot.history != null
+                        && samePeer(openPeer, snapshot.peer))
+                {
+                    // Merged, not assigned. This is the newest page; assigning
+                    // it would throw away every older page a reader had
+                    // scrolled back to and drop them at the bottom again.
+                    mergeHistoryPage(snapshot.history);
+                    applyKnownReadState(openHistory, openPeer);
+                    cacheHistory(openPeer, openHistory);
+                }
+                snapshotRefreshScheduled = false;
+                if (dialogList != null && display.getCurrent() == dialogList)
+                {
+                    showDialogList(selectedPeer);
+                }
+                if (chatScreen != null && display.getCurrent() == chatScreen)
+                {
+                    chatScreen.setMessages(openHistory);
+                    scheduleInlineThumbnails(openPeer);
+                    appendPendingForOpenPeer();
+                    chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                }
+            }
+
+            public void onFailure(final Throwable error)
+            {
+                snapshotRefreshScheduled = false;
+                Diag.warn("update snapshot refresh failed: "
+                        + shortMessage(error));
+            }
+        });
+        if (!submitted) { snapshotRefreshScheduled = false; }
     }
 
     // ------------------------------------------------------------ sending
@@ -4624,7 +4562,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onProgress(final int downloaded, final int expected)
             {
-                display.callSerially(new Runnable()
+                ui.post(new Runnable()
                 {
                     public void run()
                     {
@@ -4651,7 +4589,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                                 new ByteArrayInputStream(
                                         StrippedJpeg.restore(stripped.bytes)),
                                 token);
-                        display.callSerially(new Runnable()
+                        ui.post(new Runnable()
                         {
                             public void run()
                             {

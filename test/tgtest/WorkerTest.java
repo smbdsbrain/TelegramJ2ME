@@ -26,6 +26,10 @@ import tg.app.Worker;
  * finish between the refusal and the message being built - so a caller reading
  * {@code currentTask()} directly shows "Finishing null first" to whoever is
  * unlucky with the timing.
+ *
+ * Results now arrive through a {@link tg.app.UiDispatcher}, so a callback runs
+ * when the queue is drained rather than when the task returns; every wait below
+ * drains it. {@link WorkerDispatchTest} pins that half of the contract.
  */
 public final class WorkerTest implements Test
 {
@@ -53,7 +57,8 @@ public final class WorkerTest implements Test
      */
     private static void aSecondTaskIsRefusedWhileTheFirstRuns() throws Exception
     {
-        Worker worker = new Worker();
+        TestDispatcher ui = new TestDispatcher();
+        Worker worker = new Worker(ui);
         Gate started = new Gate();
         Gate release = new Gate();
 
@@ -73,8 +78,12 @@ public final class WorkerTest implements Test
                 0, second.successes);
         Assert.equal("and no failure callback either - a refusal is not a"
                 + " failure", 0, second.failures);
+        Assert.equal("nor did it queue anything for the display thread",
+                0, ui.pending());
 
         release.open();
+        Assert.isTrue("the result reaches the display queue",
+                ui.awaitAndDrainOne(TIMEOUT_MS));
         first.awaitDone();
         Assert.equal("the accepted task still finished normally",
                 1, first.successes);
@@ -93,7 +102,8 @@ public final class WorkerTest implements Test
      */
     private static void theRefusalCanNameWhatIsHoldingIt() throws Exception
     {
-        Worker worker = new Worker();
+        TestDispatcher ui = new TestDispatcher();
+        Worker worker = new Worker(ui);
         Gate started = new Gate();
         Gate release = new Gate();
         Recorder held = new Recorder();
@@ -109,6 +119,8 @@ public final class WorkerTest implements Test
                 "messages.getHistory", worker.currentTask());
 
         release.open();
+        Assert.isTrue("the result reaches the display queue",
+                ui.awaitAndDrainOne(TIMEOUT_MS));
         held.awaitDone();
         Assert.isFalse("free again once the callback has run", worker.isBusy());
     }
@@ -121,7 +133,7 @@ public final class WorkerTest implements Test
      */
     private static void anIdleWorkerNamesNothingInParticular()
     {
-        Worker worker = new Worker();
+        Worker worker = new Worker(new TestDispatcher());
 
         Assert.isFalse("a fresh worker is not busy", worker.isBusy());
         Assert.isTrue("and has no current task",
@@ -134,23 +146,31 @@ public final class WorkerTest implements Test
     // ------------------------------------------------------------ the release
 
     /**
-     * {@code Worker} clears its busy flag <em>before</em> running the callback,
-     * and several paths depend on it: the connect callback submits
+     * {@code Worker} clears its busy flag <em>before</em> running the callback
+     * body, and several paths depend on it: the connect callback submits
      * {@code messages.getDialogs}, sign-in does the same, and a chat open
      * submits the history fetch from inside the one that preceded it. If the
      * flag outlived the callback every one of those would refuse itself.
+     *
+     * The release now happens on the display thread rather than the worker
+     * thread, one statement before the callback body, which is what closes the
+     * gap this used to leave open. The chained submission is the half that must
+     * keep working; {@link WorkerDispatchTest} pins the half that must not.
      */
     private static void theWorkerIsFreeInsideItsOwnCallback() throws Exception
     {
-        final Worker worker = new Worker();
+        final TestDispatcher ui = new TestDispatcher();
+        final Worker worker = new Worker(ui);
         final Counter nested = new Counter();
         final Recorder chained = new Recorder();
         final boolean[] accepted = new boolean[1];
+        final boolean[] freeInside = new boolean[1];
 
         Recorder outer = new Recorder()
         {
             public void onSuccess(Object result)
             {
+                freeInside[0] = !worker.isBusy();
                 accepted[0] = worker.submit(counting("messages.getDialogs",
                         nested), chained);
                 super.onSuccess(result);
@@ -158,12 +178,18 @@ public final class WorkerTest implements Test
         };
 
         Assert.isTrue("accepted", worker.submit(immediate("connect"), outer));
+        Assert.isTrue("the result reaches the display queue",
+                ui.awaitAndDrainOne(TIMEOUT_MS));
         outer.awaitDone();
 
         // Asserted before the wait: a false here means the chained callback
         // never comes, and a ten-second timeout says far less than this line.
+        Assert.isTrue("the worker is already free when the callback body runs",
+                freeInside[0]);
         Assert.isTrue("a task submitted from inside a callback is accepted",
                 accepted[0]);
+        Assert.isTrue("and its own result reaches the queue too",
+                ui.awaitAndDrainOne(TIMEOUT_MS));
         chained.awaitDone();
         Assert.equal("and it actually ran", 1, nested.count);
     }
@@ -176,7 +202,8 @@ public final class WorkerTest implements Test
      */
     private static void aFailedTaskReleasesTheWorkerToo() throws Exception
     {
-        Worker worker = new Worker();
+        TestDispatcher ui = new TestDispatcher();
+        Worker worker = new Worker(ui);
         Recorder failing = new Recorder();
 
         Assert.isTrue("accepted", worker.submit(new Worker.Task()
@@ -187,6 +214,8 @@ public final class WorkerTest implements Test
                 throw new java.io.IOException("no route to host");
             }
         }, failing));
+        Assert.isTrue("the failure reaches the display queue",
+                ui.awaitAndDrainOne(TIMEOUT_MS));
         failing.awaitDone();
 
         Assert.equal("the failure reached the callback", 1, failing.failures);
@@ -198,6 +227,7 @@ public final class WorkerTest implements Test
         Recorder next = new Recorder();
         Assert.isTrue("so the next action is admitted",
                 worker.submit(counting("messages.getDialogs", after), next));
+        Assert.isTrue("and it comes back", ui.awaitAndDrainOne(TIMEOUT_MS));
         next.awaitDone();
         Assert.equal("and it ran", 1, after.count);
     }
@@ -205,8 +235,8 @@ public final class WorkerTest implements Test
     // ------------------------------------------------------------- helpers
 
     /** Blocks until {@code release} opens, announcing itself on {@code started}. */
-    private static Worker.Task blocking(final String name, final Gate started,
-                                        final Gate release)
+    static Worker.Task blocking(final String name, final Gate started,
+                                final Gate release)
     {
         return new Worker.Task()
         {
@@ -221,7 +251,7 @@ public final class WorkerTest implements Test
     }
 
     /** Counts its own executions, so "never ran" is an assertion and not a hope. */
-    private static Worker.Task counting(final String name, final Counter counter)
+    static Worker.Task counting(final String name, final Counter counter)
     {
         return new Worker.Task()
         {
@@ -234,7 +264,7 @@ public final class WorkerTest implements Test
         };
     }
 
-    private static Worker.Task immediate(final String name)
+    static Worker.Task immediate(final String name)
     {
         return counting(name, new Counter());
     }
@@ -246,7 +276,7 @@ public final class WorkerTest implements Test
      * every wait: a contract test that hangs is worse than one that fails,
      * because CI reports it as nothing at all.
      */
-    private static final class Gate
+    static final class Gate
     {
         private boolean open;
 
@@ -272,7 +302,7 @@ public final class WorkerTest implements Test
         }
     }
 
-    private static final class Counter
+    static final class Counter
     {
         volatile int count;
 
@@ -280,20 +310,23 @@ public final class WorkerTest implements Test
     }
 
     /** Records which callback arrived, and lets the test wait for it. */
-    private static class Recorder implements Worker.Callback
+    static class Recorder implements Worker.Callback
     {
         volatile int successes;
         volatile int failures;
+        volatile Thread thread;
         private final Gate done = new Gate();
 
         public void onSuccess(Object result)
         {
+            thread = Thread.currentThread();
             successes++;
             done.open();
         }
 
         public void onFailure(Throwable error)
         {
+            thread = Thread.currentThread();
             failures++;
             done.open();
         }
