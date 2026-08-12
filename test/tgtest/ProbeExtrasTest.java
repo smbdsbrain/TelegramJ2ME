@@ -36,8 +36,23 @@ public final class ProbeExtrasTest implements Test
         theDisplayProbeWorksWithoutADisplay();
         theProbeMenuAgreesWithItsIndices();
         aTlsAlertNamesItself();
+        anIllegalParameterAlertNamesTheClock();
         aTruncatedAlertStillReports();
         aTruncatedRecordIsNotCalledAnAlert();
+    }
+
+    /** A rejected timestamp must not send the user looking at signal bars. */
+    private static void anIllegalParameterAlertNamesTheClock()
+    {
+        byte[] alert = { 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x2f };
+        String message = handshakeFailure(alert);
+
+        Assert.isTrue("illegal_parameter is named (" + message + ")",
+                message.indexOf("illegal_parameter(47)") >= 0);
+        Assert.isTrue("the phone clock is actionable (" + message + ")",
+                message.indexOf("phone date, time") >= 0);
+        Assert.isTrue("an obsolete time zone is actionable (" + message + ")",
+                message.indexOf("time zone") >= 0);
     }
 
     /**

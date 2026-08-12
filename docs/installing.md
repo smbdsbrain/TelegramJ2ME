@@ -24,7 +24,9 @@ path.
 
 ## Before connecting
 
-- Set the phone clock, especially when using FakeTLS MTProxy.
+- Set the phone date, time and numeric time-zone offset, especially when using
+  FakeTLS MTProxy. Old firmware can name the right city but carry obsolete DST
+  rules; Nokia E6-00 firmware 111.140.0058 labels Moscow as GMT+4.
 - Grant network permissions when prompted.
 - If unsigned MIDlets are denied ports 80/443, configure an MTProxy on an
   allowed high port before Connect.

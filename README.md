@@ -56,9 +56,13 @@ at once, which is what a naive media download needs. Both are handled;
 including the numbers that killed a memory theory the project had been carrying
 for months. A third, the Nokia C3-00, runs the client in a 2 MB heap and exposed
 slow-link session recovery and soft-key-only navigation constraints; its
-[measurements are recorded separately](docs/hardware/nokia-c3-00.md).
+[measurements are recorded separately](docs/hardware/nokia-c3-00.md). A fourth,
+the Nokia E6-00, has at least 8 MB of heap and much faster crypto, but its old
+Moscow GMT+4 time-zone table makes FakeTLS fail until a correct GMT+3 zone is
+selected; the [E6-00 hardware report](docs/hardware/nokia-e6-00.md) records that
+trap and its unusual fullscreen geometry.
 
-That is **three devices on a handful of networks**, and it establishes nothing about yours.
+That is **four devices on a handful of networks**, and it establishes nothing about yours.
 Installing it and reporting what happens is genuinely the most useful thing
 anyone can do for this project right now.
 

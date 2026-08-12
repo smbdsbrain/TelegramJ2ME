@@ -5,6 +5,7 @@ import java.io.IOException;
 import tg.crypto.HmacSha256;
 import tg.crypto.Rng;
 import tg.crypto.X25519;
+import tg.diag.Diag;
 
 /**
  * FakeTLS carrier for 0xee MTProxy secrets.
@@ -42,6 +43,8 @@ public final class FakeTlsTransport implements Transport
     private byte[] writeRecord = new byte[0];
     private int readAt;
     private boolean firstWrite;
+    /** Exact wall-clock value stamped into the most recently built hello. */
+    private long helloUnixSeconds;
 
     public FakeTlsTransport(Transport delegate, Rng rng, byte[] secret, String domain)
     {
@@ -61,6 +64,11 @@ public final class FakeTlsTransport implements Transport
         close();
         delegate.connect(host, port, timeoutMs);
         byte[] hello = buildHello();
+        // This is the first useful evidence when a handset has silently reset
+        // its date. The proxy authenticates this value and rejects stale
+        // ClientHellos before MTProto can learn a server-time offset.
+        Diag.info("FakeTLS hello " + hello.length + " bytes, phone unix "
+                + helloUnixSeconds);
         byte[] clientRandom = new byte[32];
         System.arraycopy(hello, 11, clientRandom, 0, 32);
         delegate.write(hello, 0, hello.length);
@@ -198,7 +206,8 @@ public final class FakeTlsTransport implements Transport
         byte[] hello = b.toByteArray();
         byte[] hash = HmacSha256.compute(secret, hello);
         System.arraycopy(hash, 0, hello, randomAt, 32);
-        int unix = (int) (System.currentTimeMillis() / 1000L);
+        helloUnixSeconds = System.currentTimeMillis() / 1000L;
+        int unix = (int) helloUnixSeconds;
         hello[randomAt + 28] ^= (byte) unix;
         hello[randomAt + 29] ^= (byte) (unix >>> 8);
         hello[randomAt + 30] ^= (byte) (unix >>> 16);
@@ -328,7 +337,8 @@ public final class FakeTlsTransport implements Transport
             int desc = body[1] & 0xff;
             return " [" + (level == 1 ? "warning" : level == 2 ? "fatal"
                             : String.valueOf(level))
-                    + " " + alertName(desc) + "(" + desc + ")]";
+                    + " " + alertName(desc) + "(" + desc + ")"
+                    + alertHint(desc) + "]";
         }
         catch (Throwable t)
         {
@@ -356,6 +366,13 @@ public final class FakeTlsTransport implements Transport
             case 116: return "certificate_required";
             default:  return "alert";
         }
+    }
+
+    /** The observed proxy response whose most common cause is actionable. */
+    private static String alertHint(int desc)
+    {
+        return desc == 47
+                ? "; check phone date, time and time zone (FakeTLS stamps it)" : "";
     }
 
     private static String describeRecord(byte[] h, int len)
