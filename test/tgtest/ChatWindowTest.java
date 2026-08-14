@@ -47,6 +47,8 @@ public final class ChatWindowTest implements Test
         theReadersPositionSurvivesARebuild();
         prefetchMarginCrossesOnceOnTheWayUp();
         theEndIsTheConversationNotTheWindow();
+        liveMessageAtEndRemainsVisible();
+        liveIndicatorComposesWithStatus();
         focusReachesAMessageOutsideTheWindow();
         wrappingIsLinearAndBreaksWhereItAlwaysDid();
         pageMergeKeepsTheAnchor();
@@ -160,6 +162,33 @@ public final class ChatWindowTest implements Test
         chat.setMessages(prepend(messages, 1));
         Assert.equal("a new message does not move the reader",
                 anchor, chat.topVisibleMessageId());
+    }
+
+    private static void liveIndicatorComposesWithStatus()
+    {
+        ExposedChat chat = chat();
+        chat.resetMessages(transcript(30));
+        chat.setStatus("online/live");
+        chat.setNewMessageCount(2);
+        Assert.equal("live count is visible beside sync state",
+                "online/live +2 new", chat.status());
+        Assert.equal("live count is inspectable", 2, chat.newMessageCount());
+        chat.setNewMessageCount(0);
+        Assert.equal("reaching latest clears only the live count",
+                "online/live", chat.status());
+    }
+
+    private static void liveMessageAtEndRemainsVisible()
+    {
+        Message[] messages = transcript(30);
+        ExposedChat chat = chat();
+        chat.resetMessages(messages);
+        Message[] updated = prepend(messages, 1);
+        chat.setMessages(updated);
+        Assert.isTrue("live message keeps a following viewport at latest",
+                chat.isAtEnd());
+        Assert.equal("live message is immediately on screen",
+                updated[0].id, bottomVisible(chat));
     }
 
     /**

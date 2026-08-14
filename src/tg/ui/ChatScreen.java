@@ -76,6 +76,7 @@ public class ChatScreen extends Canvas
 
     private final ChatScrollState scroll = new ChatScrollState();
     private String status;
+    private int newMessageCount;
 
     /**
      * The status line, for a driver that has to assert on what it says.
@@ -84,7 +85,7 @@ public class ChatScreen extends Canvas
      * page is loading, which one was refused, whether a jump landed - and on a
      * MIDlet there is nowhere else for a test to read that from.
      */
-    public String status() { return status == null ? "" : status; }
+    public String status() { return displayStatus(); }
     private boolean mediaPreviews = true;
     private int focusedMessageId;
     private ActivationListener activationListener;
@@ -176,6 +177,15 @@ public class ChatScreen extends Canvas
         this.status = status;
         repaint();
     }
+
+    /** New live messages retained below a reader who is viewing older text. */
+    public void setNewMessageCount(int count)
+    {
+        newMessageCount = count > 0 ? count : 0;
+        repaint();
+    }
+
+    public int newMessageCount() { return newMessageCount; }
 
     public void setMediaPreviews(boolean value)
     {
@@ -672,8 +682,8 @@ public class ChatScreen extends Canvas
         {
             layoutMessages(currentMessages, true);
         }
-        String headerStatus = status == null
-                ? "" : UiChrome.clip(status, metaFont, metrics.width / 2);
+        String headerStatus = UiChrome.clip(displayStatus(), metaFont,
+                metrics.width / 2);
         UiChrome.background(g, theme, metrics);
         UiChrome.header(g, theme, metrics, font, title, headerStatus);
         int visible = visibleLines();
@@ -729,6 +739,17 @@ public class ChatScreen extends Canvas
             }
             y += lineHeight;
         }
+    }
+
+    private String displayStatus()
+    {
+        String shown = status == null ? "" : status;
+        if (newMessageCount > 0)
+        {
+            shown += (shown.length() == 0 ? "" : " ") + "+"
+                    + newMessageCount + " new";
+        }
+        return shown;
     }
 
     protected void sizeChanged(int width, int height)

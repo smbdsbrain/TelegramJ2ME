@@ -67,8 +67,10 @@ API outside CLDC 1.1 / MIDP 2.0.
 a J2SE VM, so there is no free replacement for that part.
 
 `rt.jar` is a large superset of CLDC 1.1, so in fallback mode the compiler is
-not the enforcement mechanism - **`tools/check-api.py` is**. It parses the
-constant pool of every compiled class and rejects:
+not the enforcement mechanism - **`tools/check-api.py` is**. The build runs it
+once on javac output and again on ProGuard's final class tree, because bytecode
+optimization can introduce calls that were absent from the source. It parses
+the constant pool of every compiled class and rejects:
 
 * a referenced class not in `config/cldc11-midp20-api.txt`;
 * a member on the deny list - `System.nanoTime`, `Math.pow`, `Vector.add`,
@@ -79,6 +81,12 @@ constant pool of every compiled class and rejects:
 The class allow-list is complete against the specs. The member deny-list is
 curated: it covers the known traps, not every member of every class. Installing
 WTK upgrades this from "good" to "exact" - which is why it stays worth doing.
+
+Release optimization excludes `code/simplification/object`: ProGuard otherwise
+rewrites CLDC-safe wrapper constructors to Java SE `Integer.valueOf(int)` and
+`Long.valueOf(long)` factories. Those overloads do not exist on CLDC 1.1; this
+was observed as a physical Nokia C3-00 `NoSuchMethodError` and is also blocked
+by the post-ProGuard API scan.
 
 ## Build outputs
 

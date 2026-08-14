@@ -40,6 +40,7 @@ import tg.api.Profile;
 import tg.api.Telegram;
 import tg.api.UpdateBatch;
 import tg.api.UpdateState;
+import tg.api.UpdateSync;
 import tg.api.WipeReport;
 import tg.crypto.Rng;
 import tg.diag.CrashLog;
@@ -478,6 +479,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private boolean profilePhoto;
     private String connectionLabel = "idle";
     private String updateLabel = "stopped";
+    /** Incoming live messages below the viewport of the current chat. */
+    private int unseenLiveMessages;
     private volatile boolean draftAutosaveRunning;
 
     /** What the store already holds for {@link #composer}; same three threads. */
@@ -3600,6 +3603,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onChatViewportChanged()
             {
+                if (screen == chatScreen && screen.isAtEnd()
+                        && unseenLiveMessages > 0)
+                {
+                    unseenLiveMessages = 0;
+                    screen.setNewMessageCount(0);
+                }
                 updateEditCommand(screen);
                 maybeLoadHistory();
                 scheduleVisibleThumbnails();
@@ -4063,6 +4072,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 scheduleInlineThumbnails(peer);
                 appendPendingForOpenPeer();
                 chatScreen.scrollToEnd();
+                unseenLiveMessages = 0;
+                chatScreen.setNewMessageCount(0);
                 // Both latches reset: this is the newest page, so there is
                 // nothing newer to be stalled about, and older paging starts
                 // again from here.
@@ -4567,11 +4578,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (batch.syncState != null)
         {
             updateLabel = batch.syncState;
+            if (UpdateSync.DEGRADED.equals(batch.syncState)
+                    && batch.retrySeconds >= 0)
+            {
+                updateLabel += " " + batch.retrySeconds + "s";
+            }
         }
 
         boolean refresh = batch.fullRefresh;
+        boolean following = chatScreen != null
+                && display.getCurrent() == chatScreen && chatScreen.isAtEnd();
+        int incomingForOpen = 0;
         for (int i = 0; i < batch.messages.length; i++)
         {
+            Message incoming = batch.messages[i];
+            if (incoming != null && !incoming.outgoing
+                    && samePeer(openPeer, incoming.peer)
+                    && !hasOpenMessage(incoming.id))
+            {
+                incomingForOpen++;
+            }
             if (!mergeMessage(batch.messages[i])) { refresh = true; }
         }
         for (int i = 0; i < batch.edits.length; i++)
@@ -4593,7 +4619,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         if (chatScreen != null && display.getCurrent() == chatScreen)
         {
+            if (following) { unseenLiveMessages = 0; }
+            else { unseenLiveMessages += incomingForOpen; }
             chatScreen.setMessages(openHistory);
+            chatScreen.setNewMessageCount(unseenLiveMessages);
             scheduleInlineThumbnails(openPeer);
             appendPendingForOpenPeer();
             chatScreen.setStatus(connectionLabel + "/" + updateLabel);
@@ -4848,8 +4877,26 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void bindOpenPeer(Peer next)
     {
+        if (!samePeer(openPeer, next))
+        {
+            unseenLiveMessages = 0;
+            if (chatScreen != null) { chatScreen.setNewMessageCount(0); }
+        }
         scope.chatChanged(next);
         openPeer = next;
+    }
+
+    private boolean hasOpenMessage(int messageId)
+    {
+        if (messageId <= 0) { return false; }
+        for (int i = 0; i < openHistory.length; i++)
+        {
+            if (openHistory[i] != null && openHistory[i].id == messageId)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

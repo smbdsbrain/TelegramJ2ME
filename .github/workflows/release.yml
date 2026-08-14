@@ -183,12 +183,13 @@ jobs:
 
             Verify downloads against `SHA256SUMS.txt`.
 
-            > **This has run on three physical handsets** — an Alcatel OT-810D, a
-            > Samsung GT-C3592 and a Nokia C3-00 — where signing in, the dialog list
-            > and sending a message all work. Three devices on a handful of networks
-            > prove nothing about yours: compatibility, performance and permission
-            > behaviour elsewhere are still unknown, so reports are genuinely useful —
-            > especially your handset model and what `TelegramJ2ME Probe` shows.
+            > **This has run on four physical handsets** — an Alcatel OT-810D, a
+            > Samsung GT-C3592, a Nokia C3-00 and a Nokia E6-00 — where signing in,
+            > the dialog list and sending a message all work. Four devices on a
+            > handful of networks prove nothing about yours: compatibility,
+            > performance and permission behaviour elsewhere are still unknown, so
+            > reports are genuinely useful — especially your handset model and what
+            > `TelegramJ2ME Probe` shows.
             > Per-device measurements are written up under `docs/hardware/`.
             >
             > If the direct routes are refused with `Target port denied to untrusted
@@ -199,7 +200,7 @@ jobs:
             > **Set the phone's clock before connecting through an MTProxy.** A FakeTLS
             > proxy secret embeds the client's time in its handshake, so a wrong clock
             > is refused by the proxy and surfaces as an opaque TLS alert. One of the
-            > three handsets resets its clock to 2011 on every power cycle, which is
+            > four handsets resets its clock to 2011 on every power cycle, which is
             > how this was found.
 
             TelegramJ2ME is an independent project. It is not affiliated with or

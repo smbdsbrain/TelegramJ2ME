@@ -203,6 +203,11 @@ measured barrier also puts one recommending line on the start screen; see
 [architecture.md](architecture.md) for the record format and how the version is
 raised.
 
+The messenger's `-- updates --` block identifies the last successful delivery
+source (`push`, `difference`, or `poll`), its age, the next audit/retry deadline,
+and the bounded envelope queue size. These values distinguish an online/live
+push path from an online/degraded recovery retry without exposing message text.
+
 ## What is stripped before anything is sent
 
 `tg.plat.Report.redact` runs on the device, before transmission:

@@ -91,7 +91,7 @@ $ErrorActionPreference = "Stop"
 # Single source of truth for the released version. .github/workflows/release.yml
 # reads this line and refuses to publish if it disagrees with the git tag, so a
 # mistyped tag cannot ship a JAD whose MIDlet-Version is wrong.
-$AppVersion = "1.0.0"
+$AppVersion = "1.0.1"
 $AppVendor  = "smbdsbrain"
 
 $MidletClass = @{
@@ -552,6 +552,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 $kept = @(Get-ChildItem $preverDir -Recurse -Filter *.class).Count
 Write-Ok "$kept class(es) preverified"
+
+# Optimization can introduce API calls that were absent from javac's output.
+# In particular, code/simplification/object used to turn `new Integer(int)`
+# into Integer.valueOf(int), which exists in Java SE but not CLDC 1.1. The
+# pre-ProGuard scan cannot see synthesized calls, so the shipped tree is the
+# authoritative second gate.
+if (-not $SkipApiCheck) {
+    Write-Step "check-api.py on ProGuard output"
+    & $py (Join-Path $PSScriptRoot "check-api.py") $preverDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Bad "post-ProGuard API check failed"
+        exit 1
+    }
+}
 
 # Runtime PNGs and similar MIDP resources are not inputs to ProGuard. Copy them
 # into the preverified tree so the ordinary jar step packages them at root.

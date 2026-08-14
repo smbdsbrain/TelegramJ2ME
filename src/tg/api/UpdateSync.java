@@ -6,6 +6,7 @@ import java.util.Vector;
 import tg.diag.Diag;
 import tg.mem.MemoryBudget;
 import tg.mt.Dc;
+import tg.mt.RpcError;
 import tg.tl.TlObj;
 import tg.tl.TlParser;
 import tg.tl.TlReader;
@@ -25,6 +26,17 @@ public final class UpdateSync
     public static final String DEGRADED = "degraded";
 
     private static final int MAX_QUEUE = 64;
+    private static final long MAX_WAIT_MS = 30000L;
+    private static final long AUDIT_INTERVAL_MS = 30000L;
+    private static final int[] RETRY_DELAYS_MS = {
+        1000, 2000, 4000, 8000, 15000, 30000
+    };
+
+    private static final int TASK_NONE = 0;
+    private static final int TASK_COMMON = 1;
+    private static final int TASK_CHANNEL = 2;
+    private static final int TASK_ENVELOPE = 3;
+    private static final int TASK_AUDIT = 4;
 
     public interface Invoker
     {
@@ -39,12 +51,28 @@ public final class UpdateSync
     private static final class Envelope
     {
         byte[] body;
+        boolean pushed;
         Peer sentPeer;
         String sentText;
         Peer editedPeer;
         int editedMessageId;
 
         Envelope(byte[] body) { this.body = body; }
+    }
+
+    /** One independently retryable channel difference. */
+    private static final class ChannelJob
+    {
+        Peer peer;
+        long dueAt;
+        int failures;
+
+        ChannelJob(Peer peer, long dueAt, int failures)
+        {
+            this.peer = peer;
+            this.dueAt = dueAt;
+            this.failures = failures;
+        }
     }
 
     private static final class PendingBatch
@@ -79,6 +107,8 @@ public final class UpdateSync
 
     private final Invoker invoker;
     private final PeerCache peers;
+    private final long auditIntervalMs;
+    private final int[] retryDelaysMs;
     private final Object lock = new Object();
     private final Vector queue = new Vector();
     private final Vector channelRecovery = new Vector();
@@ -96,12 +126,31 @@ public final class UpdateSync
     private String lastDetail = "";
     private Peer activePeer;
     private long nextChannelPoll;
+    private Peer blockedChannel;
+    private long commonRetryAt;
+    private int commonFailures;
+    private long nextAuditAt;
+    private int auditFailures;
+    private long lastSuccessAt;
+    private String lastSource = "none";
     private int epoch;
 
     public UpdateSync(Invoker invoker, PeerCache peers)
     {
+        this(invoker, peers, AUDIT_INTERVAL_MS, RETRY_DELAYS_MS);
+    }
+
+    /** Package-private timing seam used by deterministic desktop tests. */
+    UpdateSync(Invoker invoker, PeerCache peers, long auditInterval,
+               int[] retryDelays)
+    {
         this.invoker = invoker;
         this.peers = peers;
+        auditIntervalMs = auditInterval > 0 ? auditInterval : AUDIT_INTERVAL_MS;
+        int[] source = retryDelays == null || retryDelays.length == 0
+                ? RETRY_DELAYS_MS : retryDelays;
+        retryDelaysMs = new int[source.length];
+        System.arraycopy(source, 0, retryDelaysMs, 0, source.length);
     }
 
     public void setStore(UpdateStateStore value)
@@ -138,6 +187,10 @@ public final class UpdateSync
             }
             activated = true;
             recoveryNeeded = true;
+            commonRetryAt = 0;
+            commonFailures = 0;
+            nextAuditAt = 0;
+            auditFailures = 0;
             ensureWorker();
             lock.notifyAll();
         }
@@ -148,10 +201,16 @@ public final class UpdateSync
         synchronized (lock)
         {
             online = true;
-            if (activated) { recoveryNeeded = true; }
+            if (activated)
+            {
+                recoveryNeeded = true;
+                commonRetryAt = 0;
+                commonFailures = 0;
+            }
             if (activePeer != null && activePeer.kind == Peer.CHANNEL)
             {
-                nextChannelPoll = System.currentTimeMillis();
+                nextChannelPoll = samePeer(blockedChannel, activePeer)
+                        ? 0 : System.currentTimeMillis();
             }
             if (activated) { ensureWorker(); }
             lock.notifyAll();
@@ -164,6 +223,8 @@ public final class UpdateSync
         {
             online = false;
             nextChannelPoll = 0;
+            nextAuditAt = 0;
+            commonRetryAt = 0;
             lock.notifyAll();
         }
     }
@@ -179,6 +240,8 @@ public final class UpdateSync
             queue.removeAllElements();
             channelRecovery.removeAllElements();
             queueBytes = 0;
+            commonRetryAt = 0;
+            nextAuditAt = 0;
             old = worker;
             worker = null;
             lock.notifyAll();
@@ -203,6 +266,13 @@ public final class UpdateSync
             state = null;
             activePeer = null;
             nextChannelPoll = 0;
+            blockedChannel = null;
+            commonRetryAt = 0;
+            commonFailures = 0;
+            nextAuditAt = 0;
+            auditFailures = 0;
+            lastSuccessAt = 0;
+            lastSource = "none";
             syncState = STOPPED;
             try { store.clear(); }
             catch (IOException e) { Diag.error("update state clear failed", e); }
@@ -226,7 +296,9 @@ public final class UpdateSync
     /** Reader-thread entry point. It never parses, writes RMS or performs RPC. */
     public void accept(byte[] body)
     {
-        enqueue(new Envelope(body));
+        Envelope envelope = new Envelope(body);
+        envelope.pushed = true;
+        enqueue(envelope);
     }
 
     /** Feed a sendMessage Updates result and retain short-sent message context. */
@@ -284,8 +356,11 @@ public final class UpdateSync
     {
         synchronized (lock)
         {
+            boolean changed = !samePeer(activePeer, peer);
+            if (peer == null || changed) { blockedChannel = null; }
             activePeer = peer;
             nextChannelPoll = peer != null && peer.kind == Peer.CHANNEL
+                    && !samePeer(blockedChannel, peer)
                     ? System.currentTimeMillis() : 0;
             lock.notifyAll();
         }
@@ -303,7 +378,28 @@ public final class UpdateSync
 
     public String detail()
     {
-        synchronized (lock) { return lastDetail; }
+        synchronized (lock)
+        {
+            long now = System.currentTimeMillis();
+            String out = lastDetail;
+            if (out == null) { out = ""; }
+            out += (out.length() == 0 ? "" : "; ") + "source " + lastSource;
+            if (lastSuccessAt > 0)
+            {
+                long age = now - lastSuccessAt;
+                if (age < 0) { age = 0; }
+                out += ", success " + (age / 1000L) + "s ago";
+            }
+            long next = nextActionAt(now);
+            if (next > 0)
+            {
+                long left = next - now;
+                if (left < 0) { left = 0; }
+                out += ", next " + ((left + 999L) / 1000L) + "s";
+            }
+            out += ", queue " + queue.size();
+            return out;
+        }
     }
 
     public int queued()
@@ -353,47 +449,67 @@ public final class UpdateSync
         {
             Envelope envelope = null;
             Peer pollPeer = null;
-            boolean recover = false;
+            int channelFailures = 0;
+            int task = TASK_NONE;
             synchronized (lock)
             {
                 while (running)
                 {
                     long now = System.currentTimeMillis();
-                    boolean pollDue = online && activated
+                    boolean channelPollDue = online && activated
                             && activePeer != null && activePeer.kind == Peer.CHANNEL
+                            && !samePeer(blockedChannel, activePeer)
                             && nextChannelPoll > 0 && nextChannelPoll <= now;
-                    if (online && activated
-                            && (recoveryNeeded || channelRecovery.size() > 0
-                                    || queue.size() > 0 || pollDue))
+                    int dueChannel = dueChannelJob(now);
+                    boolean commonDue = recoveryNeeded
+                            && (commonRetryAt == 0 || commonRetryAt <= now);
+                    boolean auditDue = nextAuditAt > 0 && nextAuditAt <= now;
+                    if (online && activated && commonDue)
                     {
-                        if (recoveryNeeded)
-                        {
-                            recoveryNeeded = false;
-                            recover = true;
-                        }
-                        else if (channelRecovery.size() > 0)
-                        {
-                            pollPeer = (Peer) channelRecovery.elementAt(0);
-                            channelRecovery.removeElementAt(0);
-                        }
-                        else if (queue.size() > 0)
-                        {
-                            envelope = (Envelope) queue.elementAt(0);
-                            queue.removeElementAt(0);
-                            queueBytes -= envelope.body.length;
-                        }
-                        else
-                        {
-                            pollPeer = activePeer;
-                            nextChannelPoll = 0;
-                        }
+                        recoveryNeeded = false;
+                        commonRetryAt = 0;
+                        task = TASK_COMMON;
                         break;
                     }
-                    long wait = 0;
-                    if (online && activePeer != null && nextChannelPoll > now)
+                    // A required common recovery gates envelopes: applying them
+                    // against a cursor with a known hole would turn a gap into
+                    // apparently valid state. Channel work is independent and
+                    // may continue while that retry waits.
+                    if (online && activated && dueChannel >= 0)
                     {
-                        wait = nextChannelPoll - now;
+                        ChannelJob job = (ChannelJob) channelRecovery.elementAt(
+                                dueChannel);
+                        channelRecovery.removeElementAt(dueChannel);
+                        pollPeer = job.peer;
+                        channelFailures = job.failures;
+                        task = TASK_CHANNEL;
+                        break;
                     }
+                    if (online && activated && !recoveryNeeded && queue.size() > 0)
+                    {
+                        envelope = (Envelope) queue.elementAt(0);
+                        queue.removeElementAt(0);
+                        queueBytes -= envelope.body.length;
+                        task = TASK_ENVELOPE;
+                        break;
+                    }
+                    if (online && activated && !recoveryNeeded && auditDue)
+                    {
+                        nextAuditAt = 0;
+                        task = TASK_AUDIT;
+                        break;
+                    }
+                    if (online && activated && !recoveryNeeded && channelPollDue)
+                    {
+                        pollPeer = activePeer;
+                        nextChannelPoll = 0;
+                        task = TASK_CHANNEL;
+                        break;
+                    }
+                    long next = nextActionAt(now);
+                    long wait = next > 0 ? next - now : 0;
+                    if (wait > MAX_WAIT_MS) { wait = MAX_WAIT_MS; }
+                    if (wait < 0) { wait = 1; }
                     try
                     {
                         if (wait > 0) { lock.wait(wait); }
@@ -406,48 +522,55 @@ public final class UpdateSync
 
             try
             {
-                if (recover) { recoverCommon(); }
-                else if (pollPeer != null) { recoverChannel(pollPeer); }
-                else if (envelope != null) { processEnvelope(envelope); }
+                if (task == TASK_COMMON) { recoverCommon(false); }
+                else if (task == TASK_AUDIT) { recoverCommon(true); }
+                else if (task == TASK_CHANNEL) { recoverChannel(pollPeer); }
+                else if (task == TASK_ENVELOPE)
+                {
+                    processEnvelope(envelope);
+                    if (envelope.pushed) { notePushSuccess(); }
+                }
             }
             catch (IOException e)
             {
                 Diag.error("update synchronisation failed", e);
-                synchronized (lock)
+                if (task == TASK_CHANNEL)
                 {
-                    syncState = DEGRADED;
-                    lastDetail = e.getMessage();
-                    recoveryNeeded = true;
-                    // Let Telegram's lifecycle reconnect before another RPC.
-                    online = false;
+                    handleChannelFailure(pollPeer, channelFailures, e);
                 }
-                publishState(DEGRADED, e.getMessage());
+                else if (task == TASK_AUDIT) { handleAuditFailure(e); }
+                else { handleCommonFailure(e); }
             }
             catch (Throwable t)
             {
                 Diag.error("update worker failed", t);
-                synchronized (lock)
+                IOException failure = new IOException(t.getClass().getName()
+                        + ": " + t.getMessage());
+                if (task == TASK_CHANNEL)
                 {
-                    syncState = DEGRADED;
-                    lastDetail = t.getClass().getName() + ": " + t.getMessage();
-                    recoveryNeeded = true;
+                    handleChannelFailure(pollPeer, channelFailures, failure);
                 }
-                publishState(DEGRADED, lastDetail);
+                else if (task == TASK_AUDIT) { handleAuditFailure(failure); }
+                else { handleCommonFailure(failure); }
             }
         }
     }
 
-    private void recoverCommon() throws IOException
+    private void recoverCommon(boolean audit) throws IOException
     {
         int token = currentEpoch();
-        publishState(SYNCING, state.pts == 0 ? "initial state" : "getDifference");
+        if (!audit)
+        {
+            publishState(SYNCING, state.pts == 0
+                    ? "initial state" : "getDifference");
+        }
         if (state.pts == 0 && state.date == 0 && state.seq == 0)
         {
             TlObj initial = parseInvoke(Requests.getUpdateState());
             if (!isCurrentOnline(token)) { return; }
             adoptState(initial);
             saveState();
-            publishState(LIVE, "state ready");
+            completeCommon(audit, "state ready");
             return;
         }
 
@@ -460,7 +583,7 @@ public final class UpdateSync
                 state.date = result.intAt(Api.F_UPDATES_DIFFERENCE_EMPTY__DATE);
                 state.seq = result.intAt(Api.F_UPDATES_DIFFERENCE_EMPTY__SEQ);
                 saveState();
-                publishState(LIVE, "difference empty");
+                completeCommon(audit, audit ? "poll empty" : "difference empty");
                 return;
             }
             if (result.id == Api.UPDATES_DIFFERENCE_TOO_LONG)
@@ -472,7 +595,8 @@ public final class UpdateSync
                 adoptState(fresh);
                 saveState();
                 publish(batch);
-                publishState(LIVE, "difference too long; snapshots refreshed");
+                completeCommon(audit,
+                        "difference too long; snapshots refreshed");
                 return;
             }
             if (result.id != Api.UPDATES_DIFFERENCE
@@ -507,7 +631,8 @@ public final class UpdateSync
             publish(batch);
             if (!slice)
             {
-                publishState(LIVE, "difference applied");
+                completeCommon(audit, audit
+                        ? "poll difference applied" : "difference applied");
                 return;
             }
         }
@@ -535,7 +660,6 @@ public final class UpdateSync
             return;
         }
 
-        publishState(SYNCING, "channel " + channel.id + " difference");
         while (isCurrentOnline(token))
         {
             TlObj result = parseInvoke(Requests.getChannelDifference(channel, pts));
@@ -601,10 +725,113 @@ public final class UpdateSync
             if (done)
             {
                 scheduleChannelPoll(channel, timeout);
-                publishState(LIVE, "channel " + channel.id + " current");
+                noteSuccess("difference", "channel " + channel.id + " current",
+                        false, false);
                 return;
             }
         }
+    }
+
+    /** A required common retry failed; preserve the gate and try later. */
+    private void handleCommonFailure(IOException error)
+    {
+        if (isPersistentTimestampInvalid(error))
+        {
+            try
+            {
+                rebaselineCommon();
+                return;
+            }
+            catch (IOException resetError)
+            {
+                Diag.error("update state rebaseline failed", resetError);
+                error = resetError;
+            }
+        }
+        long delay = retryDelay(commonFailures, error);
+        synchronized (lock)
+        {
+            commonFailures++;
+            recoveryNeeded = true;
+            commonRetryAt = System.currentTimeMillis() + delay;
+            lock.notifyAll();
+        }
+        publishState(DEGRADED, failureDetail("difference", error, delay),
+                seconds(delay));
+    }
+
+    /** A safety audit may fail without gating pushed envelopes. */
+    private void handleAuditFailure(IOException error)
+    {
+        if (isPersistentTimestampInvalid(error))
+        {
+            try
+            {
+                rebaselineCommon();
+                return;
+            }
+            catch (IOException resetError)
+            {
+                Diag.error("poll rebaseline failed", resetError);
+                error = resetError;
+            }
+        }
+        long delay = retryDelay(auditFailures, error);
+        synchronized (lock)
+        {
+            auditFailures++;
+            nextAuditAt = System.currentTimeMillis() + delay;
+            lock.notifyAll();
+        }
+        publishState(DEGRADED, failureDetail("poll", error, delay),
+                seconds(delay));
+    }
+
+    /** A channel failure is isolated from the common cursor and push queue. */
+    private void handleChannelFailure(Peer peer, int failures, IOException error)
+    {
+        if (isTerminalChannelError(error))
+        {
+            synchronized (lock)
+            {
+                if (samePeer(activePeer, peer))
+                {
+                    blockedChannel = peer;
+                    nextChannelPoll = 0;
+                }
+            }
+            PendingBatch refresh = new PendingBatch();
+            refresh.fullRefresh = true;
+            publish(refresh);
+            completeTerminalChannel("channel poll unavailable: "
+                    + error.getMessage());
+            return;
+        }
+
+        long delay = retryDelay(failures, error);
+        scheduleChannelJob(peer, failures + 1, delay);
+        publishState(DEGRADED, failureDetail("channel", error, delay),
+                seconds(delay));
+    }
+
+    /** Replace an unusable common cursor and repair visible snapshots once. */
+    private void rebaselineCommon() throws IOException
+    {
+        int token = currentEpoch();
+        TlObj fresh = parseInvoke(Requests.getUpdateState());
+        if (!isCurrentOnline(token)) { return; }
+        adoptState(fresh);
+        saveState();
+        PendingBatch refresh = new PendingBatch();
+        refresh.fullRefresh = true;
+        publish(refresh);
+        synchronized (lock)
+        {
+            commonRetryAt = 0;
+            commonFailures = 0;
+        }
+        noteSuccess("difference", "invalid cursor reset; snapshots refreshed",
+                true, true);
     }
 
     private void processEnvelope(Envelope envelope) throws IOException
@@ -1030,7 +1257,8 @@ public final class UpdateSync
         synchronized (lock)
         {
             if (activePeer != null && activePeer.kind == Peer.CHANNEL
-                    && activePeer.id == channel.id)
+                    && activePeer.id == channel.id
+                    && !samePeer(blockedChannel, channel))
             {
                 nextChannelPoll = System.currentTimeMillis()
                         + Math.max(0, seconds) * 1000L;
@@ -1044,20 +1272,231 @@ public final class UpdateSync
         if (channel == null) { return; }
         synchronized (lock)
         {
+            // A terminal channel error is sticky for this open-chat session.
+            // Only leaving and reopening the peer clears it in setActivePeer;
+            // otherwise each pushed hint could restart a futile RPC loop.
+            if (samePeer(blockedChannel, channel)) { return; }
             for (int i = 0; i < channelRecovery.size(); i++)
             {
-                Peer queued = (Peer) channelRecovery.elementAt(i);
-                if (queued.kind == channel.kind && queued.id == channel.id) { return; }
+                ChannelJob queued = (ChannelJob) channelRecovery.elementAt(i);
+                if (samePeer(queued.peer, channel)) { return; }
             }
-            channelRecovery.addElement(channel);
+            channelRecovery.addElement(new ChannelJob(channel, 0, 0));
             lock.notifyAll();
         }
+    }
+
+    private void scheduleChannelJob(Peer channel, int failures, long delay)
+    {
+        if (channel == null) { return; }
+        synchronized (lock)
+        {
+            long due = System.currentTimeMillis() + (delay > 0 ? delay : 0);
+            for (int i = 0; i < channelRecovery.size(); i++)
+            {
+                ChannelJob queued = (ChannelJob) channelRecovery.elementAt(i);
+                if (!samePeer(queued.peer, channel)) { continue; }
+                if (due < queued.dueAt) { queued.dueAt = due; }
+                if (failures > queued.failures) { queued.failures = failures; }
+                lock.notifyAll();
+                return;
+            }
+            channelRecovery.addElement(new ChannelJob(channel, due, failures));
+            lock.notifyAll();
+        }
+    }
+
+    /** Index of the earliest channel job that is due, or -1. */
+    private int dueChannelJob(long now)
+    {
+        int found = -1;
+        long earliest = Long.MAX_VALUE;
+        for (int i = 0; i < channelRecovery.size(); i++)
+        {
+            ChannelJob job = (ChannelJob) channelRecovery.elementAt(i);
+            if (job.dueAt <= now && job.dueAt < earliest)
+            {
+                earliest = job.dueAt;
+                found = i;
+            }
+        }
+        return found;
     }
 
     private int optionalTimeout(TlObj obj, int field)
     {
         int value = obj.intAt(field);
         return value > 0 ? value : 1;
+    }
+
+    /** Earliest deadline the one update worker should wake for. Lock held. */
+    private long nextActionAt(long now)
+    {
+        if (!online || !activated) { return 0; }
+        long next = Long.MAX_VALUE;
+        if (recoveryNeeded)
+        {
+            next = commonRetryAt > 0 ? commonRetryAt : now;
+        }
+        for (int i = 0; i < channelRecovery.size(); i++)
+        {
+            ChannelJob job = (ChannelJob) channelRecovery.elementAt(i);
+            if (job.dueAt < next) { next = job.dueAt; }
+        }
+        if (!recoveryNeeded)
+        {
+            if (queue.size() > 0) { return now; }
+            if (nextAuditAt > 0 && nextAuditAt < next) { next = nextAuditAt; }
+            if (activePeer != null && activePeer.kind == Peer.CHANNEL
+                    && !samePeer(blockedChannel, activePeer)
+                    && nextChannelPoll > 0 && nextChannelPoll < next)
+            {
+                next = nextChannelPoll;
+            }
+        }
+        return next == Long.MAX_VALUE ? 0 : next;
+    }
+
+    private long retryDelay(int failures, IOException error)
+    {
+        if (error instanceof RpcError)
+        {
+            int flood = ((RpcError) error).floodWaitSeconds();
+            if (flood >= 0)
+            {
+                long delay = (long) flood * 1000L;
+                return delay > 0 ? delay : 1000L;
+            }
+        }
+        int at = failures;
+        if (at < 0) { at = 0; }
+        if (at >= retryDelaysMs.length) { at = retryDelaysMs.length - 1; }
+        int delay = retryDelaysMs[at];
+        return delay > 0 ? delay : 1L;
+    }
+
+    private static int seconds(long delay)
+    {
+        long value = (delay + 999L) / 1000L;
+        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
+    }
+
+    private static String failureDetail(String operation, IOException error,
+                                        long delay)
+    {
+        String message = error == null ? "unknown failure" : error.getMessage();
+        if (message == null || message.length() == 0)
+        {
+            message = error == null ? "unknown failure"
+                    : error.getClass().getName();
+        }
+        return operation + " failed: " + message + "; retry "
+                + seconds(delay) + "s";
+    }
+
+    private static boolean isPersistentTimestampInvalid(IOException error)
+    {
+        if (!(error instanceof RpcError)) { return false; }
+        String type = ((RpcError) error).type();
+        return "PERSISTENT_TIMESTAMP_INVALID".equals(type)
+                || "PERSISTENT_TIMESTAMP_EMPTY".equals(type);
+    }
+
+    private static boolean isTerminalChannelError(IOException error)
+    {
+        if (!(error instanceof RpcError)) { return false; }
+        String type = ((RpcError) error).type();
+        return "CHANNEL_INVALID".equals(type)
+                || "CHANNEL_PRIVATE".equals(type)
+                || "PUBLIC_GROUP_NA".equals(type)
+                || "CHANNEL_PUBLIC_GROUP_NA".equals(type)
+                || "USER_BANNED_IN_CHANNEL".equals(type);
+    }
+
+    private void completeCommon(boolean audit, String detail)
+    {
+        synchronized (lock)
+        {
+            commonRetryAt = 0;
+            commonFailures = 0;
+            auditFailures = 0;
+        }
+        noteSuccess(audit ? "poll" : "difference", detail, !audit, true);
+    }
+
+    /** A parsed unsolicited body proves that the push path is alive. */
+    private void notePushSuccess()
+    {
+        boolean recovered;
+        synchronized (lock)
+        {
+            lastSource = "push";
+            lastSuccessAt = System.currentTimeMillis();
+            nextAuditAt = lastSuccessAt + auditIntervalMs;
+            auditFailures = 0;
+            recovered = DEGRADED.equals(syncState) && lastDetail != null
+                    && lastDetail.indexOf("poll failed:") == 0;
+            if (recovered)
+            {
+                syncState = LIVE;
+                lastDetail = "push resumed";
+            }
+            lock.notifyAll();
+        }
+        if (recovered) { emitState(LIVE, "push resumed", -1); }
+    }
+
+    private void noteSuccess(String source, String detail, boolean announce,
+                             boolean resetAudit)
+    {
+        boolean notify;
+        synchronized (lock)
+        {
+            String previous = syncState;
+            lastSource = source == null ? "none" : source;
+            lastSuccessAt = System.currentTimeMillis();
+            if (resetAudit)
+            {
+                nextAuditAt = lastSuccessAt + auditIntervalMs;
+                auditFailures = 0;
+            }
+            // A successful channel RPC repairs only that channel. It must not
+            // paint over a common/audit degraded state whose retry is still
+            // pending. A channel's own retry is identifiable by its detail and
+            // may return the header to live.
+            if (!resetAudit && DEGRADED.equals(previous)
+                    && (lastDetail == null
+                            || lastDetail.indexOf("channel failed:") != 0))
+            {
+                lock.notifyAll();
+                return;
+            }
+            syncState = LIVE;
+            lastDetail = detail == null ? "" : detail;
+            notify = announce || !LIVE.equals(previous);
+            lock.notifyAll();
+        }
+        if (notify) { emitState(LIVE, detail, -1); }
+    }
+
+    /** A terminal channel result is not allowed to clear another retry. */
+    private void completeTerminalChannel(String detail)
+    {
+        synchronized (lock)
+        {
+            if (DEGRADED.equals(syncState) && (lastDetail == null
+                    || lastDetail.indexOf("channel failed:") != 0))
+            {
+                return;
+            }
+        }
+        publishState(LIVE, detail);
+    }
+
+    private static boolean samePeer(Peer a, Peer b)
+    {
+        return a == b || (a != null && b != null
+                && a.kind == b.kind && a.id == b.id);
     }
 
     private int currentEpoch()
@@ -1091,16 +1530,27 @@ public final class UpdateSync
 
     private void publishState(String value, String detail)
     {
-        Listener current;
+        publishState(value, detail, -1);
+    }
+
+    private void publishState(String value, String detail, int retrySeconds)
+    {
         synchronized (lock)
         {
             syncState = value;
             lastDetail = detail == null ? "" : detail;
-            current = listener;
         }
+        emitState(value, detail, retrySeconds);
+    }
+
+    private void emitState(String value, String detail, int retrySeconds)
+    {
+        Listener current;
+        synchronized (lock) { current = listener; }
         UpdateBatch batch = new UpdateBatch();
         batch.syncState = value;
-        batch.detail = lastDetail;
+        batch.detail = detail == null ? "" : detail;
+        batch.retrySeconds = retrySeconds;
         if (current != null)
         {
             try { current.onBatch(batch); }

@@ -11,6 +11,13 @@
 
 -microedition
 
+# ProGuard's object-instantiation peephole replaces CLDC-safe
+#     new Integer(value) / new Long(value)
+# with Java SE factory calls such as Integer.valueOf(int). Those overloads do
+# not exist in CLDC 1.1 and fail only when the optimized JAR reaches a handset.
+# Keep every other release optimization, but never synthesize wrapper factories.
+-optimizations !code/simplification/object
+
 # -dontoptimize / -dontobfuscate live in config/proguard-debug.pro, which
 # tools/build.ps1 includes only for non-release builds. Keeping them out of
 # this file is what makes -Release mean something: a boolean -dontobfuscate

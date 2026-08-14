@@ -13,7 +13,9 @@ import tg.api.UpdateBatch;
 import tg.api.UpdateState;
 import tg.api.UpdateStateCodec;
 import tg.api.UpdateSync;
+import tg.api.UpdateSyncHarness;
 import tg.mt.Dc;
+import tg.mt.RpcError;
 import tg.tl.TlReader;
 import tg.tl.TlWriter;
 
@@ -28,6 +30,11 @@ public final class UpdateSyncTest implements Test
         requestEncoding();
         exactDuplicateGapAndOverflow();
         channelDifference();
+        commonFailureRetries();
+        channelFailureIsIsolated();
+        terminalChannelFailureStopsPollingOnlyThatChannel();
+        invalidCursorRebaselines();
+        safetyPollRecoversAndPushDefers();
     }
 
     private static void stateStoreAndBounds() throws Exception
@@ -245,6 +252,180 @@ public final class UpdateSyncTest implements Test
         sync.close();
     }
 
+    private static void commonFailureRetries() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        PeerCache peers = peers();
+        RetryInvoker rpc = new RetryInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = UpdateSyncHarness.create(rpc, peers, 1000,
+                new int[] { 200, 300 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.DEGRADED);
+        for (int i = 0; i < 70; i++)
+        {
+            sync.accept(shortMessage(100 + i, 200, "during retry", 10,
+                    1, 30 + i));
+        }
+        Assert.isTrue("queue stays bounded during common retry",
+                sync.queued() <= 64);
+        Assert.isTrue("queue size is diagnostic",
+                sync.detail().indexOf("queue ") >= 0);
+        waitForState(sync, UpdateSync.LIVE);
+        Assert.equal("temporary common error retried", 2, rpc.differenceCalls);
+        Assert.isTrue("retry delay was published", capture.sawRetry);
+
+        sync.accept(shortMessage(1, 200, "after retry", 11, 1, 21));
+        capture.waitMessages(1);
+        Assert.equal("push still processed after retry", "after retry",
+                capture.lastMessage.text);
+        sync.close();
+    }
+
+    private static void channelFailureIsIsolated() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        UpdateState state = store.load(100, Dc.isTest());
+        state.setChannelPts(300, 5);
+        store.save(state);
+        PeerCache peers = peers();
+        Peer channel = new Peer(Peer.CHANNEL, 300);
+        channel.accessHash = 44;
+        peers.put(channel);
+
+        FailingChannelInvoker rpc = new FailingChannelInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = UpdateSyncHarness.create(rpc, peers, 1000,
+                new int[] { 100, 150 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        sync.setActivePeer(channel);
+        waitForState(sync, UpdateSync.DEGRADED);
+
+        sync.accept(shortMessage(7, 200, "private while channel retries",
+                11, 1, 21));
+        capture.waitMessages(1);
+        Assert.equal("channel failure did not block private push",
+                "private while channel retries", capture.lastMessage.text);
+        waitForChannelCalls(rpc, 2);
+        sync.close();
+    }
+
+    private static void invalidCursorRebaselines() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        PeerCache peers = peers();
+        InvalidCursorInvoker rpc = new InvalidCursorInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = UpdateSyncHarness.create(rpc, peers, 1000,
+                new int[] { 20 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        Assert.equal("invalid cursor fetched fresh state", 1, rpc.stateCalls);
+        Assert.equal("fresh pts persisted", 20, waitPts(sync, 20));
+        Assert.equal("invalid cursor requested one snapshot", 1,
+                capture.fullRefreshCount);
+        sync.close();
+    }
+
+    private static void terminalChannelFailureStopsPollingOnlyThatChannel()
+            throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        UpdateState state = store.load(100, Dc.isTest());
+        state.setChannelPts(300, 5);
+        store.save(state);
+        PeerCache peers = peers();
+        Peer channel = new Peer(Peer.CHANNEL, 300);
+        channel.accessHash = 44;
+        peers.put(channel);
+
+        TerminalChannelInvoker rpc = new TerminalChannelInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = UpdateSyncHarness.create(rpc, peers, 1000,
+                new int[] { 20 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        sync.setActivePeer(channel);
+        capture.waitFullRefreshes(1);
+        Thread.sleep(80);
+        Assert.equal("terminal channel error did not tight-loop", 1,
+                rpc.channelCalls);
+        sync.setActivePeer(channel);
+        Thread.sleep(80);
+        Assert.equal("same open channel remains blocked", 1,
+                rpc.channelCalls);
+        sync.accept(shortMessage(10, 200, "private after invalid channel",
+                11, 1, 21));
+        capture.waitMessages(1);
+        Assert.equal("terminal channel error kept global push live",
+                "private after invalid channel", capture.lastMessage.text);
+        sync.setActivePeer(null);
+        sync.setActivePeer(channel);
+        waitForChannelCalls(rpc, 2);
+        Assert.equal("reopening channel permits one fresh attempt", 2,
+                rpc.channelCalls);
+        sync.close();
+    }
+
+    private static void safetyPollRecoversAndPushDefers() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        PeerCache peers = peers();
+        PollInvoker rpc = new PollInvoker(true);
+        Capture capture = new Capture();
+        UpdateSync sync = UpdateSyncHarness.create(rpc, peers, 60,
+                new int[] { 20 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        capture.waitMessages(1);
+        Assert.equal("watchdog recovered missed message", "from poll",
+                capture.lastMessage.text);
+        Assert.isTrue("poll source is diagnostic",
+                sync.detail().indexOf("source poll") >= 0);
+        sync.close();
+
+        store = storedState(100, 10);
+        rpc = new PollInvoker(false);
+        capture = new Capture();
+        sync = UpdateSyncHarness.create(rpc, peers(), 100,
+                new int[] { 20 });
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        Thread.sleep(60);
+        sync.accept(shortMessage(8, 200, "push defers", 11, 1, 21));
+        capture.waitMessages(1);
+        Thread.sleep(60);
+        Assert.equal("push postponed watchdog", 1, rpc.differenceCalls);
+        waitDifferenceCalls(rpc, 2);
+        int beforePause = rpc.differenceCalls;
+        sync.offline();
+        Thread.sleep(140);
+        Assert.equal("offline cancelled watchdog", beforePause,
+                rpc.differenceCalls);
+        sync.online();
+        waitDifferenceCalls(rpc, beforePause + 1);
+        sync.close();
+    }
+
     private static final class FakeInvoker implements UpdateSync.Invoker
     {
         volatile int differenceCalls;
@@ -287,6 +468,113 @@ public final class UpdateSyncTest implements Test
         }
     }
 
+    private static final class RetryInvoker implements UpdateSync.Invoker
+    {
+        volatile int differenceCalls;
+
+        public synchronized byte[] invoke(byte[] query) throws IOException
+        {
+            int id = new TlReader(query).readInt();
+            if (id != Api.UPDATES_GET_DIFFERENCE)
+            {
+                throw new IOException("unexpected retry RPC");
+            }
+            differenceCalls++;
+            if (differenceCalls == 1)
+            {
+                throw new RpcError(500, "PERSISTENT_TIMESTAMP_OUTDATED");
+            }
+            return differenceEmpty(20, 3);
+        }
+    }
+
+    private static final class FailingChannelInvoker implements UpdateSync.Invoker
+    {
+        volatile int channelCalls;
+
+        public synchronized byte[] invoke(byte[] query) throws IOException
+        {
+            int id = new TlReader(query).readInt();
+            if (id == Api.UPDATES_GET_DIFFERENCE)
+            {
+                return differenceEmpty(20, 3);
+            }
+            if (id == Api.UPDATES_GET_CHANNEL_DIFFERENCE)
+            {
+                channelCalls++;
+                if (channelCalls == 1)
+                {
+                    throw new RpcError(500, "PERSISTENT_TIMESTAMP_OUTDATED");
+                }
+                return channelDifferenceResult();
+            }
+            throw new IOException("unexpected isolated channel RPC");
+        }
+    }
+
+    private static final class InvalidCursorInvoker implements UpdateSync.Invoker
+    {
+        volatile int stateCalls;
+
+        public synchronized byte[] invoke(byte[] query) throws IOException
+        {
+            int id = new TlReader(query).readInt();
+            if (id == Api.UPDATES_GET_DIFFERENCE)
+            {
+                throw new RpcError(400, "PERSISTENT_TIMESTAMP_INVALID");
+            }
+            if (id == Api.UPDATES_GET_STATE)
+            {
+                stateCalls++;
+                return state(20, 0, 30, 4);
+            }
+            throw new IOException("unexpected cursor reset RPC");
+        }
+    }
+
+    private static final class TerminalChannelInvoker implements UpdateSync.Invoker
+    {
+        volatile int channelCalls;
+
+        public synchronized byte[] invoke(byte[] query) throws IOException
+        {
+            int id = new TlReader(query).readInt();
+            if (id == Api.UPDATES_GET_DIFFERENCE)
+            {
+                return differenceEmpty(20, 3);
+            }
+            if (id == Api.UPDATES_GET_CHANNEL_DIFFERENCE)
+            {
+                channelCalls++;
+                throw new RpcError(400, "CHANNEL_INVALID");
+            }
+            throw new IOException("unexpected terminal channel RPC");
+        }
+    }
+
+    private static final class PollInvoker implements UpdateSync.Invoker
+    {
+        volatile int differenceCalls;
+        private final boolean deliver;
+
+        PollInvoker(boolean deliver) { this.deliver = deliver; }
+
+        public synchronized byte[] invoke(byte[] query) throws IOException
+        {
+            int id = new TlReader(query).readInt();
+            if (id != Api.UPDATES_GET_DIFFERENCE)
+            {
+                throw new IOException("unexpected poll RPC");
+            }
+            differenceCalls++;
+            if (deliver && differenceCalls == 2)
+            {
+                return differenceWithMessage();
+            }
+            return differenceEmpty(20, 3);
+        }
+    }
+
     private static final class Capture implements UpdateSync.Listener
     {
         volatile int messageCount;
@@ -296,6 +584,8 @@ public final class UpdateSyncTest implements Test
         volatile Message lastMessage;
         volatile Message lastEdit;
         volatile tg.api.ReadState lastRead;
+        volatile boolean sawRetry;
+        volatile int fullRefreshCount;
 
         public synchronized void onBatch(UpdateBatch batch)
         {
@@ -303,6 +593,8 @@ public final class UpdateSyncTest implements Test
             messageCount += batch.messages.length;
             editCount += batch.edits.length;
             readCount += batch.reads.length;
+            if (batch.retrySeconds >= 0) { sawRetry = true; }
+            if (batch.fullRefresh) { fullRefreshCount++; }
             if (batch.messages.length > 0)
             {
                 lastMessage = batch.messages[batch.messages.length - 1];
@@ -347,6 +639,17 @@ public final class UpdateSyncTest implements Test
             }
             Assert.equal("edit callback count", expected, editCount);
         }
+
+        synchronized void waitFullRefreshes(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (fullRefreshCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(20);
+            }
+            Assert.equal("full refresh callback count", expected,
+                    fullRefreshCount);
+        }
     }
 
     private static byte[] state(int pts, int qts, int date, int seq)
@@ -367,6 +670,28 @@ public final class UpdateSyncTest implements Test
         w.writeInt(Api.UPDATES_DIFFERENCE_EMPTY);
         w.writeInt(date);
         w.writeInt(seq);
+        return w.toByteArray();
+    }
+
+    private static byte[] differenceWithMessage()
+    {
+        TlWriter w = new TlWriter(160);
+        w.writeInt(Api.UPDATES_DIFFERENCE);
+        w.writeVectorHeader(1);               // new_messages
+        w.writeInt(Api.MESSAGE);
+        w.writeInt(0);                        // flags
+        w.writeInt(0);                        // flags2
+        w.writeInt(9);                        // id
+        w.writeInt(Api.PEER_USER);
+        w.writeLong(200);
+        w.writeInt(21);                       // date
+        w.writeString("from poll");
+        w.writeVectorHeader(0);               // new_encrypted_messages
+        w.writeVectorHeader(0);               // other_updates
+        w.writeVectorHeader(0);               // chats
+        w.writeVectorHeader(0);               // users
+        byte[] fresh = state(11, 0, 21, 3);
+        w.writeRaw(fresh, 0, fresh.length);    // state
         return w.toByteArray();
     }
 
@@ -473,5 +798,65 @@ public final class UpdateSyncTest implements Test
             Thread.sleep(20);
         }
         Assert.equal("difference calls", expected, rpc.differenceCalls);
+    }
+
+    private static void waitDifferenceCalls(PollInvoker rpc, int expected)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + 3000;
+        while (rpc.differenceCalls < expected && System.currentTimeMillis() < until)
+        {
+            Thread.sleep(10);
+        }
+        Assert.equal("poll difference calls", expected, rpc.differenceCalls);
+    }
+
+    private static void waitForChannelCalls(FailingChannelInvoker rpc, int expected)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + 3000;
+        while (rpc.channelCalls < expected && System.currentTimeMillis() < until)
+        {
+            Thread.sleep(10);
+        }
+        Assert.equal("isolated channel calls", expected, rpc.channelCalls);
+    }
+
+    private static void waitForChannelCalls(TerminalChannelInvoker rpc,
+                                            int expected) throws Exception
+    {
+        long until = System.currentTimeMillis() + 3000;
+        while (rpc.channelCalls < expected && System.currentTimeMillis() < until)
+        {
+            Thread.sleep(10);
+        }
+        Assert.equal("terminal channel calls", expected, rpc.channelCalls);
+    }
+
+    private static MemoryUpdateStateStore storedState(long accountId, int pts)
+            throws Exception
+    {
+        MemoryUpdateStateStore store = new MemoryUpdateStateStore();
+        UpdateState initial = new UpdateState();
+        initial.accountId = accountId;
+        initial.testEnvironment = Dc.isTest();
+        initial.pts = pts;
+        initial.date = 20;
+        initial.seq = 3;
+        store.save(initial);
+        return store;
+    }
+
+    private static PeerCache peers()
+    {
+        PeerCache peers = new PeerCache();
+        Peer self = new Peer(Peer.USER, 100);
+        self.self = true;
+        self.accessHash = 1;
+        peers.put(self);
+        Peer other = new Peer(Peer.USER, 200);
+        other.accessHash = 2;
+        peers.put(other);
+        return peers;
     }
 }

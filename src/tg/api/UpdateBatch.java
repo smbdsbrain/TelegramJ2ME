@@ -15,4 +15,6 @@ public final class UpdateBatch
     public boolean fullRefresh;
     public String syncState;
     public String detail;
+    /** Seconds until the next automatic sync attempt, or -1 when none. */
+    public int retrySeconds = -1;
 }

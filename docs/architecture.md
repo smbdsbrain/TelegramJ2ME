@@ -81,7 +81,7 @@ can run at several layers, each answering a different question:
 | the desktop harness (`tools/test.sh` / `.ps1`) | is the algorithm right |
 | the shipped `dist/probe.jar` on a desktop JVM | did ProGuard's shrink and preverify change behaviour |
 | MicroEmulator | does it survive a MIDP runtime |
-| a physical device | does it survive a vendor VM and AMS - measured on three handsets, with evidence bounded per device |
+| a physical device | does it survive a vendor VM and AMS - measured on four handsets, with evidence bounded per device |
 
 A failure at a later stage that passed an earlier one localises the bug to the
 toolchain rather than the mathematics - which is worth a great deal when the
@@ -329,6 +329,24 @@ CLDC has no `java.util.concurrent`. The rules are:
   unsolicited bodies; parsing, difference RPCs and state persistence must never
   run on that reader because it delivers their `rpc_result`.
 
+That same update worker owns live-delivery recovery; no timer thread is added.
+An unsolicited update is the fast path. `updates.getDifference` repairs the
+common cursor on connect/resume and after a detected gap, and also runs as a
+foreground safety audit after 30 seconds without a successfully parsed push.
+The worker waits for at most 30 seconds at a time so a handset clock jump cannot
+strand the deadline. Pause/offline clears the audit deadline and the next online
+transition performs an immediate catch-up.
+
+Recovery failures do not redefine connection lifecycle. Temporary common,
+channel, and audit failures have independent `1, 2, 4, 8, 15, 30` second
+backoff (then 30 seconds), while server `FLOOD_WAIT` values are honoured.
+Required common recovery gates queued envelopes until its authoritative
+difference succeeds; the queue remains bounded and overflow requests another
+difference. Channel failures never gate private/common updates. An unusable
+common persistent timestamp is rebased with `updates.getState` and one snapshot;
+an inaccessible channel requests one snapshot and is not polled again until it
+is left and reopened.
+
 **A refused submission is an outcome, and every caller handles it.** `Worker`
 runs one operation at a time and answers `false` rather than queueing, because
 Telegram operations share one connection and one session — two of them at once
@@ -484,7 +502,7 @@ no longer spins on `worker.isBusy()` at all: it tries the submission, and a
 refusal — an ordinary outcome, because the user can act at any moment —
 schedules one wake to try again, backing off 250 ms → 4 s.
 
-CLDC has no monotonic clock, and one of the three handsets resets its clock to
+CLDC has no monotonic clock, and one of the four handsets resets its clock to
 2011 on every power cycle. A backward jump would turn a two-second wait into a
 fourteen-year one, so a single `wait` is capped at 30 s and the deadline re-read
 afterwards.
