@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+
+- Forum supergroups open as a topic list (issue #17): a bounded, windowed
+  topic screen between the chat list and the transcript, per-topic history
+  via `messages.getReplies`, sends that write `top_msg_id`, per-topic read
+  cursors via `messages.readDiscussion`, unread badges, closed/hidden
+  markers, live row updates, and in-topic message search.
+- Channel comments: posts show their comment count, a `Comments` action opens
+  the linked discussion thread, and replies can be sent into it.
+- The open transcript's identity is `(peer, thread)` end to end: staleness
+  guards, read marks, the acknowledgement queue, local read reconciliation,
+  the composer, drafts, and the outbox all carry the thread beside the peer.
+- Live per-thread read sync from other devices
+  (`updateReadChannelDiscussionInbox`), and channel pts seeding from thread
+  responses so discussion groups outside the dialog window do not loop on
+  snapshot recovery.
+- A `forum` live scenario (`./tools/live.ps1 forum`) driving the whole
+  feature end to end against a prepared account.
+
+### Changed
+
+- Outbox records are v3 (the thread survives a power cut before the first
+  send; `random_id` is still never regenerated), drafts are envelope v2
+  (keyed by peer and thread), history cache is v4 (keyed by peer and thread,
+  carrying the reply-header thread facts), and the dialog cache is v2
+  (carrying the forum flag so an offline forum opens as its topic list).
+  Every legacy format is still read as thread 0.
+- The navigation stack floor is five screens: chat list, topic list,
+  transcript, photo, over the root.
+
+### Fixed
+
+- Sending a reply in a forum no longer lands outside every topic: the topic
+  root travels in `inputReplyToMessage.top_msg_id`.
+- Plain topic messages no longer carry a "Reply to" caption naming the
+  topic's root service message; the caption stays on real replies. Verified
+  on a physical Nokia E6-00.
+
+### Compatibility notes
+
+- Downgrading discards history-cache v4 and dialog-cache v2 records; they are
+  refetched. Auth keys, outbox, drafts, and update cursors are unaffected.
+- Topic management (create/close/pin) is out of scope; forwarding into a
+  forum lands in General.
+
 ## 1.0.1
 
 ### Added
