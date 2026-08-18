@@ -64,15 +64,19 @@ public final class AsyncScope
     private volatile int chat;
 
     /**
-     * The last conversation that was open, as kind and id rather than as a
-     * {@link Peer}.
+     * The last conversation that was open, as kind, id and thread root rather
+     * than as a {@link Peer}.
      *
-     * Two ints, not the object: a {@code Peer} carries a contact's name, and a
-     * logout is supposed to leave none of those behind. {@code kind} is -1 when
-     * no chat has been open in this session yet.
+     * Primitives, not the object: a {@code Peer} carries a contact's name, and
+     * a logout is supposed to leave none of those behind. {@code kind} is -1
+     * when no chat has been open in this session yet. The thread root is part
+     * of the identity because two topics of one forum are different
+     * transcripts at the same peer, and a page in flight for one must not
+     * land in the other.
      */
     private int lastKind = -1;
     private long lastId;
+    private int lastThread;
 
     /**
      * The context an asynchronous request was made in.
@@ -87,19 +91,27 @@ public final class AsyncScope
         private final int session;
         private final int chat;
         private final Peer peer;
+        private final int thread;
 
-        Token(AsyncScope scope, int session, int chat, Peer peer)
+        Token(AsyncScope scope, int session, int chat, Peer peer, int thread)
         {
             this.scope = scope;
             this.session = session;
             this.chat = chat;
             this.peer = peer;
+            this.thread = thread;
         }
 
         /** The peer this was captured for, or null when it was not about one. */
         public Peer peer()
         {
             return peer;
+        }
+
+        /** The thread root captured beside it, or 0. */
+        public int thread()
+        {
+            return thread;
         }
 
         /**
@@ -115,27 +127,29 @@ public final class AsyncScope
         }
 
         /**
-         * Same account, same open chat, and the chat has not been swapped for
-         * another and back.
+         * Same account, same open transcript - peer and thread both - and the
+         * conversation has not been swapped for another and back.
          *
-         * @param open the chat that is open now, usually {@code openPeer}
+         * @param open       the chat that is open now, usually {@code openPeer}
+         * @param openThread the thread root open now, 0 for a plain chat
          */
-        public boolean sameChat(Peer open)
+        public boolean sameChat(Peer open, int openThread)
         {
-            return sameSession() && chat == scope.chat && samePeer(peer, open);
+            return sameSession() && chat == scope.chat && samePeer(peer, open)
+                    && thread == openThread;
         }
     }
 
-    /** The context to guard a request about {@code peer} with; null for none. */
-    public Token capture(Peer peer)
+    /** The context to guard a request about {@code (peer, thread)} with. */
+    public Token capture(Peer peer, int thread)
     {
-        return new Token(this, session, chat, peer);
+        return new Token(this, session, chat, peer, thread);
     }
 
     /** The context to guard an account-level request with. */
     public Token capture()
     {
-        return capture(null);
+        return new Token(this, session, chat, null, 0);
     }
 
     /**
@@ -150,35 +164,41 @@ public final class AsyncScope
         chat++;
         lastKind = -1;
         lastId = 0;
+        lastThread = 0;
     }
 
     /**
-     * {@code to} is now the open chat, or nothing is when it is null.
+     * {@code (to, thread)} is now the open transcript, or nothing is when
+     * {@code to} is null.
      *
-     * Only a move to a <em>different</em> conversation bumps.
+     * Only a move to a <em>different</em> conversation bumps - and a different
+     * thread of the same peer is a different conversation: its pages come from
+     * another request against other offsets.
      *
-     * Closing does not, and neither does reopening the same chat afterwards.
-     * That is why the mark survives a null rather than being cleared by it: a
-     * reader who backs out of a chat and comes straight in again - or lands
-     * there through the dialog list, which closes the chat on the way past -
-     * would otherwise have to press Refresh for a page that was already on its
-     * way to them. Closing needs no generation of its own: a token holds a
-     * peer, and a peer never matches a null current one.
+     * Closing does not bump, and neither does reopening the same transcript
+     * afterwards. That is why the mark survives a null rather than being
+     * cleared by it: a reader who backs out of a chat and comes straight in
+     * again - or lands there through the dialog list, which closes the chat on
+     * the way past - would otherwise have to press Refresh for a page that was
+     * already on its way to them. Closing needs no generation of its own: a
+     * token holds a peer, and a peer never matches a null current one.
      *
      * A detour <em>through</em> another chat does bump, and the page from the
      * first visit is then dropped even though the peer matches again. That one
      * is worth losing: it was requested against paging offsets the second visit
      * does not share.
      */
-    public void chatChanged(Peer to)
+    public void chatChanged(Peer to, int thread)
     {
         if (to == null) { return; }
-        if (lastKind >= 0 && !(lastKind == to.kind && lastId == to.id))
+        if (lastKind >= 0 && !(lastKind == to.kind && lastId == to.id
+                && lastThread == thread))
         {
             chat++;
         }
         lastKind = to.kind;
         lastId = to.id;
+        lastThread = thread;
     }
 
     /**

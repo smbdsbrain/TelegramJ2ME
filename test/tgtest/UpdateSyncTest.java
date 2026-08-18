@@ -30,6 +30,8 @@ public final class UpdateSyncTest implements Test
         requestEncoding();
         exactDuplicateGapAndOverflow();
         channelDifference();
+        seedFillsOnlyAbsentCursors();
+        threadReadsRouteWithoutRecovery();
         commonFailureRetries();
         channelFailureIsIsolated();
         terminalChannelFailureStopsPollingOnlyThatChannel();
@@ -250,6 +252,115 @@ public final class UpdateSyncTest implements Test
         Assert.equal("channel edit pts", 7,
                 sync.snapshot().channelPts(300));
         sync.close();
+    }
+
+    private static void seedFillsOnlyAbsentCursors() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        UpdateState state = store.load(100, Dc.isTest());
+        state.setChannelPts(300, 5);
+        store.save(state);
+        PeerCache peers = peers();
+
+        FakeInvoker rpc = new FakeInvoker();
+        UpdateSync sync = new UpdateSync(rpc, peers);
+        sync.setStore(store);
+        sync.setListener(new Capture());
+
+        // Before activation there is no state to seed; must not throw.
+        sync.seedChannelPts(555, 40);
+
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+
+        // A fresh channel - a discussion group, a just-opened forum - gets
+        // its cursor from the response that carried it.
+        sync.seedChannelPts(555, 40);
+        Assert.equal("absent cursor seeded", 40,
+                sync.snapshot().channelPts(555));
+
+        // A cursor the update stream maintains is never walked by a seed.
+        sync.seedChannelPts(555, 99);
+        Assert.equal("present cursor untouched", 40,
+                sync.snapshot().channelPts(555));
+        sync.seedChannelPts(300, 99);
+        Assert.equal("dialog-seeded cursor untouched", 5,
+                sync.snapshot().channelPts(300));
+
+        // A pts the response did not carry seeds nothing.
+        sync.seedChannelPts(556, 0);
+        Assert.equal("zero pts ignored", -1, sync.snapshot().channelPts(556));
+        sync.close();
+    }
+
+    /**
+     * A thread read on another device reaches the UI with its root, and a
+     * forum update this client ignores costs nothing - regression-pinned,
+     * because the fallthrough being free is what makes ignoring
+     * updatePinnedForumTopic safe at all.
+     */
+    private static void threadReadsRouteWithoutRecovery() throws Exception
+    {
+        MemoryUpdateStateStore store = storedState(100, 10);
+        UpdateState initial = store.load(100, Dc.isTest());
+        initial.setChannelPts(300, 5);
+        store.save(initial);
+        PeerCache peers = peers();
+        Peer channel = new Peer(Peer.CHANNEL, 300);
+        channel.accessHash = 44;
+        channel.title = "Forum";
+        peers.put(channel);
+
+        FakeInvoker rpc = new FakeInvoker();
+        Capture capture = new Capture();
+        UpdateSync sync = new UpdateSync(rpc, peers);
+        sync.setStore(store);
+        sync.setListener(capture);
+        sync.online();
+        sync.activate(100);
+        waitForState(sync, UpdateSync.LIVE);
+        int differenceCalls = rpc.differenceCalls;
+
+        sync.accept(discussionInbox(300, 400, 610));
+        capture.waitReads(1);
+        Assert.equal("thread read names its channel", 300L,
+                capture.lastRead.peer.id);
+        Assert.equal("and its root", 400, capture.lastRead.threadRootId);
+        Assert.equal("and its cursor", 610, capture.lastRead.inboxMaxId);
+        Assert.equal("no unread count is invented", -1,
+                capture.lastRead.unreadCount);
+
+        sync.accept(pinnedTopic(300, 400));
+        Thread.sleep(150);
+        Assert.equal("an ignored forum update asks for no recovery",
+                differenceCalls, rpc.differenceCalls);
+        Assert.equal("and the state stays live", UpdateSync.LIVE,
+                sync.syncState());
+        sync.close();
+    }
+
+    private static byte[] discussionInbox(long channelId, int topMsgId,
+            int readMaxId)
+    {
+        TlWriter w = new TlWriter(40);
+        w.writeInt(Api.UPDATE_READ_CHANNEL_DISCUSSION_INBOX);
+        w.writeInt(0);                       // flags: no broadcast half
+        w.writeLong(channelId);
+        w.writeInt(topMsgId);
+        w.writeInt(readMaxId);
+        return w.toByteArray();
+    }
+
+    private static byte[] pinnedTopic(long channelId, int topicId)
+    {
+        TlWriter w = new TlWriter(32);
+        w.writeInt(Api.UPDATE_PINNED_FORUM_TOPIC);
+        w.writeInt(1);                       // flags: pinned
+        w.writeInt(Api.PEER_CHANNEL);
+        w.writeLong(channelId);
+        w.writeInt(topicId);
+        return w.toByteArray();
     }
 
     private static void commonFailureRetries() throws Exception

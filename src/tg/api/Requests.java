@@ -365,15 +365,147 @@ public final class Requests
         return w.toByteArray();
     }
 
+    // -------------------------------------------------------------- threads
+
+    /**
+     * messages.getReplies#22ddd30c peer:InputPeer msg_id:int offset_id:int
+     *     offset_date:int add_offset:int limit:int max_id:int min_id:int
+     *     hash:long = messages.Messages
+     *
+     * The history of one thread - a forum topic's transcript, or a channel
+     * post's comments. {@code msg_id} is the thread's root message, and the
+     * paging fields work exactly like messages.getHistory's, which is why
+     * there are four of these mirroring the four above.
+     */
+    public static byte[] getRepliesLatest(Peer peer, int msgId, int limit)
+    {
+        return getRepliesBefore(peer, msgId, 0, limit);
+    }
+
+    public static byte[] getRepliesBefore(Peer peer, int msgId, int offsetId,
+                                          int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_GET_REPLIES);
+        writeInputPeer(w, peer);
+        w.writeInt(msgId);
+        w.writeInt(offsetId);
+        w.writeInt(0);                      // offset_date
+        w.writeInt(0);                      // add_offset
+        w.writeInt(limit);
+        w.writeInt(0);                      // max_id
+        w.writeInt(0);                      // min_id
+        w.writeLong(0);                     // hash
+        return w.toByteArray();
+    }
+
+    /** The page immediately newer than {@code offsetId}; see getHistoryAfter. */
+    public static byte[] getRepliesAfter(Peer peer, int msgId, int offsetId,
+                                         int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_GET_REPLIES);
+        writeInputPeer(w, peer);
+        w.writeInt(msgId);
+        w.writeInt(offsetId);
+        w.writeInt(0);                      // offset_date
+        w.writeInt(-limit);                 // add_offset
+        w.writeInt(limit);
+        w.writeInt(0);                      // max_id
+        w.writeInt(0);                      // min_id
+        w.writeLong(0);                     // hash
+        return w.toByteArray();
+    }
+
+    /** Bounded window of one thread centred around a known message id. */
+    public static byte[] getRepliesAround(Peer peer, int msgId, int messageId,
+                                          int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_GET_REPLIES);
+        writeInputPeer(w, peer);
+        w.writeInt(msgId);
+        w.writeInt(messageId);
+        w.writeInt(0);                      // offset_date
+        w.writeInt(-(limit / 2));           // add_offset
+        w.writeInt(limit);
+        w.writeInt(0);                      // max_id
+        w.writeInt(0);                      // min_id
+        w.writeLong(0);                     // hash
+        return w.toByteArray();
+    }
+
+    /**
+     * messages.getForumTopics#3ba47bff flags:# peer:InputPeer q:flags.0?string
+     *     offset_date:int offset_id:int offset_topic:int limit:int
+     *     = messages.ForumTopics
+     *
+     * Pages downward only, like messages.getDialogs: the offset triple comes
+     * from the last topic of the previous page, all zero for the first.
+     */
+    public static byte[] getForumTopics(Peer peer, int offsetDate,
+                                        int offsetId, int offsetTopic,
+                                        int limit)
+    {
+        TlWriter w = new TlWriter(64);
+        w.writeInt(Api.MESSAGES_GET_FORUM_TOPICS);
+        w.writeInt(0);                      // flags - no q
+        writeInputPeer(w, peer);
+        w.writeInt(offsetDate);
+        w.writeInt(offsetId);
+        w.writeInt(offsetTopic);
+        w.writeInt(limit);
+        return w.toByteArray();
+    }
+
+    /**
+     * messages.getDiscussionMessage#446972fd peer:InputPeer msg_id:int
+     *     = messages.DiscussionMessage
+     */
+    public static byte[] getDiscussionMessage(Peer peer, int msgId)
+    {
+        TlWriter w = new TlWriter(32);
+        w.writeInt(Api.MESSAGES_GET_DISCUSSION_MESSAGE);
+        writeInputPeer(w, peer);
+        w.writeInt(msgId);
+        return w.toByteArray();
+    }
+
+    /**
+     * messages.readDiscussion#f731a9f4 peer:InputPeer msg_id:int
+     *     read_max_id:int = Bool
+     *
+     * The per-thread read cursor readHistory cannot express; msg_id is the
+     * thread root.
+     */
+    public static byte[] readDiscussion(Peer peer, int msgId, int readMaxId)
+    {
+        TlWriter w = new TlWriter(48);
+        w.writeInt(Api.MESSAGES_READ_DISCUSSION);
+        writeInputPeer(w, peer);
+        w.writeInt(msgId);
+        w.writeInt(readMaxId);
+        return w.toByteArray();
+    }
+
     /** Bounded text search inside one peer. */
     public static byte[] searchMessages(Peer peer, String query, int offsetId,
                                         int addOffset, int limit)
     {
+        return searchMessages(peer, query, 0, offsetId, addOffset, limit);
+    }
+
+    /** @param threadRootId restricts matches to one thread; 0 for the peer */
+    public static byte[] searchMessages(Peer peer, String query,
+                                        int threadRootId, int offsetId,
+                                        int addOffset, int limit)
+    {
         TlWriter w = new TlWriter(96 + query.length() * 3);
         w.writeInt(Api.MESSAGES_SEARCH);
-        w.writeInt(0);                       // flags
+        w.writeInt(threadRootId > 0 ? 2 : 0); // flags - top_msg_id is flags.1
         writeInputPeer(w, peer);
         w.writeString(query);
+        if (threadRootId > 0) { w.writeInt(threadRootId); }
         w.writeInt(Api.INPUT_MESSAGES_FILTER_EMPTY);
         w.writeInt(0);                       // min_date
         w.writeInt(0);                       // max_date
@@ -403,19 +535,36 @@ public final class Requests
     public static byte[] sendMessage(Peer peer, String text, long randomId,
                                      int replyToMessageId)
     {
+        return sendMessage(peer, text, randomId, replyToMessageId, 0);
+    }
+
+    /**
+     * @param threadRootId topic or comment thread to land in; 0 for none.
+     *     General needs no header of its own - a forum message without one
+     *     lives there - so only roots above {@link ForumTopic#GENERAL_ID}
+     *     write {@code top_msg_id}, and a send into General produces the
+     *     exact bytes a plain send always did.
+     */
+    public static byte[] sendMessage(Peer peer, String text, long randomId,
+                                     int replyToMessageId, int threadRootId)
+    {
         MessageEntity[] entities = MessageEntity.detect(text,
                 MemoryBudget.messageEntityLimit());
+        boolean inThread = threadRootId > ForumTopic.GENERAL_ID;
         TlWriter w = new TlWriter(text.length() * 2 + 64);
         w.writeInt(Api.MESSAGES_SEND_MESSAGE);
-        int flags = replyToMessageId > 0 ? 1 : 0;
+        int flags = replyToMessageId > 0 || inThread ? 1 : 0;
         if (entities.length > 0) { flags |= 1 << 3; }
         w.writeInt(flags);
         writeInputPeer(w, peer);
-        if (replyToMessageId > 0)
+        if (replyToMessageId > 0 || inThread)
         {
+            // inputReplyToMessage#869fbe10 flags:# reply_to_msg_id:int
+            //     top_msg_id:flags.0?int ...
             w.writeInt(Api.INPUT_REPLY_TO_MESSAGE);
-            w.writeInt(0);
-            w.writeInt(replyToMessageId);
+            w.writeInt(inThread ? 1 : 0);
+            w.writeInt(replyToMessageId > 0 ? replyToMessageId : threadRootId);
+            if (inThread) { w.writeInt(threadRootId); }
         }
         w.writeString(text);
         w.writeLong(randomId);

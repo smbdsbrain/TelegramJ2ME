@@ -32,6 +32,7 @@ public final class MemoryBudgetTest implements Test
         "updateQueueBytes", "httpQueueBytes",
         "maxDialogs", "dialogPageSize", "maxHistory", "historyPageSize",
         "layoutWindowScreens", "historyPrefetchMargin", "dialogPrefetchMargin",
+        "maxTopics", "topicPageSize", "topicPrefetchMargin",
         "peerCacheEntries", "avatarCacheEntries", "thumbnailCacheEntries",
         "screenStackDepth", "photoPixels"
     };
@@ -50,6 +51,7 @@ public final class MemoryBudgetTest implements Test
         1024 * 1024, 2 * 1024 * 1024, 512 * 1024, 256 * 1024, 256 * 1024,
         120, 40, 120, 30,
         3, 15, 20,
+        60, 20, 8,
         500, 16, 12,
         16, 307200
     };
@@ -59,8 +61,9 @@ public final class MemoryBudgetTest implements Test
         256 * 1024, 192 * 1024, 48 * 1024, 32 * 1024, 64 * 1024,
         40, 10, 20, 10,
         1, 5, 5,
+        20, 10, 4,
         64, 2, 2,
-        4, 16384
+        5, 16384
     };
 
     /** The five that bound a single allocation and are also capped by the block. */
@@ -628,6 +631,9 @@ public final class MemoryBudgetTest implements Test
             MemoryBudget.layoutWindowScreens(),
             MemoryBudget.historyPrefetchMargin(),
             MemoryBudget.dialogPrefetchMargin(),
+            MemoryBudget.maxTopics(),
+            MemoryBudget.topicPageSize(),
+            MemoryBudget.topicPrefetchMargin(),
             MemoryBudget.peerCacheEntries(),
             MemoryBudget.avatarCacheEntries(),
             MemoryBudget.thumbnailCacheEntries(),

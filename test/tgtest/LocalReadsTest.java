@@ -43,7 +43,7 @@ public final class LocalReadsTest implements Test
     private static void aClearedBadgeSurvivesARefresh()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 4711);
+        reads.cleared(peer(7), 0, 4711);
 
         Dialog fromServer = dialog(7, 12, 4000);   // 12 unread, cursor behind
         reads.apply(fromServer);
@@ -61,7 +61,7 @@ public final class LocalReadsTest implements Test
     private static void itExpiresWhenTheServerAgrees()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 4711);
+        reads.cleared(peer(7), 0, 4711);
         Assert.equal("one chat is waiting", 1, reads.pending());
 
         Dialog caughtUp = dialog(7, 0, 4711);
@@ -77,7 +77,7 @@ public final class LocalReadsTest implements Test
     private static void aChatThatBecomesUnreadAgainShowsIt()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 100);
+        reads.cleared(peer(7), 0, 100);
 
         // The server has moved past what we acknowledged and there is new mail.
         Dialog fresh = dialog(7, 5, 140);
@@ -92,7 +92,7 @@ public final class LocalReadsTest implements Test
     private static void itIsBounded()
     {
         LocalReads reads = new LocalReads();
-        for (int i = 1; i <= 40; i++) { reads.cleared(peer(i), 100 + i); }
+        for (int i = 1; i <= 40; i++) { reads.cleared(peer(i), 0, 100 + i); }
 
         Assert.isTrue("bounded, whatever the user does: " + reads.pending(),
                 reads.pending() <= 16);
@@ -108,7 +108,7 @@ public final class LocalReadsTest implements Test
     private static void itIgnoresChatsItWasNeverToldAbout()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 4711);
+        reads.cleared(peer(7), 0, 4711);
 
         Dialog other = dialog(8, 6, 0);
         reads.apply(other);
@@ -122,8 +122,8 @@ public final class LocalReadsTest implements Test
     private static void aHigherClearReplacesALowerOne()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 100);
-        reads.cleared(peer(7), 250);
+        reads.cleared(peer(7), 0, 100);
+        reads.cleared(peer(7), 0, 250);
         Assert.equal("still one entry", 1, reads.pending());
 
         Dialog fresh = dialog(7, 4, 180);
@@ -135,7 +135,7 @@ public final class LocalReadsTest implements Test
     private static void loggingOutForgetsEverything()
     {
         LocalReads reads = new LocalReads();
-        reads.cleared(peer(7), 100);
+        reads.cleared(peer(7), 0, 100);
         reads.clear();
 
         Assert.equal("nothing is held", 0, reads.pending());

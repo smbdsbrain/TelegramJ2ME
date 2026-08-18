@@ -196,7 +196,26 @@ public final class MemoryBudget
     private static final int REF_THUMBNAILS      = 12;
     private static final int MIN_THUMBNAILS      = 2;
     private static final int REF_SCREEN_STACK    = 16;
-    private static final int MIN_SCREEN_STACK    = 4;
+
+    /**
+     * Five is root -> chat list -> topic list -> topic -> photo, the deepest
+     * path the client has since forums gained their own screen. Below it, Back
+     * out of a photo opened from a topic starts losing the way home.
+     */
+    private static final int MIN_SCREEN_STACK    = 5;
+
+    /**
+     * The topic list is the third scrollable window. Rows weigh about what a
+     * dialog row does, and most forums hold fewer topics than this reference,
+     * so the window usually covers the whole list and the restore stack behind
+     * it stays idle.
+     */
+    private static final int REF_TOPICS          = 60;
+    private static final int MIN_TOPICS          = 20;
+    private static final int REF_TOPIC_PAGE      = 20;
+    private static final int MIN_TOPIC_PAGE      = 10;
+    private static final int REF_TOPIC_MARGIN    = 8;
+    private static final int MIN_TOPIC_MARGIN    = 4;
 
     private static final int REF_PHOTO_PIXELS    = 307200;
     private static final int MIN_PHOTO_PIXELS    = 16384;
@@ -411,6 +430,24 @@ public final class MemoryBudget
         return scale(REF_PREFETCH_MARGIN, MIN_PREFETCH_MARGIN);
     }
 
+    /** Topic rows held around the reader. Not a limit on how far the list goes. */
+    public static int maxTopics() { return scale(REF_TOPICS, MIN_TOPICS); }
+
+    /** Topics fetched per messages.getForumTopics request. */
+    public static int topicPageSize()
+    {
+        return scale(REF_TOPIC_PAGE, MIN_TOPIC_PAGE);
+    }
+
+    /**
+     * Topic rows below the viewport before the next page is requested. The
+     * topic-list twin of {@link #dialogPrefetchMargin}.
+     */
+    public static int topicPrefetchMargin()
+    {
+        return scale(REF_TOPIC_MARGIN, MIN_TOPIC_MARGIN);
+    }
+
     /** Resolved users and chats kept for title and avatar lookup. */
     public static int peerCacheEntries() { return scale(REF_PEERS, MIN_PEERS); }
 
@@ -501,7 +538,8 @@ public final class MemoryBudget
         out[5] = "photoBytes = " + photoCompressedBytes()
                  + " photoPixels = " + photoPixels();
         out[6] = "dialogs = " + maxDialogs() + "/" + dialogPageSize()
-                 + " history = " + maxHistory() + "/" + historyPageSize();
+                 + " history = " + maxHistory() + "/" + historyPageSize()
+                 + " topics = " + maxTopics() + "/" + topicPageSize();
         out[7] = "peers = " + peerCacheEntries()
                  + " avatars = " + avatarCacheEntries()
                  + " thumbs = " + thumbnailCacheEntries()

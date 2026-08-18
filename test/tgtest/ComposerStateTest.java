@@ -46,12 +46,12 @@ public final class ComposerStateTest implements Test
     private static void writeStartsWithoutAReply()
     {
         Peer anna = user(10, "Anna");
-        ComposerState composer = ComposerState.write(anna);
+        ComposerState composer = ComposerState.write(anna, 0);
 
         Assert.equal("write carries no reply id", 0, composer.replyToMessageId());
         Assert.equal("write has the ordinary title", "Message", composer.title());
         Assert.isTrue("write is owned by the chat it was opened for",
-                composer.ownedBy(anna));
+                composer.ownedBy(anna, 0));
         Assert.isTrue("write keeps the peer it can address",
                 composer.peer() == anna);
     }
@@ -59,20 +59,20 @@ public final class ComposerStateTest implements Test
     private static void replyCapturesThePeerAndTheMessage()
     {
         Peer anna = user(10, "Anna");
-        ComposerState composer = ComposerState.reply(anna, 100);
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
 
         Assert.equal("reply carries the message id", 100,
                 composer.replyToMessageId());
         Assert.equal("reply names the message it answers", "Reply to #100",
                 composer.title());
         Assert.isTrue("reply is owned by the chat it was opened for",
-                composer.ownedBy(anna));
+                composer.ownedBy(anna, 0));
     }
 
     private static void editIsDistinctFromReply()
     {
         Peer anna = user(10, "Anna");
-        ComposerState composer = ComposerState.edit(anna, 101, "before");
+        ComposerState composer = ComposerState.edit(anna, 0, 101, "before");
         Assert.isTrue("edit mode", composer.isEdit());
         Assert.equal("edit id", 101, composer.editMessageId());
         Assert.equal("edit never leaks into reply", 0,
@@ -81,7 +81,7 @@ public final class ComposerStateTest implements Test
                 composer.originalText());
         Assert.equal("edit title", "Edit #101", composer.title());
         Assert.isTrue("missing edit text refused",
-                ComposerState.edit(anna, 101, "") == null);
+                ComposerState.edit(anna, 0, 101, "") == null);
     }
 
     private static void invalidOpensAreRefused()
@@ -92,13 +92,13 @@ public final class ComposerStateTest implements Test
         // non-positive id is not a message - both are refused at the factory so
         // no caller has to remember to check.
         Assert.isTrue("write without a chat is refused",
-                ComposerState.write(null) == null);
+                ComposerState.write(null, 0) == null);
         Assert.isTrue("reply without a chat is refused",
-                ComposerState.reply(null, 100) == null);
+                ComposerState.reply(null, 0, 100) == null);
         Assert.isTrue("reply to message 0 is refused",
-                ComposerState.reply(anna, 0) == null);
+                ComposerState.reply(anna, 0, 0) == null);
         Assert.isTrue("reply to a negative id is refused",
-                ComposerState.reply(anna, -1) == null);
+                ComposerState.reply(anna, 0, -1) == null);
     }
 
     // ------------------------------------------------------- the transitions
@@ -111,11 +111,11 @@ public final class ComposerStateTest implements Test
     {
         Peer anna = user(10, "Anna");
 
-        ComposerState composer = ComposerState.reply(anna, 100);
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
         Assert.equal("armed with a reply", 100, composer.replyToMessageId());
 
         composer = null;                        // blank Send: closeComposer()
-        composer = ComposerState.write(anna);   // Write
+        composer = ComposerState.write(anna, 0);   // Write
 
         Assert.equal("an ordinary Write after a reply carries no reply id", 0,
                 composer.replyToMessageId());
@@ -133,22 +133,22 @@ public final class ComposerStateTest implements Test
         Peer anna = user(10, "Anna");
         Peer group = new Peer(Peer.CHAT, 77);
 
-        ComposerState composer = ComposerState.reply(anna, 100);
-        Assert.isTrue("owned by the chat it was opened in", composer.ownedBy(anna));
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
+        Assert.isTrue("owned by the chat it was opened in", composer.ownedBy(anna, 0));
         Assert.isFalse("not owned by the chat that is open now",
-                composer.ownedBy(group));
+                composer.ownedBy(group, 0));
         Assert.isTrue("still addresses the chat it was opened in",
                 composer.peer() == anna);
 
         composer = null;                         // navigation reset closes it
-        composer = ComposerState.write(group);   // Write, now in the group
+        composer = ComposerState.write(group, 0);   // Write, now in the group
 
         Assert.isTrue("the new composer addresses the new chat",
                 composer.peer() == group);
         Assert.equal("no reply id crossed the chat boundary", 0,
                 composer.replyToMessageId());
         Assert.isFalse("and it is not owned by the previous chat",
-                composer.ownedBy(anna));
+                composer.ownedBy(anna, 0));
     }
 
     /**
@@ -159,19 +159,19 @@ public final class ComposerStateTest implements Test
     private static void identityIsFrozenAtCapture()
     {
         Peer anna = user(10, "Anna");
-        ComposerState composer = ComposerState.reply(anna, 100);
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
 
         Assert.isTrue("a later instance of the same chat is the owner",
-                composer.ownedBy(user(10, "Anna Smith")));
+                composer.ownedBy(user(10, "Anna Smith"), 0));
         Assert.isFalse("the same id in another kind of chat is not",
-                composer.ownedBy(new Peer(Peer.CHAT, 10)));
-        Assert.isFalse("nothing is owned by no chat", composer.ownedBy(null));
+                composer.ownedBy(new Peer(Peer.CHAT, 10), 0));
+        Assert.isFalse("nothing is owned by no chat", composer.ownedBy(null, 0));
 
         anna.id = 11;
         Assert.isFalse("mutating the captured peer does not move ownership",
-                composer.ownedBy(anna));
+                composer.ownedBy(anna, 0));
         Assert.isTrue("ownership stayed where it was captured",
-                composer.ownedBy(user(10, "Anna")));
+                composer.ownedBy(user(10, "Anna"), 0));
     }
 
     /**
@@ -185,9 +185,9 @@ public final class ComposerStateTest implements Test
 
         Assert.equal("largest possible id still renders",
                 "Reply to #2147483647",
-                ComposerState.reply(anna, Integer.MAX_VALUE).title());
+                ComposerState.reply(anna, 0, Integer.MAX_VALUE).title());
         Assert.isTrue("the label is bounded",
-                ComposerState.reply(anna, Integer.MAX_VALUE).title().length() <= 24);
+                ComposerState.reply(anna, 0, Integer.MAX_VALUE).title().length() <= 24);
     }
 
     /**
@@ -197,13 +197,13 @@ public final class ComposerStateTest implements Test
     private static void aRefusedSendKeepsTheStateForRetry()
     {
         Peer anna = user(10, "Anna");
-        ComposerState composer = ComposerState.reply(anna, 100);
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
 
         // Worker.submit answered false; nothing was assigned.
         Assert.isTrue("the composer is still open", composer != null);
         Assert.equal("the reply target survives a refusal", 100,
                 composer.replyToMessageId());
-        Assert.isTrue("and still addresses the same chat", composer.ownedBy(anna));
+        Assert.isTrue("and still addresses the same chat", composer.ownedBy(anna, 0));
     }
 
     // ------------------------------------------------------------- the draft
@@ -219,15 +219,15 @@ public final class ComposerStateTest implements Test
         Peer anna = user(10, "Anna");
         Peer group = new Peer(Peer.CHAT, 77);
 
-        ComposerState composer = ComposerState.reply(anna, 100);
+        ComposerState composer = ComposerState.reply(anna, 0, 100);
 
         // openPeer has moved on to the group; the autosave thread fires now.
-        drafts.save(composer.peer(), "half a sentence");
+        drafts.save(composer.peer(), 0, "half a sentence");
 
         Assert.equal("the draft went to the chat being composed for",
-                "half a sentence", drafts.load(anna));
+                "half a sentence", drafts.load(anna, 0));
         Assert.equal("and not to whichever chat is open now", "",
-                drafts.load(group));
+                drafts.load(group, 0));
     }
 
     // ------------------------------------------------------------- helpers

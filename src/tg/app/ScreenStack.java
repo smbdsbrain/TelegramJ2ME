@@ -23,13 +23,14 @@ public final class ScreenStack
     }
 
     /**
-     * @param capacity screens to retain; floored at four, which is root ->
-     *                 dialog list -> chat -> photo, the deepest path the client
-     *                 has. Below that, Back starts losing the way home.
+     * @param capacity screens to retain; floored at five, which is root ->
+     *                 chat list -> topic list -> topic -> photo, the deepest
+     *                 path the client has. Below that, Back starts losing the
+     *                 way home.
      */
     public ScreenStack(int capacity)
     {
-        if (capacity < 4) { capacity = 4; }
+        if (capacity < 5) { capacity = 5; }
         this.capacity = capacity;
         this.screens = new Displayable[capacity];
     }

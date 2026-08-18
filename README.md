@@ -91,6 +91,10 @@ anyone can do for this project right now.
 - Open a chat by `@username`
 - View a peer's profile
 - Mark all read
+- Forum supergroups open as a topic list — per-topic transcripts, unread
+  badges, read marks, drafts and sends that land in the right topic
+- Channel comments: posts show their comment count, and the thread opens and
+  accepts replies
 
 **Messages**
 - Read history and scroll back through it, loading older pages as you go
@@ -173,7 +177,9 @@ Photos are the one exception: those download and open.
 - Secret chats (end-to-end)
 - Voice and video calls
 - Folders, polls, scheduled messages, typing indicators
-- Group and channel administration
+- Group and channel administration, including topic management — topics are
+  read and written, not created, closed or pinned; forwarding into a forum
+  lands in General
 - Contact management
 - Stories, Mini Apps, bots beyond plain messages
 - Localisation — English only

@@ -49,15 +49,17 @@ public final class ReadQueue
     public interface Sink
     {
         /**
-         * Acknowledge {@code peer} up to {@code maxId}.
+         * Acknowledge {@code (peer, thread)} up to {@code maxId}; a thread of
+         * 0 is the peer's own transcript.
          *
          * Implementations report their own failures: a read that does not come
          * back is best effort and is not worth interrupting the reader for.
          */
-        void markRead(Peer peer, int maxId);
+        void markRead(Peer peer, int thread, int maxId);
     }
 
     private final Peer[] peers = new Peer[CAPACITY];
+    private final int[] threads = new int[CAPACITY];
     private final int[] maxIds = new int[CAPACITY];
     private int count;
 
@@ -68,18 +70,21 @@ public final class ReadQueue
     private int dropped;
 
     /**
-     * Queue an acknowledgement, or raise the one this chat already has.
+     * Queue an acknowledgement, or raise the one this conversation already
+     * has. Coalescing is per {@code (peer, thread)}: two topics of one forum
+     * hold independent cursors and must not overwrite each other's.
      *
      * @param peer  the conversation; must be addressable, since the drain sends
      *              it to the wire without resolving it again
      * @return true when the caller must start the drain thread
      */
-    public synchronized boolean offer(Peer peer, int maxId)
+    public synchronized boolean offer(Peer peer, int thread, int maxId)
     {
         if (peer == null || maxId <= 0) { return false; }
         for (int i = 0; i < count; i++)
         {
-            if (peers[i].kind == peer.kind && peers[i].id == peer.id)
+            if (peers[i].kind == peer.kind && peers[i].id == peer.id
+                    && threads[i] == thread)
             {
                 if (maxId > maxIds[i]) { maxIds[i] = maxId; }
                 return startDraining();
@@ -96,6 +101,7 @@ public final class ReadQueue
             removeFirst();
         }
         peers[count] = peer;
+        threads[count] = thread;
         maxIds[count] = maxId;
         count++;
         return startDraining();
@@ -109,6 +115,7 @@ public final class ReadQueue
     public boolean drainOne(Sink sink)
     {
         Peer peer;
+        int thread;
         int maxId;
         synchronized (this)
         {
@@ -118,12 +125,13 @@ public final class ReadQueue
                 return false;
             }
             peer = peers[0];
+            thread = threads[0];
             maxId = maxIds[0];
             removeFirst();
         }
         // Outside the lock: this is a network round trip, and holding the lock
         // across it would block every producer for its duration.
-        try { sink.markRead(peer, maxId); }
+        try { sink.markRead(peer, thread, maxId); }
         catch (Throwable ignored)
         {
             // The sink reports its own failures. Catching here only keeps one
@@ -168,6 +176,7 @@ public final class ReadQueue
     private void removeFirst()
     {
         System.arraycopy(peers, 1, peers, 0, count - 1);
+        System.arraycopy(threads, 1, threads, 0, count - 1);
         System.arraycopy(maxIds, 1, maxIds, 0, count - 1);
         count--;
         peers[count] = null;

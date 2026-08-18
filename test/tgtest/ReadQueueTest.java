@@ -58,9 +58,9 @@ public final class ReadQueueTest implements Test
         Peer group = new Peer(Peer.CHAT, 77);
 
         Assert.isTrue("the first acknowledgement starts the drain",
-                queue.offer(anna, 500));
+                queue.offer(anna, 0, 500));
         Assert.isFalse("the second only joins the queue",
-                queue.offer(group, 900));
+                queue.offer(group, 0, 900));
         Assert.equal("both are waiting", 2, queue.size());
 
         Sink sink = new Sink();
@@ -83,11 +83,11 @@ public final class ReadQueueTest implements Test
         ReadQueue queue = new ReadQueue();
         Peer anna = user(10, "Anna");
 
-        queue.offer(anna, 500);
-        queue.offer(anna, 700);
+        queue.offer(anna, 0, 500);
+        queue.offer(anna, 0, 700);
         // A later instance of the same conversation: Peer is mutable and arrives
         // fresh from every dialog page, so ownership is kind and id.
-        queue.offer(user(10, "Anna Smith"), 600);
+        queue.offer(user(10, "Anna Smith"), 0, 600);
 
         Assert.equal("one conversation is one entry", 1, queue.size());
 
@@ -108,13 +108,13 @@ public final class ReadQueueTest implements Test
         ReadQueue queue = new ReadQueue();
         Sink sink = new Sink();
 
-        queue.offer(user(10, "Anna"), 500);
+        queue.offer(user(10, "Anna"), 0, 500);
         Assert.isTrue("one entry drains", queue.drainOne(sink));
         Assert.isFalse("an empty queue ends the drain", queue.drainOne(sink));
         Assert.equal("nothing extra was sent", 1, sink.count());
 
         Assert.isTrue("and the next producer starts a new drain",
-                queue.offer(user(11, "Boris"), 600));
+                queue.offer(user(11, "Boris"), 0, 600));
     }
 
     /** One drain thread, however many producers. */
@@ -122,9 +122,9 @@ public final class ReadQueueTest implements Test
     {
         ReadQueue queue = new ReadQueue();
 
-        Assert.isTrue("the first starts it", queue.offer(user(10, "Anna"), 1));
-        Assert.isFalse("the second does not", queue.offer(user(11, "B"), 2));
-        Assert.isFalse("nor does a third", queue.offer(user(12, "C"), 3));
+        Assert.isTrue("the first starts it", queue.offer(user(10, "Anna"), 0, 1));
+        Assert.isFalse("the second does not", queue.offer(user(11, "B"), 0, 2));
+        Assert.isFalse("nor does a third", queue.offer(user(12, "C"), 0, 3));
 
         Sink sink = new Sink();
         while (queue.drainOne(sink)) { }
@@ -142,12 +142,12 @@ public final class ReadQueueTest implements Test
         ReadQueue queue = new ReadQueue();
         for (int i = 0; i < ReadQueue.CAPACITY; i++)
         {
-            queue.offer(user(100 + i, "chat " + i), 10 + i);
+            queue.offer(user(100 + i, "chat " + i), 0, 10 + i);
         }
         Assert.equal("the queue is full", ReadQueue.CAPACITY, queue.size());
         Assert.equal("and has dropped nothing yet", 0, queue.dropped());
 
-        queue.offer(user(999, "one too many"), 999);
+        queue.offer(user(999, "one too many"), 0, 999);
         Assert.equal("it is still bounded", ReadQueue.CAPACITY, queue.size());
         Assert.equal("and the drop is counted rather than silent", 1,
                 queue.dropped());
@@ -163,7 +163,7 @@ public final class ReadQueueTest implements Test
         // same conversation a hundred times is one entry, not a hundred.
         ReadQueue busy = new ReadQueue();
         Peer anna = user(10, "Anna");
-        for (int i = 1; i <= 100; i++) { busy.offer(anna, i); }
+        for (int i = 1; i <= 100; i++) { busy.offer(anna, 0, i); }
         Assert.equal("a hundred reads of one chat is one entry", 1, busy.size());
         Assert.equal("and drops nothing", 0, busy.dropped());
     }
@@ -175,8 +175,8 @@ public final class ReadQueueTest implements Test
     private static void aFailingSinkDoesNotStrandTheRest()
     {
         ReadQueue queue = new ReadQueue();
-        queue.offer(user(10, "Anna"), 500);
-        queue.offer(user(11, "Boris"), 600);
+        queue.offer(user(10, "Anna"), 0, 500);
+        queue.offer(user(11, "Boris"), 0, 600);
 
         Sink sink = new Sink();
         sink.failOn("user:10=500");
@@ -194,8 +194,8 @@ public final class ReadQueueTest implements Test
     private static void clearForgetsEverything()
     {
         ReadQueue queue = new ReadQueue();
-        queue.offer(user(10, "Anna"), 500);
-        queue.offer(user(11, "Boris"), 600);
+        queue.offer(user(10, "Anna"), 0, 500);
+        queue.offer(user(11, "Boris"), 0, 600);
 
         queue.clear();
         Assert.equal("nothing is retained", 0, queue.size());
@@ -205,7 +205,7 @@ public final class ReadQueueTest implements Test
         Assert.equal("nothing at all", 0, sink.count());
 
         Assert.isTrue("a cleared queue starts a fresh drain",
-                queue.offer(user(12, "Vera"), 700));
+                queue.offer(user(12, "Vera"), 0, 700));
     }
 
     // ---------------------------------------------------------------- fixtures
@@ -230,7 +230,7 @@ public final class ReadQueueTest implements Test
 
         String at(int index) { return sent.get(index); }
 
-        public void markRead(Peer peer, int maxId)
+        public void markRead(Peer peer, int thread, int maxId)
         {
             String entry = kind(peer) + ":" + peer.id + "=" + maxId;
             sent.add(entry);

@@ -1244,8 +1244,186 @@ public final class Telegram
                 peer, messageId, limit)), "messages.getHistory/around");
     }
 
-    /** One bounded page of text matches inside {@code peer}. */
-    public MessageSearchPage searchMessages(Peer peer, String query,
+    /** History of one thread, newest first; thread 0 is the peer's own. */
+    public Message[] getHistory(Peer peer, int thread, int limit)
+            throws IOException
+    {
+        if (thread <= 0) { return getHistory(peer, limit); }
+        return parseRepliesReply(invoke(Requests.getRepliesLatest(
+                peer, thread, limit)), peer, "messages.getReplies");
+    }
+
+    public Message[] getHistoryBefore(Peer peer, int thread, int offsetId,
+                                      int limit) throws IOException
+    {
+        if (thread <= 0) { return getHistoryBefore(peer, offsetId, limit); }
+        return parseRepliesReply(invoke(Requests.getRepliesBefore(
+                peer, thread, offsetId, limit)), peer,
+                "messages.getReplies/older");
+    }
+
+    public Message[] getHistoryAfter(Peer peer, int thread, int offsetId,
+                                     int limit) throws IOException
+    {
+        if (thread <= 0) { return getHistoryAfter(peer, offsetId, limit); }
+        return parseRepliesReply(invoke(Requests.getRepliesAfter(
+                peer, thread, offsetId, limit)), peer,
+                "messages.getReplies/newer");
+    }
+
+    public Message[] getHistoryAround(Peer peer, int thread, int messageId,
+                                      int limit) throws IOException
+    {
+        if (thread <= 0) { return getHistoryAround(peer, messageId, limit); }
+        return parseRepliesReply(invoke(Requests.getRepliesAround(
+                peer, thread, messageId, limit)), peer,
+                "messages.getReplies/around");
+    }
+
+    /**
+     * One page of a forum's topic list.
+     *
+     * @param offset the last topic of the previous page - a topic row is its
+     *               own offset triple - or null for the first page
+     */
+    public ForumTopicPage getForumTopics(Peer channel, ForumTopic offset,
+                                         int limit) throws IOException
+    {
+        if (channel == null || !peers.isAddressable(channel))
+        {
+            throw new IOException("forum peer is not addressable");
+        }
+        byte[] result = invoke(Requests.getForumTopics(channel,
+                offset == null ? 0 : offset.lastDate,
+                offset == null ? 0 : offset.topMessageId,
+                offset == null ? 0 : offset.id,
+                limit));
+        TlObj res = TlParser.parse(new TlReader(result));
+        if (res == null || res.id != Api.MESSAGES_FORUM_TOPICS)
+        {
+            throw new IOException("unexpected reply to messages.getForumTopics: "
+                                  + describe(res));
+        }
+        peers.absorb(res.vec(Api.F_MESSAGES_FORUM_TOPICS__USERS),
+                     res.vec(Api.F_MESSAGES_FORUM_TOPICS__CHATS));
+        updates.seedChannelPts(channel.id,
+                res.intAt(Api.F_MESSAGES_FORUM_TOPICS__PTS));
+
+        TlObj[] topics = res.vec(Api.F_MESSAGES_FORUM_TOPICS__TOPICS);
+        TlObj[] messages = res.vec(Api.F_MESSAGES_FORUM_TOPICS__MESSAGES);
+        int n = topics == null ? 0 : topics.length;
+        ForumTopic[] out = new ForumTopic[n];
+        int w = 0;
+        for (int i = 0; i < n; i++)
+        {
+            ForumTopic t = ForumTopic.from(topics[i]);
+            if (t == null)
+            {
+                continue;               // forumTopicDeleted has no row
+            }
+            Message last = findMessage(messages, t.topMessageId, channel);
+            if (last != null)
+            {
+                t.lastMessage = Dialog.clipPreview(last.summaryText());
+                t.lastDate = last.date;
+                t.lastOutgoing = last.outgoing;
+            }
+            out[w++] = t;
+        }
+        if (w != n)
+        {
+            ForumTopic[] trimmed = new ForumTopic[w];
+            System.arraycopy(out, 0, trimmed, 0, w);
+            out = trimmed;
+        }
+        ForumTopicPage page = new ForumTopicPage();
+        page.topics = out;
+        page.total = res.intAt(Api.F_MESSAGES_FORUM_TOPICS__COUNT);
+        // Deleted rows are skipped above, so the served count can overstate
+        // what this client shows; never let it understate it.
+        if (page.total < w) { page.total = w; }
+        return page;
+    }
+
+    /**
+     * Where a channel post's comments live.
+     *
+     * The reply's messages vector holds the post and its auto-forwarded copy
+     * in the linked discussion group; the copy - the element whose peer is
+     * not the asked channel - is the thread root. When the asked peer already
+     * is the discussion group, the first message is that root itself.
+     */
+    public DiscussionInfo getDiscussionMessage(Peer channel, int msgId)
+            throws IOException
+    {
+        if (channel == null || !peers.isAddressable(channel))
+        {
+            throw new IOException("comments peer is not addressable");
+        }
+        if (msgId <= 0) { throw new IOException("message is not sent yet"); }
+        TlObj res = TlParser.parse(new TlReader(invoke(
+                Requests.getDiscussionMessage(channel, msgId))));
+        if (res == null || res.id != Api.MESSAGES_DISCUSSION_MESSAGE)
+        {
+            throw new IOException(
+                    "unexpected reply to messages.getDiscussionMessage: "
+                    + describe(res));
+        }
+        peers.absorb(res.vec(Api.F_MESSAGES_DISCUSSION_MESSAGE__USERS),
+                     res.vec(Api.F_MESSAGES_DISCUSSION_MESSAGE__CHATS));
+        TlObj[] messages = res.vec(Api.F_MESSAGES_DISCUSSION_MESSAGE__MESSAGES);
+        Message root = null;
+        for (int i = 0; messages != null && i < messages.length; i++)
+        {
+            Message m = Message.from(messages[i], peers);
+            if (m == null || m.peer == null)
+            {
+                continue;
+            }
+            if (root == null)
+            {
+                root = m;
+            }
+            if (!(m.peer.kind == channel.kind && m.peer.id == channel.id))
+            {
+                root = m;
+                break;
+            }
+        }
+        if (root == null || root.peer == null)
+        {
+            throw new IOException("discussion thread has no root message");
+        }
+        DiscussionInfo info = new DiscussionInfo();
+        info.discussionPeer = peers.resolve(root.peer);
+        info.rootMessageId = root.id;
+        info.readInboxMaxId = res.intAt(
+                Api.F_MESSAGES_DISCUSSION_MESSAGE__READ_INBOX_MAX_ID);
+        info.unreadCount = res.intAt(
+                Api.F_MESSAGES_DISCUSSION_MESSAGE__UNREAD_COUNT);
+        return info;
+    }
+
+    /**
+     * A thread page is a channel-messages reply that also carries pts. A
+     * discussion group is usually outside the dialog window, so this is the
+     * only seed its update cursor gets; unseeded, channel recovery falls back
+     * to full snapshots.
+     */
+    private Message[] parseRepliesReply(byte[] result, Peer peer, String method)
+            throws IOException
+    {
+        TlObj res = TlParser.parse(new TlReader(result));
+        if (res != null && res.id == Api.MESSAGES_CHANNEL_MESSAGES)
+        {
+            updates.seedChannelPts(peer.id,
+                    res.intAt(Api.F_MESSAGES_CHANNEL_MESSAGES__PTS));
+        }
+        return parseMessagesReply(res, method);
+    }
+
+    /** One bounded page of text matches inside {@code (peer, thread)}. */
+    public MessageSearchPage searchMessages(Peer peer, int thread, String query,
             int offsetId, int addOffset, int limit) throws IOException
     {
         if (peer == null || !peers.isAddressable(peer))
@@ -1258,7 +1436,7 @@ public final class Telegram
         if (limit < 1) { limit = 1; }
         if (limit > 30) { limit = 30; }
         TlObj reply = TlParser.parse(new TlReader(invoke(Requests.searchMessages(
-                peer, query, offsetId, addOffset, limit))));
+                peer, query, thread, offsetId, addOffset, limit))));
         MessageSearchPage page = MessageSearchPage.from(
                 reply, peers, limit, offsetId);
         if (page == null)
@@ -1272,7 +1450,12 @@ public final class Telegram
     private Message[] parseMessagesReply(byte[] result, String method)
             throws IOException
     {
-        TlObj res = TlParser.parse(new TlReader(result));
+        return parseMessagesReply(TlParser.parse(new TlReader(result)), method);
+    }
+
+    private Message[] parseMessagesReply(TlObj res, String method)
+            throws IOException
+    {
         if (res == null)
         {
             throw new IOException("empty reply to " + method);
@@ -1607,7 +1790,14 @@ public final class Telegram
      */
     public void sendMessage(Peer peer, String text) throws IOException
     {
-        sendMessage(peer, text, rng.nextLong(), 0);
+        sendMessage(peer, text, rng.nextLong(), 0, 0);
+    }
+
+    /** Send into one thread; General and thread 0 degenerate to a plain send. */
+    public void sendMessage(Peer peer, String text, int threadRootId)
+            throws IOException
+    {
+        sendMessage(peer, text, rng.nextLong(), 0, threadRootId);
     }
 
     /** Edit one server-side text message and feed its Updates through sync. */
@@ -1632,7 +1822,8 @@ public final class Telegram
     }
 
     private void sendMessage(Peer peer, String text, long randomId,
-                             int replyToMessageId) throws IOException
+                             int replyToMessageId, int threadRootId)
+            throws IOException
     {
         if (!peers.isAddressable(peer))
         {
@@ -1640,7 +1831,7 @@ public final class Telegram
                                   + " - no access_hash. Refresh the dialog list.");
         }
         byte[] result = invoke(Requests.sendMessage(
-                peer, text, randomId, replyToMessageId));
+                peer, text, randomId, replyToMessageId, threadRootId));
         TlObj updateObject = TlParser.parse(new TlReader(result));
         Diag.info("sent " + text.length() + " chars to " + peer
                   + ", server replied " + describe(updateObject));
@@ -1653,11 +1844,13 @@ public final class Telegram
      */
     public OutgoingMessage enqueueMessage(Peer peer, String text) throws IOException
     {
-        return enqueueMessage(peer, text, 0);
+        return enqueueMessage(peer, text, 0, 0);
     }
 
+    /** @param threadRootId topic or comment thread to land in, 0 for none */
     public OutgoingMessage enqueueMessage(Peer peer, String text,
-                                           int replyToMessageId)
+                                           int replyToMessageId,
+                                           int threadRootId)
             throws IOException
     {
         if (outgoingStore == null) { throw new IOException("outbox is not configured"); }
@@ -1672,7 +1865,8 @@ public final class Telegram
                     + " - no access_hash. Refresh the dialog list.");
         }
         OutgoingMessage message = outgoingStore.add(peer, text,
-                replyToMessageId, rng.nextLong(), System.currentTimeMillis());
+                replyToMessageId, threadRootId, rng.nextLong(),
+                System.currentTimeMillis());
         notifyOutboxChanged();
         startOutboxDrain();
         return message;
@@ -1793,7 +1987,7 @@ public final class Telegram
                 try
                 {
                     sendMessage(next.peer(), next.text, next.randomId,
-                            next.replyToMessageId);
+                            next.replyToMessageId, next.threadRootId);
                     if (!removeOutgoing(epoch, next.localId)) { return; }
                     notifyOutboxChanged();
                 }
@@ -1875,7 +2069,19 @@ public final class Telegram
     /** Mark everything up to {@code maxId} as read. */
     public void markRead(Peer peer, int maxId) throws IOException
     {
-        if (peer.kind == Peer.CHANNEL)
+        markRead(peer, 0, maxId);
+    }
+
+    /** @param threadRootId topic or comment thread, 0 for the whole peer */
+    public void markRead(Peer peer, int threadRootId, int maxId)
+            throws IOException
+    {
+        if (threadRootId > 0)
+        {
+            // Bool reply - no pts to feed anywhere.
+            invoke(Requests.readDiscussion(peer, threadRootId, maxId));
+        }
+        else if (peer.kind == Peer.CHANNEL)
         {
             invoke(Requests.readChannelHistory(peer, maxId));
         }
@@ -1884,7 +2090,8 @@ public final class Telegram
             byte[] result = invoke(Requests.readHistory(peer, maxId));
             updates.acceptAffected(result);
         }
-        Diag.info("marked read up to " + maxId + " in " + peer);
+        Diag.info("marked read up to " + maxId + " in " + peer
+                  + (threadRootId > 0 ? (" thread " + threadRootId) : ""));
     }
 
     public void forwardMessage(Peer from, int messageId, Peer to)

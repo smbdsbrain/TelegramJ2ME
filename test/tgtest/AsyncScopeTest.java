@@ -55,7 +55,7 @@ public final class AsyncScopeTest implements Test
     /** What {@code TgMidlet.bindOpenPeer} does; null means the chat closed. */
     private static void open(AsyncScope scope, Peer peer)
     {
-        scope.chatChanged(peer);
+        scope.chatChanged(peer, 0);
     }
 
     private static void aFreshCaptureIsCurrent()
@@ -63,11 +63,11 @@ public final class AsyncScopeTest implements Test
         AsyncScope scope = new AsyncScope();
         Peer chat = user(7);
         open(scope, chat);
-        AsyncScope.Token asked = scope.capture(chat);
+        AsyncScope.Token asked = scope.capture(chat, 0);
 
         Assert.isTrue("nothing has happened, so the session holds",
                 asked.sameSession());
-        Assert.isTrue("and so does the chat", asked.sameChat(chat));
+        Assert.isTrue("and so does the chat", asked.sameChat(chat, 0));
         Assert.isTrue("the token remembers what it was asked for",
                 asked.peer() == chat);
     }
@@ -82,7 +82,7 @@ public final class AsyncScopeTest implements Test
         Peer chat = user(7);
         open(scope, chat);
         AsyncScope.Token dialogs = scope.capture();
-        AsyncScope.Token history = scope.capture(chat);
+        AsyncScope.Token history = scope.capture(chat, 0);
 
         scope.newSession();
 
@@ -90,7 +90,7 @@ public final class AsyncScopeTest implements Test
                 dialogs.sameSession());
         Assert.isFalse("so is a history page", history.sameSession());
         Assert.isFalse("and it fails the chat check too, even against the same"
-                + " peer object", history.sameChat(chat));
+                + " peer object", history.sameChat(chat, 0));
     }
 
     private static void openingAnotherChatInvalidatesTheFirst()
@@ -99,14 +99,14 @@ public final class AsyncScopeTest implements Test
         Peer first = user(7);
         Peer second = user(9);
         open(scope, first);
-        AsyncScope.Token asked = scope.capture(first);
+        AsyncScope.Token asked = scope.capture(first, 0);
 
         open(scope, second);
 
         Assert.isTrue("the account did not change", asked.sameSession());
-        Assert.isFalse("but the chat did", asked.sameChat(second));
+        Assert.isFalse("but the chat did", asked.sameChat(second, 0));
         Assert.isFalse("and the first chat is no longer the open one",
-                asked.sameChat(first));
+                asked.sameChat(first, 0));
     }
 
     /**
@@ -119,12 +119,12 @@ public final class AsyncScopeTest implements Test
         AsyncScope scope = new AsyncScope();
         Peer chat = user(7);
         open(scope, chat);
-        AsyncScope.Token asked = scope.capture(chat);
+        AsyncScope.Token asked = scope.capture(chat, 0);
 
         open(scope, null);
 
         Assert.isFalse("a history page for a chat nobody is in is stale",
-                asked.sameChat(null));
+                asked.sameChat(null, 0));
         Assert.isTrue("but the session is untouched", asked.sameSession());
     }
 
@@ -140,17 +140,17 @@ public final class AsyncScopeTest implements Test
         AsyncScope scope = new AsyncScope();
         Peer chat = user(7);
         open(scope, chat);
-        AsyncScope.Token asked = scope.capture(chat);
+        AsyncScope.Token asked = scope.capture(chat, 0);
 
         open(scope, null);
         open(scope, chat);
 
         Assert.isTrue("the page is still for the chat that is open",
-                asked.sameChat(chat));
+                asked.sameChat(chat, 0));
 
         // And again with a fresh Peer instance, because every response builds
         // new ones and reference equality would say no.
-        Assert.isTrue("identity, not reference", asked.sameChat(user(7)));
+        Assert.isTrue("identity, not reference", asked.sameChat(user(7), 0));
     }
 
     private static void aChatIsNotTheSameChatUnderAnotherAccount()
@@ -158,13 +158,13 @@ public final class AsyncScopeTest implements Test
         AsyncScope scope = new AsyncScope();
         Peer chat = user(7);
         open(scope, chat);
-        AsyncScope.Token asked = scope.capture(chat);
+        AsyncScope.Token asked = scope.capture(chat, 0);
 
         scope.newSession();
         open(scope, user(7));
 
         Assert.isFalse("same id, different account, different conversation",
-                asked.sameChat(user(7)));
+                asked.sameChat(user(7), 0));
     }
 
     private static void anAccountLevelRequestIgnoresTheChat()
@@ -179,7 +179,7 @@ public final class AsyncScopeTest implements Test
                 asked.sameSession());
         Assert.isTrue("it was not captured for one", asked.peer() == null);
         Assert.isFalse("and it can never satisfy the chat check",
-                asked.sameChat(user(2)));
+                asked.sameChat(user(2), 0));
     }
 
     private static void peerIdentityIsKindAndId()
@@ -215,14 +215,14 @@ public final class AsyncScopeTest implements Test
         Peer first = user(7);
         Peer second = user(9);
         open(scope, first);
-        AsyncScope.Token asked = scope.capture(first);
+        AsyncScope.Token asked = scope.capture(first, 0);
 
         open(scope, second);
         open(scope, first);
 
         Assert.isTrue("the account never moved", asked.sameSession());
         Assert.isFalse("but this is a second visit, not the first",
-                asked.sameChat(first));
+                asked.sameChat(first, 0));
     }
 
     /**

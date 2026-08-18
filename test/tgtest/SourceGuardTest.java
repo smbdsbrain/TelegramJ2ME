@@ -116,7 +116,9 @@ public final class SourceGuardTest implements Test
         }
         everySubmitAnswerIsRead(sources);
         theOpenChatHasOneAssignmentPoint(sources);
+        theOpenThreadHasOneAssignmentPoint(sources);
         historyPrefetchStaysOffTheUserWorker();
+        topicPagingStaysOffTheUserWorker();
         reactionUiDoesNotWaitOnForegroundWork();
     }
 
@@ -213,6 +215,38 @@ public final class SourceGuardTest implements Test
     }
 
     /**
+     * The topic list follows the same lane discipline as the lists above it:
+     * automatic pages on the maintenance lane, manual commands foreground,
+     * contention retried through the bounded waker rather than alerted.
+     */
+    private static void topicPagingStaysOffTheUserWorker() throws IOException
+    {
+        String source = read(new File("src/tg/app/TgMidlet.java"));
+        int load = source.indexOf("private void loadTopics");
+        int refresh = source.indexOf("private void refreshTopics", load);
+        Assert.isTrue("topic load source markers", load >= 0 && refresh > load);
+        String initial = source.substring(load, refresh);
+        Assert.isTrue("initial topic load uses syncWorker",
+                initial.indexOf("syncWorker.submit(") >= 0);
+        Assert.isTrue("topic load contention retries without a user alert",
+                initial.indexOf("initialRefreshRetry.schedule(") >= 0
+                && initial.indexOf("showRefused(") < 0);
+
+        int more = source.indexOf("private void loadMoreTopics");
+        int back = source.indexOf("private void restoreTopicsAbove", more);
+        int append = source.indexOf("private void appendTopicPage", back);
+        Assert.isTrue("topic paging source markers", more >= 0 && back > more
+                && append > back);
+        Assert.isTrue("automatic further topic paging uses syncWorker while"
+                + " manual More remains foreground",
+                source.substring(more, back).indexOf(
+                        "manual ? worker : syncWorker") >= 0);
+        Assert.isTrue("backwards topic paging uses syncWorker",
+                source.substring(back, append).indexOf(
+                        "syncWorker.submit(") >= 0);
+    }
+
+    /**
      * {@code openPeer} is assigned in exactly one place.
      *
      * That place is {@code TgMidlet.bindOpenPeer}, which bumps the chat
@@ -248,23 +282,57 @@ public final class SourceGuardTest implements Test
                 1, found.size());
     }
 
+    /**
+     * The same rule for the thread half of the open transcript: two topics of
+     * one forum are different conversations, and an {@code openThread}
+     * assigned anywhere but beside {@code openPeer} moves the transcript
+     * without bumping the chat generation.
+     */
+    private static void theOpenThreadHasOneAssignmentPoint(List sources)
+            throws IOException
+    {
+        List found = new ArrayList();
+        for (int i = 0; i < sources.size(); i++)
+        {
+            File f = (File) sources.get(i);
+            String path = relative(f);
+            String[] lines = read(f).split("\n", -1);
+            for (int n = 0; n < lines.length; n++)
+            {
+                if (assigns(lines[n], "openThread"))
+                {
+                    found.add(path + ":" + (n + 1));
+                }
+            }
+        }
+
+        Assert.equal("openThread must be assigned only by bindOpenPeer, beside"
+                + " the peer it qualifies; assigned at " + found,
+                1, found.size());
+    }
+
     /** {@code openPeer = x}, but not {@code openPeer == x} or a longer name. */
     private static boolean assignsOpenPeer(String line)
     {
-        int at = line.indexOf("openPeer");
+        return assigns(line, "openPeer");
+    }
+
+    private static boolean assigns(String line, String field)
+    {
+        int at = line.indexOf(field);
         while (at >= 0)
         {
             int before = at - 1;
             boolean wordStart = before < 0
                     || !Character.isJavaIdentifierPart(line.charAt(before));
-            int after = at + "openPeer".length();
+            int after = at + field.length();
             // Skip the spaces an assignment is allowed to have around it.
             while (after < line.length() && line.charAt(after) == ' ') { after++; }
             boolean assigns = after < line.length()
                     && line.charAt(after) == '='
                     && (after + 1 >= line.length() || line.charAt(after + 1) != '=');
             if (wordStart && assigns) { return true; }
-            at = line.indexOf("openPeer", at + 1);
+            at = line.indexOf(field, at + 1);
         }
         return false;
     }

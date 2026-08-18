@@ -64,30 +64,40 @@ public final class ComposerState
     private final int peerKind;
     private final long peerId;
 
+    /**
+     * The thread this composer sends into - a topic root or a comment thread
+     * root - or 0 for the peer's own transcript. Part of the identity for the
+     * same reason the peer is: two topics of one forum are different
+     * conversations, and a reply armed in one must not fire in the other.
+     */
+    private final int threadRootId;
+
     /** The message this mode acts on, or 0 for an ordinary Write. */
     private final int targetMessageId;
     private final String originalText;
 
-    private ComposerState(int mode, Peer peer, int targetMessageId,
-                          String originalText)
+    private ComposerState(int mode, Peer peer, int threadRootId,
+                          int targetMessageId, String originalText)
     {
         this.mode = mode;
         this.peer = peer;
         this.peerKind = peer.kind;
         this.peerId = peer.id;
+        this.threadRootId = threadRootId;
         this.targetMessageId = targetMessageId;
         this.originalText = originalText;
     }
 
     /**
-     * An ordinary message to {@code peer}.
+     * An ordinary message to {@code peer}, into {@code threadRootId} when it
+     * is positive.
      *
      * @return null when there is no chat to send to, which is not a composer
      */
-    public static ComposerState write(Peer peer)
+    public static ComposerState write(Peer peer, int threadRootId)
     {
         if (peer == null) { return null; }
-        return new ComposerState(MODE_WRITE, peer, 0, null);
+        return new ComposerState(MODE_WRITE, peer, threadRootId, 0, null);
     }
 
     /**
@@ -101,22 +111,25 @@ public final class ComposerState
      *                  message that has no id yet cannot be replied to
      * @return null when the chat is missing or the id is not a message
      */
-    public static ComposerState reply(Peer peer, int messageId)
+    public static ComposerState reply(Peer peer, int threadRootId,
+                                      int messageId)
     {
         if (peer == null || messageId <= 0) { return null; }
-        return new ComposerState(MODE_REPLY, peer, messageId, null);
+        return new ComposerState(MODE_REPLY, peer, threadRootId, messageId,
+                null);
     }
 
     /** Edit one own server-side text message. */
-    public static ComposerState edit(Peer peer, int messageId,
-                                     String originalText)
+    public static ComposerState edit(Peer peer, int threadRootId,
+                                     int messageId, String originalText)
     {
         if (peer == null || messageId <= 0 || originalText == null
                 || originalText.length() == 0)
         {
             return null;
         }
-        return new ComposerState(MODE_EDIT, peer, messageId, originalText);
+        return new ComposerState(MODE_EDIT, peer, threadRootId, messageId,
+                originalText);
     }
 
     /** The chat this composer was opened for. Never null. */
@@ -125,10 +138,17 @@ public final class ComposerState
         return peer;
     }
 
-    /** Whether {@code other} is the chat this composer was opened for. */
-    public boolean ownedBy(Peer other)
+    /** The thread it sends into, or 0 for the peer's own transcript. */
+    public int threadRootId()
     {
-        return other != null && other.kind == peerKind && other.id == peerId;
+        return threadRootId;
+    }
+
+    /** Whether {@code (other, thread)} is what this composer was opened for. */
+    public boolean ownedBy(Peer other, int thread)
+    {
+        return other != null && other.kind == peerKind && other.id == peerId
+                && thread == threadRootId;
     }
 
     /** The reply id for the wire, or 0 in every mode that is not a reply. */

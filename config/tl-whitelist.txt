@@ -61,6 +61,16 @@ messages.sendReaction
 contacts.search
 messages.search
 
+# --- forum topics and comment threads ---
+# A topic transcript and a comment thread are the same request: getReplies
+# against the thread's root message. getDiscussionMessage maps a channel post
+# to that root in the linked discussion group; readDiscussion is the per-thread
+# read cursor that readHistory cannot express.
+messages.getForumTopics
+messages.getReplies
+messages.getDiscussionMessage
+messages.readDiscussion
+
 [types]
 # Extra types to include even when no whitelisted method names them directly.
 # Updates arrive unsolicited, so their whole tree has to be parseable.
@@ -112,6 +122,7 @@ channel.username
 channel.photo
 channel.broadcast
 channel.megagroup
+channel.forum
 channelForbidden.id
 channelForbidden.access_hash
 channelForbidden.title
@@ -147,12 +158,20 @@ message.reply_to
 message.reactions
 message.entities
 message.edit_date
+message.replies
 messageReplyHeader.reply_to_msg_id
+messageReplyHeader.reply_to_top_id
+messageReplyHeader.forum_topic
+messageReplies.comments
+messageReplies.replies
 messageService.id
 messageService.peer_id
 messageService.from_id
 messageService.date
 messageService.out
+# Service messages inside a topic carry the same reply header; without it a
+# pin or join notice would be bucketed into General.
+messageService.reply_to
 
 messages.dialogs.dialogs
 messages.dialogs.messages
@@ -177,6 +196,10 @@ messages.channelMessages.inexact
 messages.channelMessages.messages
 messages.channelMessages.chats
 messages.channelMessages.users
+# pts seeds the channel cursor for peers outside the dialog window - a
+# discussion group is usually not in it, and an unseeded cursor makes
+# recoverChannel loop on full snapshots.
+messages.channelMessages.pts
 
 messages.affectedMessages.pts
 messages.affectedMessages.pts_count
@@ -409,3 +432,36 @@ dcOption.cdn
 dcOption.id
 dcOption.ip_address
 dcOption.port
+
+# Forum topics. icon_emoji_id is a custom emoji and stays unread - the topic
+# row falls back to its title alone, the same trade issue #15 settled for
+# message emoji.
+messages.forumTopics.count
+messages.forumTopics.topics
+messages.forumTopics.messages
+messages.forumTopics.chats
+messages.forumTopics.users
+messages.forumTopics.pts
+forumTopic.my
+forumTopic.closed
+forumTopic.pinned
+forumTopic.hidden
+forumTopic.id
+forumTopic.date
+forumTopic.title
+forumTopic.top_message
+forumTopic.read_inbox_max_id
+forumTopic.read_outbox_max_id
+forumTopic.unread_count
+forumTopicDeleted.id
+
+# Channel comment threads.
+messages.discussionMessage.messages
+messages.discussionMessage.max_id
+messages.discussionMessage.read_inbox_max_id
+messages.discussionMessage.unread_count
+messages.discussionMessage.chats
+messages.discussionMessage.users
+updateReadChannelDiscussionInbox.channel_id
+updateReadChannelDiscussionInbox.top_msg_id
+updateReadChannelDiscussionInbox.read_max_id

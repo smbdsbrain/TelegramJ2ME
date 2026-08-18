@@ -87,12 +87,12 @@ public final class RmsOutgoingStore implements OutgoingStore
     public synchronized OutgoingMessage add(Peer peer, String text,
             long randomId, long createdAt) throws IOException
     {
-        return add(peer, text, 0, randomId, createdAt);
+        return add(peer, text, 0, 0, randomId, createdAt);
     }
 
     public synchronized OutgoingMessage add(Peer peer, String text,
-            int replyToMessageId, long randomId, long createdAt)
-            throws IOException
+            int replyToMessageId, int threadRootId, long randomId,
+            long createdAt) throws IOException
     {
         RecordStore store = null;
         try
@@ -115,6 +115,7 @@ public final class RmsOutgoingStore implements OutgoingStore
             message.peerTitle = peer.title == null ? "" : peer.title;
             message.text = text;
             message.replyToMessageId = replyToMessageId;
+            message.threadRootId = threadRootId;
             message.randomId = randomId;
             message.createdAt = createdAt;
 

@@ -245,14 +245,14 @@ public final class Phase7DesignTest implements Test
                     new AvatarCache().capacity());
             Assert.equal("a tiny heap still gets two thumbnail slots", 2,
                     new ChatScreen(Theme.byId(Theme.LIGHT)).thumbnailCapacity());
-            Assert.equal("a tiny heap still gets four screens", 4,
+            Assert.equal("a tiny heap still gets five screens", 5,
                     new ScreenStack().capacity());
 
             // A cache built directly with a bad number must floor itself rather
             // than trusting the caller.
             Assert.equal("an avatar cache floors its own capacity", 2,
                     new AvatarCache(0).capacity());
-            Assert.equal("a screen stack floors its own capacity", 4,
+            Assert.equal("a screen stack floors its own capacity", 5,
                     new ScreenStack(1).capacity());
 
             AvatarCache small = new AvatarCache(2);

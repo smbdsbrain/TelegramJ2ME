@@ -41,7 +41,9 @@ public final class RmsDraftStore implements DraftStore
 
     /** TGD3 - the envelope-wrapped generation. */
     private static final int MAGIC = 0x54474433;
-    private static final int VERSION = 1;
+
+    /** Version 2 keys the row by (peer, thread); v1 rows are thread 0. */
+    private static final int VERSION = 2;
 
     /** The pre-envelope format, still read so an upgrade keeps its drafts. */
     private static final int LEGACY_MAGIC = 0x54474432; // TGD2
@@ -60,33 +62,34 @@ public final class RmsDraftStore implements DraftStore
         this.accountId = accountId;
     }
 
-    public synchronized String load(Peer peer) throws IOException
+    public synchronized String load(Peer peer, int thread) throws IOException
     {
         RecordStore store = null;
         try
         {
             store = RecordStore.openRecordStore(STORE, true);
-            Row best = find(store, peer, null);
+            Row best = find(store, peer, thread, null);
             return best == null ? "" : best.text;
         }
         catch (Throwable t) { throw io("RMS draft load", t); }
         finally { close(store); }
     }
 
-    public synchronized void save(Peer peer, String text) throws IOException
+    public synchronized void save(Peer peer, int thread, String text)
+            throws IOException
     {
         RecordStore store = null;
         try
         {
             store = RecordStore.openRecordStore(STORE, true);
             Vector mine = new Vector();
-            find(store, peer, mine);
+            find(store, peer, thread, mine);
 
             int fresh = 0;
             if (text != null && text.length() > 0)
             {
                 byte[] raw = RecordEnvelope.wrap(MAGIC, VERSION, accountId,
-                        Dc.isTest(), payload(peer, text));
+                        Dc.isTest(), payload(peer, thread, text));
                 fresh = store.addRecord(raw, 0, raw.length);
                 if (!identical(store, fresh, raw))
                 {
@@ -123,7 +126,7 @@ public final class RmsDraftStore implements DraftStore
             {
                 // Verified, not assumed. A delete that reported success and did
                 // nothing is the failure this catches.
-                Row left = find(store, peer, null);
+                Row left = find(store, peer, thread, null);
                 if (left != null)
                 {
                     throw new IOException("draft is still stored after clearing");
@@ -154,16 +157,19 @@ public final class RmsDraftStore implements DraftStore
     }
 
     /**
-     * The newest row for {@code peer}, collecting every row for it on the way.
+     * The newest row for {@code (peer, thread)}, collecting every row for it
+     * on the way.
      *
      * Newest is the highest record id: ids are never reused, so the higher one
      * is the later write whatever order the handset enumerated in. Damaged rows
      * are removed as they are found - a draft is recoverable by retyping, and
      * one that cannot be read is only taking up space.
      *
-     * @param mine when non-null, every row belonging to this peer is added
+     * @param mine when non-null, every row belonging to this conversation is
+     *             added
      */
-    private Row find(RecordStore store, Peer peer, Vector mine) throws Exception
+    private Row find(RecordStore store, Peer peer, int thread, Vector mine)
+            throws Exception
     {
         Row best = null;
         Vector damaged = new Vector();
@@ -179,12 +185,13 @@ public final class RmsDraftStore implements DraftStore
                 catch (Throwable t) { continue; }
 
                 RecordEnvelope envelope = RecordEnvelope.unwrap(raw, MAGIC,
-                        VERSION, VERSION, accountId, Dc.isTest());
+                        1, VERSION, accountId, Dc.isTest());
 
                 String text = null;
                 if (envelope.isOk())
                 {
-                    text = textFor(envelope.payload, peer, false);
+                    text = textFor(envelope.payload, peer, thread,
+                            envelope.version >= 2);
                 }
                 else if (envelope.outcome == RecordEnvelope.DAMAGED)
                 {
@@ -197,7 +204,7 @@ public final class RmsDraftStore implements DraftStore
                     // rather than rewritten: it is replaced the next time the
                     // chat's draft is saved, and rewriting it here would mean
                     // writing during a load.
-                    text = textFor(raw, peer, true);
+                    text = legacyTextFor(raw, peer, thread);
                 }
 
                 if (text == null) { continue; }
@@ -224,13 +231,32 @@ public final class RmsDraftStore implements DraftStore
         return best;
     }
 
-    /** The draft text in {@code raw} if it is this peer's, else null. */
-    private static String textFor(byte[] raw, Peer peer, boolean legacy)
+    /** The draft text in {@code raw} if it is this conversation's, else null. */
+    private static String textFor(byte[] raw, Peer peer, int thread,
+                                  boolean hasThread)
     {
         try
         {
             TlReader reader = new TlReader(raw);
-            if (reader.readInt() != (legacy ? LEGACY_MAGIC : MAGIC)) { return null; }
+            if (reader.readInt() != MAGIC) { return null; }
+            if (reader.readInt() != peer.kind) { return null; }
+            if (reader.readLong() != peer.id) { return null; }
+            // A v1 row was written before threads existed, so it belongs to
+            // the peer's own transcript and to no topic.
+            int rowThread = hasThread ? reader.readInt() : 0;
+            if (rowThread != thread) { return null; }
+            return reader.readString();
+        }
+        catch (Throwable notOurs) { return null; }
+    }
+
+    private static String legacyTextFor(byte[] raw, Peer peer, int thread)
+    {
+        if (thread != 0) { return null; }
+        try
+        {
+            TlReader reader = new TlReader(raw);
+            if (reader.readInt() != LEGACY_MAGIC) { return null; }
             if (reader.readInt() != peer.kind) { return null; }
             if (reader.readLong() != peer.id) { return null; }
             return reader.readString();
@@ -238,12 +264,13 @@ public final class RmsDraftStore implements DraftStore
         catch (Throwable notOurs) { return null; }
     }
 
-    private static byte[] payload(Peer peer, String text)
+    private static byte[] payload(Peer peer, int thread, String text)
     {
-        TlWriter writer = new TlWriter(text.length() * 3 + 24);
+        TlWriter writer = new TlWriter(text.length() * 3 + 28);
         writer.writeInt(MAGIC);
         writer.writeInt(peer.kind);
         writer.writeLong(peer.id);
+        writer.writeInt(thread);
         writer.writeString(text);
         return writer.toByteArray();
     }

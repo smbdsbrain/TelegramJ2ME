@@ -160,6 +160,54 @@ public final class ChatScreenPhase4Test implements Test
                 focusChat.focusedMessageId());
         Assert.isTrue("final message tail scrolls fully into view",
                 focusChat.isAtEnd());
+
+        // Inside a topic the reply caption belongs to real replies only. The
+        // wire gives every topic message a header naming the root service
+        // message, and rendering that captioned every plain row with
+        // "Reply to You: [service message]".
+        Message root = message(2, "");
+        root.service = true;
+        Message plainInTopic = message(3, "just a message");
+        plainInTopic.replyToMessageId = 2;
+        plainInTopic.forumTopic = true;
+        Message realReply = message(4, "an actual answer");
+        realReply.replyToMessageId = 3;
+        realReply.replyToTopId = 2;
+        realReply.forumTopic = true;
+        Message[] topicMessages = new Message[] { realReply, plainInTopic, root };
+        Assert.equal("a plain topic message carries no reply caption", "",
+                ChatScreen.replyLine(plainInTopic, topicMessages, 2));
+        Assert.isTrue("a real reply inside the topic keeps its caption",
+                ChatScreen.replyLine(realReply, topicMessages, 2)
+                        .startsWith("Reply to"));
+        Assert.isTrue("the flat view still names the root",
+                ChatScreen.replyLine(plainInTopic, topicMessages)
+                        .startsWith("Reply to"));
+
+        // And the screen itself asks with its thread: the same transcript
+        // lays out fewer lines once the thread is bound.
+        ExposedChat flatView = new ExposedChat();
+        flatView.resetMessages(topicMessages);
+        int flatLines = flatView.transcriptLineCount();
+        ExposedChat topicView = new ExposedChat();
+        topicView.setThread(new tg.api.ThreadInfo(2, false, 0, 0, "Topic"));
+        topicView.resetMessages(topicMessages);
+        Assert.isTrue("the bound thread suppresses the membership caption",
+                topicView.transcriptLineCount() < flatLines);
+
+        // A channel post the server offers a thread on renders its entry; a
+        // bare reply tally does not.
+        Message post = message(200, "channel post");
+        post.hasComments = true;
+        post.repliesCount = 12;
+        ExposedChat channel = new ExposedChat();
+        channel.resetMessages(new Message[] { post });
+        int withComments = channel.transcriptLineCount();
+        post.hasComments = false;
+        post.repliesCount = 0;
+        channel.resetMessages(new Message[] { post });
+        Assert.isTrue("a comments entry adds its meta line",
+                withComments > channel.transcriptLineCount());
     }
 
     private static int chatLinesWithoutPreview(Message[] messages)

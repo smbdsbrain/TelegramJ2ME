@@ -71,15 +71,15 @@ public final class Phase2PersistenceTest implements Test
         MemoryDraftStore store = new MemoryDraftStore();
         Peer first = peer();
         Peer second = new Peer(Peer.CHAT, 5);
-        store.save(first, "черновик 🌟");
-        store.save(second, "other");
-        Assert.equal("draft Unicode", "черновик 🌟", store.load(first));
-        Assert.equal("draft per peer", "other", store.load(second));
-        store.save(first, "");
-        Assert.equal("empty deletes", "", store.load(first));
-        Assert.equal("other survives", "other", store.load(second));
+        store.save(first, 0, "черновик 🌟");
+        store.save(second, 0, "other");
+        Assert.equal("draft Unicode", "черновик 🌟", store.load(first, 0));
+        Assert.equal("draft per peer", "other", store.load(second, 0));
+        store.save(first, 0, "");
+        Assert.equal("empty deletes", "", store.load(first, 0));
+        Assert.equal("other survives", "other", store.load(second, 0));
         store.clear();
-        Assert.equal("draft clear", "", store.load(second));
+        Assert.equal("draft clear", "", store.load(second, 0));
     }
 
     private void limit() throws Exception

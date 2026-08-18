@@ -37,6 +37,16 @@ public final class Peer
     public boolean self;
     public boolean premium;
 
+    /**
+     * A supergroup with topics enabled. Read from {@code channel.forum} on
+     * every construction from a full {@code channel} object, so
+     * {@link PeerCache#absorb} keeps it fresh; the reference form and
+     * {@code channelForbidden} leave it false, which is the safe direction -
+     * a forum mistaken for a plain chat opens flat, a plain chat mistaken for
+     * a forum asks the server a question it refuses.
+     */
+    public boolean forum;
+
     /** Current compact avatar reference, or null when there is no photo. */
     public AvatarRef avatar;
 
@@ -134,6 +144,7 @@ public final class Peer
             p.title = obj.strOrEmpty(Api.F_CHANNEL__TITLE);
             p.username = obj.str(Api.F_CHANNEL__USERNAME);
             p.avatar = AvatarRef.from(obj.obj(Api.F_CHANNEL__PHOTO));
+            p.forum = obj.num(Api.F_CHANNEL__FORUM) != 0;
             return p;
         }
         if (obj.id == Api.CHANNEL_FORBIDDEN)

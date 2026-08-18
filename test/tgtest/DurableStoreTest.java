@@ -62,6 +62,7 @@ public final class DurableStoreTest implements Test
         aDraftSurvivesReplacementFailure();
         clearingADraftIsVerified();
         draftsAreIsolatedPerPeer();
+        draftsAreIsolatedPerThread();
         legacyDraftsAreStillReadable();
 
         // Update state.
@@ -132,7 +133,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            store.add(peer(7), "hello", 0, 111L, 1000L);
+            store.add(peer(7), "hello", 0, 0, 111L, 1000L);
 
             rms.restart();
             OutgoingMessage[] after = outbox().list();
@@ -159,7 +160,7 @@ public final class DurableStoreTest implements Test
             rms.failEvery(OUTBOX, FaultyRecords.ADD);
             try
             {
-                store.add(peer(7), "never sent", 0, 222L, 1000L);
+                store.add(peer(7), "never sent", 0, 0, 222L, 1000L);
                 Assert.isTrue("add must have thrown", false);
             }
             catch (IOException expected) { }
@@ -184,7 +185,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            OutgoingMessage queued = store.add(peer(7), "in flight", 0, 333L, 1000L);
+            OutgoingMessage queued = store.add(peer(7), "in flight", 0, 0, 333L, 1000L);
 
             queued.attempts = 1;
             queued.state = OutgoingMessage.QUEUED;
@@ -215,7 +216,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            OutgoingMessage message = store.add(peer(7), "once", 0, 987654321L, 1000L);
+            OutgoingMessage message = store.add(peer(7), "once", 0, 0, 987654321L, 1000L);
 
             message.state = OutgoingMessage.SENDING;
             store.save(message);
@@ -242,7 +243,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            OutgoingMessage message = store.add(peer(7), "mid-flight", 0, 444L, 1000L);
+            OutgoingMessage message = store.add(peer(7), "mid-flight", 0, 0, 444L, 1000L);
             message.state = OutgoingMessage.SENDING;
             store.save(message);
 
@@ -268,8 +269,8 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            store.add(peer(7), "good", 0, 555L, 1000L);
-            OutgoingMessage doomed = store.add(peer(7), "damaged", 0, 556L, 1001L);
+            store.add(peer(7), "good", 0, 0, 555L, 1000L);
+            OutgoingMessage doomed = store.add(peer(7), "damaged", 0, 0, 556L, 1001L);
 
             rms.flipBit(OUTBOX, doomed.localId, RecordEnvelope.HEADER + 4, 3);
             rms.restart();
@@ -294,12 +295,12 @@ public final class DurableStoreTest implements Test
             RmsOutgoingStore store = outbox();
             for (int i = 0; i < 64; i++)
             {
-                store.add(peer(7), "m" + i, 0, 1000L + i, 2000L + i);
+                store.add(peer(7), "m" + i, 0, 0, 1000L + i, 2000L + i);
             }
             int before = rms.recordIds(OUTBOX).length;
             try
             {
-                store.add(peer(7), "one too many", 0, 9999L, 3000L);
+                store.add(peer(7), "one too many", 0, 0, 9999L, 3000L);
                 Assert.isTrue("the sixty-fifth must be refused", false);
             }
             catch (IOException expected)
@@ -325,7 +326,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore store = outbox();
-            OutgoingMessage message = store.add(peer(7), "sent", 0, 666L, 1000L);
+            OutgoingMessage message = store.add(peer(7), "sent", 0, 0, 666L, 1000L);
 
             rms.failEvery(OUTBOX, FaultyRecords.DELETE);
             try
@@ -392,7 +393,7 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsOutgoingStore mine = outbox();
-            mine.add(peer(7), "mine", 0, 888L, 1000L);
+            mine.add(peer(7), "mine", 0, 0, 888L, 1000L);
 
             RmsOutgoingStore theirs = new RmsOutgoingStore();
             theirs.bindAccount(999999L);
@@ -421,28 +422,28 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsDraftStore store = drafts();
-            store.save(peer(7), "first version");
+            store.save(peer(7), 0, "first version");
 
             rms.failEvery(DRAFTS, FaultyRecords.DELETE);
-            store.save(peer(7), "second version");
+            store.save(peer(7), 0, "second version");
             rms.clearFaults();
 
             rms.restart();
             Assert.equal("the newer draft wins", "second version",
-                    drafts().load(peer(7)));
+                    drafts().load(peer(7), 0));
 
             // The other direction: the add fails, and the old draft is intact.
             rms.failEvery(DRAFTS, FaultyRecords.ADD);
             try
             {
-                drafts().save(peer(7), "third version");
+                drafts().save(peer(7), 0, "third version");
                 Assert.isTrue("the save must have thrown", false);
             }
             catch (IOException expected) { }
             rms.clearFaults();
             rms.restart();
             Assert.equal("a refused save keeps what was there",
-                    "second version", drafts().load(peer(7)));
+                    "second version", drafts().load(peer(7), 0));
         }
         finally { EmulatorRecords.restore(); }
     }
@@ -454,22 +455,22 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsDraftStore store = drafts();
-            store.save(peer(7), "typed and then sent");
+            store.save(peer(7), 0, "typed and then sent");
 
             rms.failEvery(DRAFTS, FaultyRecords.DELETE);
             try
             {
-                store.save(peer(7), "");
+                store.save(peer(7), 0, "");
                 Assert.isTrue("clearing must report that it did not happen",
                         false);
             }
             catch (IOException expected) { }
             rms.clearFaults();
 
-            store.save(peer(7), "");
+            store.save(peer(7), 0, "");
             rms.restart();
             Assert.equal("and once it works the draft is gone", "",
-                    drafts().load(peer(7)));
+                    drafts().load(peer(7), 0));
         }
         finally { EmulatorRecords.restore(); }
     }
@@ -481,21 +482,57 @@ public final class DurableStoreTest implements Test
         try
         {
             RmsDraftStore store = drafts();
-            store.save(peer(7), "for seven");
-            store.save(peer(8), "for eight");
+            store.save(peer(7), 0, "for seven");
+            store.save(peer(8), 0, "for eight");
             rms.restart();
 
-            Assert.equal("seven", "for seven", drafts().load(peer(7)));
-            Assert.equal("eight", "for eight", drafts().load(peer(8)));
+            Assert.equal("seven", "for seven", drafts().load(peer(7), 0));
+            Assert.equal("eight", "for eight", drafts().load(peer(8), 0));
 
-            drafts().save(peer(7), "");
+            drafts().save(peer(7), 0, "");
             Assert.equal("clearing one leaves the other", "for eight",
-                    drafts().load(peer(8)));
+                    drafts().load(peer(8), 0));
 
             RmsDraftStore theirs = new RmsDraftStore();
             theirs.bindAccount(999999L);
             Assert.equal("and another account sees neither", "",
-                    theirs.load(peer(8)));
+                    theirs.load(peer(8), 0));
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    /**
+     * A topic's draft and the peer's own are different records, and clearing
+     * one must not take the other - the exact failure the add-then-delete
+     * order protects against, one key wider.
+     */
+    private static void draftsAreIsolatedPerThread() throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            RmsDraftStore store = drafts();
+            store.save(peer(7), 0, "for the forum");
+            store.save(peer(7), 400, "for the topic");
+            store.save(peer(7), 401, "for another topic");
+            rms.restart();
+
+            Assert.equal("the topic draft", "for the topic",
+                    drafts().load(peer(7), 400));
+            Assert.equal("its neighbour", "for another topic",
+                    drafts().load(peer(7), 401));
+            Assert.equal("the peer's own", "for the forum",
+                    drafts().load(peer(7), 0));
+
+            drafts().save(peer(7), 400, "");
+            rms.restart();
+            Assert.equal("clearing a topic leaves the peer's", "for the forum",
+                    drafts().load(peer(7), 0));
+            Assert.equal("and the neighbour's", "for another topic",
+                    drafts().load(peer(7), 401));
+            Assert.equal("while the topic's is gone", "",
+                    drafts().load(peer(7), 400));
         }
         finally { EmulatorRecords.restore(); }
     }
@@ -518,12 +555,31 @@ public final class DurableStoreTest implements Test
             raw.closeRecordStore();
 
             Assert.equal("an old draft is still shown",
-                    "from the previous build", drafts().load(peer(7)));
+                    "from the previous build", drafts().load(peer(7), 0));
+            Assert.equal("and it belongs to no topic", "",
+                    drafts().load(peer(7), 400));
+
+            // An envelope-v1 row - the previous build's wrapped format, with
+            // no thread field in the payload - reads the same way.
+            tg.tl.TlWriter v1 = new tg.tl.TlWriter(64);
+            v1.writeInt(0x54474433);              // TGD3 payload magic
+            v1.writeInt(Peer.USER);
+            v1.writeLong(8L);
+            v1.writeString("wrapped by the previous build");
+            byte[] wrapped = RecordEnvelope.wrap(0x54474433, 1, ACCOUNT,
+                    tg.mt.Dc.isTest(), v1.toByteArray());
+            RecordStore again = RecordStore.openRecordStore(DRAFTS, true);
+            again.addRecord(wrapped, 0, wrapped.length);
+            again.closeRecordStore();
+            Assert.equal("an envelope-v1 draft is still shown",
+                    "wrapped by the previous build", drafts().load(peer(8), 0));
+            Assert.equal("and belongs to no topic either", "",
+                    drafts().load(peer(8), 400));
 
             // And a save replaces it rather than leaving both.
-            drafts().save(peer(7), "edited");
+            drafts().save(peer(7), 0, "edited");
             rms.restart();
-            Assert.equal("the edit wins", "edited", drafts().load(peer(7)));
+            Assert.equal("the edit wins", "edited", drafts().load(peer(7), 0));
         }
         finally { EmulatorRecords.restore(); }
     }

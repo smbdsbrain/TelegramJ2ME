@@ -50,11 +50,18 @@ public final class RmsConversationCache implements AccountStore
     private static final String DIALOGS = "tgdialogcache";
     private static final String HISTORY = "tghistorycache";
 
-    /** TGD4/TGH4 - the envelope-wrapped generation. */
+    /**
+     * TGD4/TGH4 - the envelope-wrapped generation.
+     *
+     * History v4 keys the record by (peer, thread) and carries the thread
+     * facts a topic transcript needs; dialog v2 carries the peer's forum
+     * flag, so an offline forum open routes to the topic screen rather than
+     * a flat transcript. Older versions read as thread 0 with the flag off.
+     */
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
-    private static final int DIALOG_VERSION = 1;
-    private static final int HISTORY_VERSION = 3;
+    private static final int DIALOG_VERSION = 2;
+    private static final int HISTORY_VERSION = 4;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
     private static final int MAX_HISTORIES = 6;
@@ -89,7 +96,7 @@ public final class RmsConversationCache implements AccountStore
                 catch (Throwable t) { continue; }
 
                 RecordEnvelope envelope = RecordEnvelope.unwrap(raw,
-                        DIALOG_MAGIC, DIALOG_VERSION, DIALOG_VERSION,
+                        DIALOG_MAGIC, 1, DIALOG_VERSION,
                         accountId, test);
                 if (!envelope.isOk())
                 {
@@ -106,7 +113,10 @@ public final class RmsConversationCache implements AccountStore
                     long savedAt = r.readLong();
                     int count = bounded(r.readInt(), MAX_CACHED_DIALOGS);
                     Dialog[] out = new Dialog[count];
-                    for (int i = 0; i < count; i++) { out[i] = readDialog(r); }
+                    for (int i = 0; i < count; i++)
+                    {
+                        out[i] = readDialog(r, envelope.version >= 2);
+                    }
                     if (id > bestId)
                     {
                         bestId = id;
@@ -148,7 +158,8 @@ public final class RmsConversationCache implements AccountStore
      * conversation hid every other cached one until the store was cleared.
      */
     public synchronized Cached loadHistory(long accountId, boolean test,
-                                           Peer peer) throws IOException
+                                           Peer peer, int thread)
+            throws IOException
     {
         if (peer == null) { return null; }
         RecordStore rs = null;
@@ -181,8 +192,12 @@ public final class RmsConversationCache implements AccountStore
                     TlReader r = new TlReader(envelope.payload);
                     int kind = r.readInt();
                     long id = r.readLong();
+                    // A record written before threads existed is the peer's
+                    // own transcript and belongs to no topic.
+                    int rowThread = envelope.version >= 4 ? r.readInt() : 0;
                     long savedAt = r.readLong();
-                    if (kind != peer.kind || id != peer.id) { continue; }
+                    if (kind != peer.kind || id != peer.id
+                            || rowThread != thread) { continue; }
                     int count = bounded(r.readInt(), MAX_CACHED_MESSAGES);
                     Message[] out = new Message[count];
                     for (int i = 0; i < count; i++)
@@ -206,7 +221,8 @@ public final class RmsConversationCache implements AccountStore
     }
 
     public synchronized void saveHistory(long accountId, boolean test,
-                                         Peer peer, Message[] messages)
+                                         Peer peer, int thread,
+                                         Message[] messages)
             throws IOException
     {
         if (peer == null || messages == null) { return; }
@@ -214,6 +230,7 @@ public final class RmsConversationCache implements AccountStore
         TlWriter w = new TlWriter(Math.min(MAX_RECORD, 128 + count * 512));
         w.writeInt(peer.kind);
         w.writeLong(peer.id);
+        w.writeInt(thread);
         w.writeLong(System.currentTimeMillis());
         w.writeInt(count);
         for (int i = 0; i < count; i++) { writeMessage(w, messages[i]); }
@@ -226,7 +243,7 @@ public final class RmsConversationCache implements AccountStore
         try
         {
             rs = RecordStore.openRecordStore(HISTORY, true);
-            removeHistory(rs, accountId, test, peer);
+            removeHistory(rs, accountId, test, peer, thread);
             while (rs.getNumRecords() >= MAX_HISTORIES
                     || totalBytes(rs) + raw.length > MAX_HISTORY_TOTAL)
             {
@@ -263,7 +280,7 @@ public final class RmsConversationCache implements AccountStore
     private static void writeDialog(TlWriter w, Dialog d)
     {
         if (d == null) { d = new Dialog(); }
-        writePeer(w, d.peer);
+        writePeer(w, d.peer, true);
         w.writeInt(d.topMessageId);
         w.writeInt(d.unreadCount);
         w.writeInt(d.pinned ? 1 : 0);
@@ -275,10 +292,11 @@ public final class RmsConversationCache implements AccountStore
         w.writeInt(d.lastMessageOutgoing ? 1 : 0);
     }
 
-    private static Dialog readDialog(TlReader r) throws IOException
+    private static Dialog readDialog(TlReader r, boolean extended)
+            throws IOException
     {
         Dialog d = new Dialog();
-        d.peer = readPeer(r);
+        d.peer = readPeer(r, extended);
         d.topMessageId = r.readInt();
         d.unreadCount = r.readInt();
         d.pinned = r.readInt() != 0;
@@ -300,8 +318,8 @@ public final class RmsConversationCache implements AccountStore
                 | (m.read ? 4 : 0);
         w.writeInt(flags);
         w.writeString(text(m.text));
-        writePeer(w, m.peer);
-        writePeer(w, m.sender);
+        writePeer(w, m.peer, true);
+        writePeer(w, m.sender, true);
         if (m.media == null)
         {
             w.writeInt(0);
@@ -336,7 +354,7 @@ public final class RmsConversationCache implements AccountStore
         {
             w.writeInt(1);
             w.writeString(text(m.forwarded.label));
-            writePeer(w, m.forwarded.source);
+            writePeer(w, m.forwarded.source, true);
             w.writeInt(m.forwarded.messageId);
         }
         MessageEntity[] entities = m.entities == null
@@ -353,6 +371,10 @@ public final class RmsConversationCache implements AccountStore
             w.writeLong(entity == null ? 0 : entity.userId);
         }
         w.writeInt(m.editDate);
+        // v4: the thread facts a topic transcript is bucketed by.
+        w.writeInt(m.replyToTopId);
+        w.writeInt((m.forumTopic ? 1 : 0) | (m.hasComments ? 2 : 0));
+        w.writeInt(m.repliesCount);
     }
 
     private static Message readMessage(TlReader r, int version)
@@ -366,8 +388,8 @@ public final class RmsConversationCache implements AccountStore
         m.service = (flags & 2) != 0;
         m.read = (flags & 4) != 0;
         m.text = r.readString();
-        m.peer = readPeer(r);
-        m.sender = readPeer(r);
+        m.peer = readPeer(r, version >= 4);
+        m.sender = readPeer(r, version >= 4);
         if (r.readInt() != 0)
         {
             m.media = new Media();
@@ -393,7 +415,7 @@ public final class RmsConversationCache implements AccountStore
         {
             m.forwarded = new ForwardInfo();
             m.forwarded.label = r.readString();
-            m.forwarded.source = readPeer(r);
+            m.forwarded.source = readPeer(r, version >= 4);
             m.forwarded.messageId = r.readInt();
         }
         if (version >= 2)
@@ -417,10 +439,23 @@ public final class RmsConversationCache implements AccountStore
             }
         }
         if (version >= 3) { m.editDate = r.readInt(); }
+        if (version >= 4)
+        {
+            m.replyToTopId = r.readInt();
+            int threadFlags = r.readInt();
+            m.forumTopic = (threadFlags & 1) != 0;
+            m.hasComments = (threadFlags & 2) != 0;
+            m.repliesCount = bounded(r.readInt(), 1000000);
+        }
         return m;
     }
 
-    private static void writePeer(TlWriter w, Peer peer)
+    /**
+     * @param extended history-v4 and dialog-v2 append a flags int - the forum
+     *                 bit is what routes an offline forum open to the topic
+     *                 screen - which older records do not carry
+     */
+    private static void writePeer(TlWriter w, Peer peer, boolean extended)
     {
         if (peer == null)
         {
@@ -448,9 +483,14 @@ public final class RmsConversationCache implements AccountStore
             byte[] stripped = peer.avatar.strippedThumb;
             w.writeBytes(stripped == null ? new byte[0] : stripped);
         }
+        if (extended)
+        {
+            w.writeInt(peer.forum ? 1 : 0);
+        }
     }
 
-    private static Peer readPeer(TlReader r) throws IOException
+    private static Peer readPeer(TlReader r, boolean extended)
+            throws IOException
     {
         if (r.readInt() == 0) { return null; }
         Peer peer = new Peer(r.readInt(), r.readLong());
@@ -467,6 +507,10 @@ public final class RmsConversationCache implements AccountStore
             peer.avatar.dcId = r.readInt();
             byte[] stripped = r.readBytes();
             peer.avatar.strippedThumb = stripped.length == 0 ? null : stripped;
+        }
+        if (extended)
+        {
+            peer.forum = (r.readInt() & 1) != 0;
         }
         return peer;
     }
@@ -508,7 +552,8 @@ public final class RmsConversationCache implements AccountStore
     }
 
     private static void removeHistory(RecordStore rs, long accountId,
-                                      boolean test, Peer peer) throws Exception
+                                      boolean test, Peer peer, int thread)
+            throws Exception
     {
         RecordEnumeration en = null;
         try
@@ -519,7 +564,8 @@ public final class RmsConversationCache implements AccountStore
                 int id = en.nextRecordId();
                 Header h = header(rs.getRecord(id));
                 if (h == null || (h.accountId == accountId && h.test == test
-                        && h.kind == peer.kind && h.peerId == peer.id))
+                        && h.kind == peer.kind && h.peerId == peer.id
+                        && h.thread == thread))
                 {
                     rs.deleteRecord(id);
                 }
@@ -582,6 +628,7 @@ public final class RmsConversationCache implements AccountStore
             h.test = envelope.testEnvironment;
             h.kind = r.readInt();
             h.peerId = r.readLong();
+            h.thread = envelope.version >= 4 ? r.readInt() : 0;
             h.savedAt = r.readLong();
             return h;
         }
@@ -657,6 +704,7 @@ public final class RmsConversationCache implements AccountStore
         boolean test;
         int kind;
         long peerId;
+        int thread;
         long savedAt;
     }
 }

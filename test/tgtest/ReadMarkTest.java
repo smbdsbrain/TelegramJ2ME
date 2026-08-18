@@ -71,7 +71,7 @@ public final class ReadMarkTest implements Test
     private static void theNewestIdSurvivesTheWindowSlidingOffIt()
     {
         Peer channel = channel(1001, "Announcements");
-        ReadMark mark = ReadMark.forPeer(channel);
+        ReadMark mark = ReadMark.forPeer(channel, 0);
 
         // Opening the chat: the newest page, as loadOpenHistory installs it.
         Message[] retained = page(5000, PAGE);
@@ -147,7 +147,7 @@ public final class ReadMarkTest implements Test
                 ReadMark.highest(900, 100, retained));
 
         // The same array through note(), which is the path the client takes.
-        ReadMark mark = ReadMark.forPeer(user(10, "Anna"));
+        ReadMark mark = ReadMark.forPeer(user(10, "Anna"), 0);
         mark.note(retained);
         Assert.equal("note() finds the maximum, not the first element", 517,
                 mark.newestKnownId());
@@ -175,7 +175,7 @@ public final class ReadMarkTest implements Test
         Assert.equal("a real message beside the holes is still found", 44,
                 ReadMark.highest(0, 0, new Message[] { null, message(44), message(-7) }));
 
-        ReadMark mark = ReadMark.forPeer(user(10, "Anna"));
+        ReadMark mark = ReadMark.forPeer(user(10, "Anna"), 0);
         Assert.isFalse("a page of holes does not move the mark", mark.note(holes));
         Assert.equal("and leaves nothing to submit", 0, mark.newestKnownId());
     }
@@ -193,40 +193,40 @@ public final class ReadMarkTest implements Test
         Peer anna = user(10, "Anna");
         Peer announcements = channel(1001, "Announcements");
 
-        ReadMark inChannel = ReadMark.forPeer(announcements);
+        ReadMark inChannel = ReadMark.forPeer(announcements, 0);
         inChannel.note(page(900000, 3));
         Assert.equal("the channel's mark is the channel's newest", 900000,
                 inChannel.newestKnownId());
 
         Assert.isTrue("owned by the chat it was taken in",
-                inChannel.ownedBy(announcements));
+                inChannel.ownedBy(announcements, 0));
         Assert.isFalse("not by the chat underneath it on the stack",
-                inChannel.ownedBy(anna));
+                inChannel.ownedBy(anna, 0));
         Assert.equal("so it offers that chat nothing to mark read", 0,
-                ReadMark.newestKnownIdFor(inChannel, anna));
+                ReadMark.newestKnownIdFor(inChannel, anna, 0));
         Assert.equal("and no conversation at all offers nothing either", 0,
-                ReadMark.newestKnownIdFor(null, anna));
+                ReadMark.newestKnownIdFor(null, anna, 0));
         Assert.equal("while its own chat still gets the real answer", 900000,
-                ReadMark.newestKnownIdFor(inChannel, announcements));
+                ReadMark.newestKnownIdFor(inChannel, announcements, 0));
 
         // Peer is mutable with public fields and the same conversation arrives as
         // a fresh instance from every dialog page, so ownership is the kind and
         // id copied at capture - the pair TgMidlet.samePeer compares.
-        ReadMark forAnna = ReadMark.forPeer(anna);
+        ReadMark forAnna = ReadMark.forPeer(anna, 0);
         Assert.isTrue("a later instance of the same chat is the owner",
-                forAnna.ownedBy(user(10, "Anna Smith")));
+                forAnna.ownedBy(user(10, "Anna Smith"), 0));
         Assert.isFalse("the same id in another kind of chat is not",
-                forAnna.ownedBy(new Peer(Peer.CHAT, 10)));
-        Assert.isFalse("nothing is owned by no chat", forAnna.ownedBy(null));
+                forAnna.ownedBy(new Peer(Peer.CHAT, 10), 0));
+        Assert.isFalse("nothing is owned by no chat", forAnna.ownedBy(null, 0));
 
         anna.id = 11;
         Assert.isFalse("mutating the captured peer does not move ownership",
-                forAnna.ownedBy(anna));
+                forAnna.ownedBy(anna, 0));
         Assert.isTrue("ownership stayed where it was captured",
-                forAnna.ownedBy(user(10, "Anna")));
+                forAnna.ownedBy(user(10, "Anna"), 0));
 
         Assert.isTrue("a mark without a chat is not a mark",
-                ReadMark.forPeer(null) == null);
+                ReadMark.forPeer(null, 0) == null);
     }
 
     /**
@@ -235,7 +235,7 @@ public final class ReadMarkTest implements Test
      */
     private static void theMarkOnlyEverMovesForward()
     {
-        ReadMark mark = ReadMark.forPeer(user(10, "Anna"));
+        ReadMark mark = ReadMark.forPeer(user(10, "Anna"), 0);
 
         Assert.isTrue("the first page moves the mark", mark.note(page(500, 10)));
         Assert.equal("to the newest message in it", 500, mark.newestKnownId());

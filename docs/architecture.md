@@ -254,6 +254,22 @@ twelve requests spent, then a hundred and ten screens back up returned to row
 zero on fifteen restore requests, with the reader's row never moving under them
 and nothing shed.
 
+### Scrolling a forum's topics
+
+The third scrollable list, and deliberately the chat list's mechanism at a
+smaller size: `messages.getForumTopics` pages downwards only by the
+`(offset_date, offset_id, offset_topic)` triple, so `TgMidlet` keeps a window
+of `MemoryBudget.maxTopics()` rows with the same restore-point stack behind it
+(`MAX_TOPIC_RESTORE_POINTS`, smaller because a `ForumTopic` row *is* its own
+offset triple). Most forums hold fewer topics than the window, so the stack is
+usually idle. An open transcript is `(peer, thread)` — a topic is the forum
+peer plus the topic's root message id, a channel post's comments are the
+linked discussion group plus the forwarded root — history moves through
+`messages.getReplies`, sends write `top_msg_id`, and reads go through
+`messages.readDiscussion`, which is also why `ReadMark`, `ReadQueue`,
+`LocalReads`, drafts, the outbox and the history cache all carry the thread id
+beside the peer.
+
 ### What the client actually needs
 
 Measured by driving the packaged client under a constrained heap, against a real
@@ -418,7 +434,7 @@ can be doing Telegram work at once, and that is by design:
 | `TgMidlet.avatarWorker` | one per task | `worker` | A second `Worker` on purpose: a decorative avatar must never refuse a chat open, and the two multiplex over the same connection. It is also the reason an avatar callback re-reads the account id — a logout can land during its download. |
 | `ReadQueue` drain | one, long-lived | `worker` | Read acknowledgements are fire-and-forget and must not consume the foreground worker; a queued one waits its turn rather than being overwritten. |
 | `UpdateSync` | one serial worker | `worker` | The `MtClient` reader only enqueues unsolicited bodies. Parsing, difference RPCs and state persistence cannot run on that reader, because it is what delivers their `rpc_result`. |
-| `TgMidlet.syncWorker` | one per task | `worker` | Initial/cached dialog and history refresh, snapshot refresh, viewport-triggered history/dialog prefetch, and the explicitly opened reaction-actor list. Once cached rows are painted their refresh must not refuse a peer search, chat open or reaction selected from them; maintenance contention retains one bounded session/chat-scoped retry instead of showing an alert. A user-opened remote view stays on a Back-able `Loading` screen while waiting for this lane. Pressed `Older`/`More chats` commands remain on `worker`. Same connection, no second socket. |
+| `TgMidlet.syncWorker` | one per task | `worker` | Initial/cached dialog and history refresh, snapshot refresh, viewport-triggered history/dialog/topic prefetch, and the explicitly opened reaction-actor list. Once cached rows are painted their refresh must not refuse a peer search, chat open or reaction selected from them; maintenance contention retains one bounded session/chat-scoped retry instead of showing an alert. A user-opened remote view stays on a Back-able `Loading` screen while waiting for this lane. Pressed `Older`/`More chats` commands remain on `worker`. Same connection, no second socket. |
 | Thumbnail decoder | one at a time, latched | `worker` | Decoding is CPU, not network. Guarded by a generation counter so results for a chat the reader has left are dropped. |
 | Heap probe, draft autosave, bounded maintenance retries | one each | — | None of them talks to Telegram. A retry posts its submission back to the display thread and rechecks the current session/chat before doing anything. |
 
@@ -445,7 +461,7 @@ anything.
 | Counter | Bumped by | Asked by |
 |---|---|---|
 | session | `finishLoggedOut`, `changeNumber`, and the first `loadDialogs` after a logout — i.e. whenever a *different* authorization becomes the live one | everything; it is the outer guard |
-| chat | binding a *different* conversation as the open one, through the single `bindOpenPeer` assignment point | anything that writes into the open transcript |
+| chat | binding a *different* conversation as the open one - a different peer, or a different thread of the same peer - through the single `bindOpenPeer` assignment point | anything that writes into the open transcript |
 
 Two decisions inside that are load-bearing. Closing a chat does not bump: a
 token holds a peer and a peer never matches a null current one, so closing is

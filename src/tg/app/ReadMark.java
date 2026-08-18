@@ -41,30 +41,39 @@ public final class ReadMark
     private final int peerKind;
     private final long peerId;
 
+    /**
+     * The thread the mark applies to, or 0 for the whole peer. Two topics of
+     * one forum have independent read cursors, so the thread is part of the
+     * identity for the same reason the peer is.
+     */
+    private final int threadRootId;
+
     /** Highest server message id ever seen in this conversation. */
     private int newestKnownId;
 
-    private ReadMark(Peer peer)
+    private ReadMark(Peer peer, int threadRootId)
     {
         this.peerKind = peer.kind;
         this.peerId = peer.id;
+        this.threadRootId = threadRootId;
     }
 
     /**
-     * A fresh mark for {@code peer}.
+     * A fresh mark for {@code (peer, threadRootId)}.
      *
      * @return null when there is no chat, which is not a conversation to read
      */
-    public static ReadMark forPeer(Peer peer)
+    public static ReadMark forPeer(Peer peer, int threadRootId)
     {
         if (peer == null) { return null; }
-        return new ReadMark(peer);
+        return new ReadMark(peer, threadRootId);
     }
 
-    /** Whether {@code other} is the conversation this mark was taken in. */
-    public boolean ownedBy(Peer other)
+    /** Whether {@code (other, thread)} is what this mark was taken in. */
+    public boolean ownedBy(Peer other, int thread)
     {
-        return other != null && other.kind == peerKind && other.id == peerId;
+        return other != null && other.kind == peerKind && other.id == peerId
+                && thread == threadRootId;
     }
 
     /** Highest server message id seen here, or 0 before anything has arrived. */
@@ -74,15 +83,16 @@ public final class ReadMark
     }
 
     /**
-     * How far {@code peer} may be marked read, or 0.
+     * How far {@code (peer, thread)} may be marked read, or 0.
      *
      * Static and null-tolerant because "no conversation is open" and "the mark
      * belongs to the chat the reader has just come back from" are the same
      * answer at the call site: nothing this peer can be marked read up to.
      */
-    public static int newestKnownIdFor(ReadMark mark, Peer peer)
+    public static int newestKnownIdFor(ReadMark mark, Peer peer, int thread)
     {
-        return mark != null && mark.ownedBy(peer) ? mark.newestKnownId : 0;
+        return mark != null && mark.ownedBy(peer, thread)
+                ? mark.newestKnownId : 0;
     }
 
     /**

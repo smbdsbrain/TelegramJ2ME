@@ -1,6 +1,7 @@
 package tg.app;
 
 import tg.api.Dialog;
+import tg.api.ForumTopic;
 import tg.api.Peer;
 
 /**
@@ -39,14 +40,18 @@ public final class LocalReads
 
     private final int[] kinds = new int[MAX];
     private final long[] ids = new long[MAX];
+    private final int[] threads = new int[MAX];
     private final int[] upTo = new int[MAX];
     private int count;
 
-    /** The reader cleared {@code peer} up to and including {@code maxId}. */
-    public synchronized void cleared(Peer peer, int maxId)
+    /**
+     * The reader cleared {@code (peer, thread)} up to and including
+     * {@code maxId}; a thread of 0 is the peer's own transcript.
+     */
+    public synchronized void cleared(Peer peer, int thread, int maxId)
     {
         if (peer == null || maxId <= 0) { return; }
-        int at = find(peer);
+        int at = find(peer, thread);
         if (at >= 0)
         {
             if (maxId > upTo[at]) { upTo[at] = maxId; }
@@ -59,11 +64,13 @@ public final class LocalReads
             // an unbounded array to avoid.
             System.arraycopy(kinds, 1, kinds, 0, MAX - 1);
             System.arraycopy(ids, 1, ids, 0, MAX - 1);
+            System.arraycopy(threads, 1, threads, 0, MAX - 1);
             System.arraycopy(upTo, 1, upTo, 0, MAX - 1);
             count--;
         }
         kinds[count] = peer.kind;
         ids[count] = peer.id;
+        threads[count] = thread;
         upTo[count] = maxId;
         count++;
     }
@@ -78,7 +85,7 @@ public final class LocalReads
     public synchronized void apply(Dialog dialog)
     {
         if (dialog == null || dialog.peer == null) { return; }
-        int at = find(dialog.peer);
+        int at = find(dialog.peer, 0);
         if (at < 0) { return; }
 
         if (dialog.readInboxMaxId >= upTo[at])
@@ -93,6 +100,25 @@ public final class LocalReads
         dialog.unreadCount = 0;
     }
 
+    /**
+     * The same reconciliation for a topic row the server has just restated;
+     * the row belongs to {@code (forum, topic.id)}.
+     */
+    public synchronized void applyTopic(ForumTopic topic, Peer forum)
+    {
+        if (topic == null || forum == null) { return; }
+        int at = find(forum, topic.id);
+        if (at < 0) { return; }
+
+        if (topic.readInboxMaxId >= upTo[at])
+        {
+            remove(at);
+            return;
+        }
+        topic.readInboxMaxId = upTo[at];
+        topic.unreadCount = 0;
+    }
+
     /** Forget everything. A logout, or a deliberate reload of the list. */
     public synchronized void clear()
     {
@@ -105,11 +131,12 @@ public final class LocalReads
         return count;
     }
 
-    private int find(Peer peer)
+    private int find(Peer peer, int thread)
     {
         for (int i = 0; i < count; i++)
         {
-            if (kinds[i] == peer.kind && ids[i] == peer.id) { return i; }
+            if (kinds[i] == peer.kind && ids[i] == peer.id
+                    && threads[i] == thread) { return i; }
         }
         return -1;
     }
@@ -121,6 +148,7 @@ public final class LocalReads
         {
             System.arraycopy(kinds, at + 1, kinds, at, move);
             System.arraycopy(ids, at + 1, ids, at, move);
+            System.arraycopy(threads, at + 1, threads, at, move);
             System.arraycopy(upTo, at + 1, upTo, at, move);
         }
         count--;

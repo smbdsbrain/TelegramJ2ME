@@ -18,7 +18,10 @@ import tg.api.AuthCheck;
 import tg.api.Cached;
 import tg.api.Dialog;
 import tg.api.DialogPage;
+import tg.api.DiscussionInfo;
 import tg.api.AppSettings;
+import tg.api.ForumTopic;
+import tg.api.ForumTopicPage;
 import tg.api.ForwardInfo;
 import tg.api.Message;
 import tg.api.MessageEntity;
@@ -38,6 +41,8 @@ import tg.api.PhotoInputStream;
 import tg.api.PhotoRef;
 import tg.api.Profile;
 import tg.api.Telegram;
+import tg.api.ThreadInfo;
+import tg.api.TopicWindow;
 import tg.api.UpdateBatch;
 import tg.api.UpdateState;
 import tg.api.UpdateSync;
@@ -70,6 +75,7 @@ import tg.ui.DialogListScreen;
 import tg.ui.EmojiText;
 import tg.ui.SettingsScreen;
 import tg.ui.TextScreen;
+import tg.ui.TopicListScreen;
 import tg.ui.PhotoScreen;
 import tg.ui.ImageScaler;
 import tg.ui.JpegDecoder;
@@ -101,6 +107,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * shed, and shedding when it was not strictly necessary costs a redraw.
      */
     private static final int CHAT_OPEN_BYTES = 320 * 1024;
+
+    /**
+     * A topic list is a screen and one parsed page of flat rows - far lighter
+     * than a chat open, which decodes the emoji sheet and wraps a transcript.
+     */
+    private static final int TOPIC_LIST_OPEN_BYTES = 64 * 1024;
 
     /*
      * How many dialogs and messages this client fetches and holds now comes
@@ -165,6 +177,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdFirstUnread =
             new Command("First unread", Command.SCREEN, 4);
     private final Command cmdMoreDialogs = new Command("More", Command.SCREEN, 4);
+    private final Command cmdOpenTopic = new Command("Open", Command.ITEM, 1);
+    private final Command cmdMoreTopics = new Command("More", Command.SCREEN, 4);
     private final Command cmdFilter =
             new Command("Filter loaded", Command.SCREEN, 3);
     private final Command cmdTopOfList =
@@ -193,6 +207,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private final Command cmdReply = new Command("Reply", Command.SCREEN, 1);
     private final Command cmdEditMessage =
             new Command("Edit", Command.SCREEN, 2);
+    private final Command cmdOpenComments =
+            new Command("Comments", Command.SCREEN, 2);
     private final Command cmdViewFullText =
             new Command("View full text", Command.SCREEN, 2);
     private final Command cmdEntityActions =
@@ -288,6 +304,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private ChatScreen chatScreen;
     private ChatScreen editCommandScreen;
     private boolean editCommandVisible;
+    private boolean commentsCommandVisible;
     private TextBox composeBox;
     private List outboxList;
     private ReactionScreen reactionScreen;
@@ -314,6 +331,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private Dialog[] dialogs = new Dialog[0];
     private Peer openPeer;
+
+    /**
+     * The thread half of the open transcript, or null for the peer's own
+     * history. Assigned only inside {@code bindOpenPeer}, beside the peer it
+     * qualifies.
+     */
+    private ThreadInfo openThread;
     private Message[] openHistory = new Message[0];
 
     /**
@@ -396,6 +420,31 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * a wall in disguise.
      */
     private Dialog dialogAbove;
+
+    // ------------------------------------------------- forum topic window
+
+    /** The open forum's topic list, or null. Recreated per forum open. */
+    private TopicListScreen topicScreen;
+
+    /** The retained window of topic rows, newest ordering first. */
+    private ForumTopic[] topics = new ForumTopic[0];
+
+    /** Rows dropped above the window. */
+    private int topicsAbove;
+
+    /** The row immediately above the window, or null at the top. */
+    private ForumTopic topicAbove;
+
+    /** Restore points for runs given up; see the dialog twin. */
+    private ForumTopic[] topicAboveStack = new ForumTopic[0];
+    private int topicAboveDepth;
+    private boolean topicTopLost;
+    private boolean topicsExhausted;
+    private boolean topicPageInFlight;
+    private int topicTotal;
+
+    /** Forum whose topic load was refused and is waiting for syncWorker. */
+    private Peer pendingTopicsRefreshPeer;
 
     /**
      * Previous values of {@link #dialogAbove}, oldest first.
@@ -511,6 +560,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                             && samePeer(openPeer, want))
                     {
                         loadOpenHistory(want);
+                    }
+                    Peer forum = pendingTopicsRefreshPeer;
+                    pendingTopicsRefreshPeer = null;
+                    if (forum != null && topicScreen != null
+                            && samePeer(topicScreen.peer(), forum))
+                    {
+                        loadTopics(forum);
                     }
                     if (dialogs && accountActive) { loadDialogs(); }
                 }
@@ -662,9 +718,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private final ReadQueue.Sink readSink = new ReadQueue.Sink()
     {
-        public void markRead(Peer peer, int maxId)
+        public void markRead(Peer peer, int thread, int maxId)
         {
-            try { telegram.markRead(peer, maxId); }
+            try { telegram.markRead(peer, thread, maxId); }
             catch (Throwable t)
             {
                 Diag.warn("mark-read failed: " + shortMessage(t));
@@ -854,6 +910,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         draftAutosaveRunning = false;
         pendingDialogsRefresh = false;
         pendingHistoryRefreshPeer = null;
+        pendingTopicsRefreshPeer = null;
         initialRefreshRetry.cancel();
         snapshotRefreshRetry.cancel();
         reactionActorsRetry.cancel();
@@ -894,8 +951,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // this is the one hook rather than a check at every caller. Leaving
             // rather than closing, so a reset does not drop what was typed.
             leaveComposer();
-            bindOpenPeer(null);
+            bindOpenPeer(null, null);
             telegram.setActivePeer(null);
+            // Everything above the root was popped, so a topic list held here
+            // is unreachable and its window with it.
+            topicScreen = null;
+        }
+        else if (topicScreen != null && screen == topicScreen)
+        {
+            // Landing on the topic list closes the topic the way landing on
+            // the chat list closes the chat. The forum stays the active peer,
+            // so its channel difference keeps feeding the visible rows.
+            leaveComposer();
+            bindOpenPeer(null, null);
+            telegram.setActivePeer(topicScreen.peer());
         }
         ChatScreen context = null;
         if (screen instanceof ChatScreen)
@@ -916,12 +985,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (context != null)
         {
             chatScreen = context;
-            bindOpenPeer(context.peer());
+            bindOpenPeer(context.peer(), context.thread());
             // Before setOpenHistory, which raises the mark: the stack can hold
             // two chats at once - opening a forwarded message's source pushes
             // one over the other - and coming back down must not carry the
             // upper conversation's high-water mark into the lower one.
-            rebindReadMark(openPeer);
+            rebindReadMark(openPeer, openThreadId());
             setOpenHistory(context.messages());
             telegram.setActivePeer(openPeer);
         }
@@ -1010,16 +1079,32 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 loadOpenHistory(openPeer);
             }
+            else if (topicScreen != null && d == topicScreen)
+            {
+                refreshTopics();
+            }
             else
             {
                 loadDialogs();
             }
         }
+        else if (c == cmdOpenTopic)
+        {
+            openSelectedTopic();
+        }
+        else if (c == cmdOpenComments)
+        {
+            openComments();
+        }
+        else if (c == cmdMoreTopics)
+        {
+            loadMoreTopics(true);
+        }
         else if (c == cmdWrite)
         {
             // Explicitly a non-reply session. Write used to inherit whatever
             // reply state an earlier composer had left behind.
-            openComposer(ComposerState.write(openPeer));
+            openComposer(ComposerState.write(openPeer, openThreadId()));
         }
         else if (c == cmdJumpLatest)
         {
@@ -1894,12 +1979,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // data - the retained Peer carries a contact's name.
         closeComposer();
         composeBox = null;
-        bindOpenPeer(null);
+        bindOpenPeer(null, null);
         if (photoToken != null) { photoToken.cancel(); }
         // A refresh waiting for the worker has nothing left to refresh, and its
         // submission would land on the phone box.
         pendingDialogsRefresh = false;
         pendingHistoryRefreshPeer = null;
+        pendingTopicsRefreshPeer = null;
+        topicScreen = null;
         initialRefreshRetry.cancel();
         snapshotRefreshScheduled = false;
         snapshotRefreshRetry.cancel();
@@ -2209,7 +2296,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void cancelInitialRefreshRetryIfIdle()
     {
-        if (!pendingDialogsRefresh && pendingHistoryRefreshPeer == null)
+        if (!pendingDialogsRefresh && pendingHistoryRefreshPeer == null
+                && pendingTopicsRefreshPeer == null)
         {
             initialRefreshRetry.cancel();
         }
@@ -2520,20 +2608,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int generation = ++messageSearchGeneration;
         messageSearchQuery = query;
         showBusy("Message search", "Searching this chat...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.search"; }
             public Object run() throws Exception
             {
-                return telegram.searchMessages(peer, query, offset, 0,
-                        MemoryBudget.messageSearchLimit());
+                // The captured thread keeps an in-topic Find inside the topic
+                // instead of searching the whole supergroup.
+                return telegram.searchMessages(peer, asked.thread(), query,
+                        offset, 0, MemoryBudget.messageSearchLimit());
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object result)
             {
-                if (!asked.sameChat(openPeer)
+                if (!asked.sameChat(openPeer, openThreadId())
                         || generation != messageSearchGeneration
                         || !query.equals(messageSearchQuery))
                 {
@@ -2545,7 +2635,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer)
+                if (!asked.sameChat(openPeer, openThreadId())
                         || generation != messageSearchGeneration)
                 {
                     dropStale("messages.search");
@@ -2615,26 +2705,27 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final ChatScreen returnChat = chatScreen;
         restoreScreen(navigation.pop());
         returnChat.setStatus("opening search result...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final ThreadInfo thread = openThread;
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "open message search result"; }
             public Object run() throws Exception
             {
-                return telegram.getHistoryAround(peer, messageId,
-                        MemoryBudget.historyPageSize());
+                return telegram.getHistoryAround(peer, asked.thread(),
+                        messageId, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object result)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("open message search result");
                     return;
                 }
-                bindOpenPeer(peer);
-                rebindReadMark(openPeer);
+                bindOpenPeer(peer, thread);
+                rebindReadMark(openPeer, openThreadId());
                 historyPageInFlight = false;
                 historyExhausted = false;
                 historyForwardStalled = false;
@@ -2651,7 +2742,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("open message search result");
                     return;
@@ -2725,7 +2816,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // What this used to bump its own counter for. avatarGeneration
             // moved on exactly one event - a logout - which is what the session
             // generation is, so the two are now one.
-            final AsyncScope.Token asked = scope.capture(peer);
+            final AsyncScope.Token asked = scope.capture(peer, 0);
             final long photoId = peer.avatar.photoId;
             final int target = Math.max(8, dialogList.avatarSize());
             boolean submitted = avatarWorker.submit(new Worker.Task()
@@ -2968,14 +3059,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
     }
 
-    private void cacheHistory(Peer peer, Message[] value)
+    private void cacheHistory(Peer peer, int thread, Message[] value)
     {
         long accountId = cacheAccountId();
         if (accountId == 0 || conversationCache == null) { return; }
         try
         {
             conversationCache.saveHistory(
-                    accountId, Dc.isTest(), peer, value);
+                    accountId, Dc.isTest(), peer, thread, value);
         }
         catch (Throwable t)
         {
@@ -3412,6 +3503,505 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
     }
 
+    // --------------------------------------------------------- forum topics
+
+    /** Restore points held before the oldest is forgotten. */
+    private static final int MAX_TOPIC_RESTORE_POINTS = 32;
+
+    /**
+     * Open a forum as its topic list.
+     *
+     * The screen between the chat list and the transcript: a topic row opens
+     * an ordinary {@code ChatScreen} bound to {@code (forum, topic)}.
+     */
+    private void openForumTopics(Peer peer)
+    {
+        try
+        {
+            MemoryPressure.reserve(TOPIC_LIST_OPEN_BYTES);
+            resetTopicWindow();
+            topics = new ForumTopic[0];
+            topicTotal = 0;
+            topicScreen = createTopicListScreen(peer);
+            telegram.setActivePeer(peer);
+            pushScreen(topicScreen);
+            loadTopics(peer);
+        }
+        catch (Throwable t)
+        {
+            openChatFailed(t);
+        }
+    }
+
+    private TopicListScreen createTopicListScreen(Peer peer)
+    {
+        TopicListScreen screen = new TopicListScreen(currentTheme(), peer);
+        screen.setStatus("loading topics...", updateLabel);
+        screen.addCommand(cmdOpenTopic);
+        screen.addCommand(cmdRefresh);
+        screen.addCommand(cmdMoreTopics);
+        screen.addCommand(cmdOutbox);
+        screen.addCommand(cmdLog);
+        screen.addCommand(cmdBack);
+        screen.setCommandListener(this);
+        screen.setActivationListener(new TopicListScreen.ActivationListener()
+        {
+            public void onTopicActivated(ForumTopic topic)
+            {
+                openTopic(topic);
+            }
+        });
+        screen.setViewportListener(new TopicListScreen.ViewportListener()
+        {
+            public void onTopicViewportChanged()
+            {
+                maybeLoadTopics();
+            }
+        });
+        return screen;
+    }
+
+    private void openSelectedTopic()
+    {
+        ForumTopic topic = topicScreen == null
+                ? null : topicScreen.selectedTopic();
+        if (topic != null) { openTopic(topic); }
+    }
+
+    /** Open one topic's transcript; the same shape as a flat chat open. */
+    private void openTopic(ForumTopic row)
+    {
+        if (row == null || topicScreen == null) { return; }
+        Peer peer = topicScreen.peer();
+        try
+        {
+            MemoryPressure.reserve(CHAT_OPEN_BYTES);
+            bindOpenPeer(peer, new ThreadInfo(row.id, row.closed,
+                    row.readInboxMaxId, row.unreadCount, row.title));
+            rebindReadMark(peer, row.id);
+            historyPageInFlight = false;
+            historyExhausted = false;
+            historyForwardStalled = false;
+            telegram.setActivePeer(peer);
+            chatScreen = createChatScreen(peer);
+            chatScreen.setThread(openThread);
+            chatScreen.setTitle(row.title);
+            thumbnailGeneration++;
+            chatScreen.resetMessages(new Message[0]);
+            chatScreen.setStatus("loading... / " + connectionLabel);
+            pushScreen(chatScreen);
+            loadOpenHistory(peer);
+        }
+        catch (Throwable t)
+        {
+            openChatFailed(t);
+        }
+    }
+
+    /** Reset the topic window to the start of the list; see the dialog twin. */
+    private void resetTopicWindow()
+    {
+        topicsAbove = 0;
+        topicAbove = null;
+        topicAboveStack = new ForumTopic[0];
+        topicAboveDepth = 0;
+        topicTopLost = false;
+        topicsExhausted = false;
+        topicPageInFlight = false;
+    }
+
+    /** Install the current window into the screen, local reads re-applied. */
+    private void showTopicList(int selectedTopicId)
+    {
+        if (topicScreen == null) { return; }
+        for (int i = 0; i < topics.length; i++)
+        {
+            localReads.applyTopic(topics[i], topicScreen.peer());
+        }
+        topicScreen.setTopics(topics, topicsAbove,
+                Math.max(topicTotal, topicsAbove + topics.length),
+                selectedTopicId);
+        topicScreen.setStatus(connectionLabel, updateLabel);
+    }
+
+    /** The first page of a forum's topics, on the maintenance lane. */
+    private void loadTopics(final Peer peer)
+    {
+        final TopicListScreen screen = topicScreen;
+        if (screen == null || topicPageInFlight) { return; }
+        topicPageInFlight = true;
+        screen.setStatus("loading topics...", updateLabel);
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = syncWorker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getForumTopics"; }
+            public Object run() throws Exception
+            {
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                return telegram.getForumTopics(peer, null,
+                        MemoryBudget.topicPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen != screen)
+                {
+                    dropStale("messages.getForumTopics");
+                    return;
+                }
+                ForumTopicPage page = (ForumTopicPage) result;
+                topics = page.topics;
+                topicTotal = page.total;
+                topicsExhausted = topics.length >= topicTotal;
+                showTopicList(0);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen != screen)
+                {
+                    dropStale("messages.getForumTopics");
+                    return;
+                }
+                String detail = shortMessage(error);
+                if (detail != null && detail.indexOf("FORUM") >= 0
+                        && navigation.current() == screen)
+                {
+                    // The forum flag was stale - the group stopped being a
+                    // forum while the row aged in a cache. Its transcript is
+                    // what the server still answers, so show that instead.
+                    topicScreen = null;
+                    navigation.pop();
+                    openChat(peer);
+                    return;
+                }
+                if (topics.length == 0) { screen.setEmptyText("(offline)"); }
+                screen.setStatus("failed: " + detail, updateLabel);
+            }
+        });
+        if (!submitted)
+        {
+            // Never turn maintenance-lane contention into an alert; see the
+            // history twin. One bounded waiter retries it.
+            topicPageInFlight = false;
+            pendingTopicsRefreshPeer = peer;
+            initialRefreshRetry.schedule(400L);
+            screen.setStatus("waiting for topics...", updateLabel);
+        }
+    }
+
+    /** Reset to the top and fetch page one again. */
+    private void refreshTopics()
+    {
+        if (topicScreen == null) { return; }
+        resetTopicWindow();
+        topics = new ForumTopic[0];
+        topicTotal = 0;
+        loadTopics(topicScreen.peer());
+    }
+
+    /**
+     * Fetch or restore when the reader nears an edge of the topic window.
+     *
+     * The dialog list's shape one screen down: downward pages are asked for
+     * by the last retained row, upward runs come back through the restore
+     * stack recorded when they were dropped. Runs on the lcdui thread and
+     * must not block.
+     */
+    private void maybeLoadTopics()
+    {
+        if (topicScreen == null || topics.length == 0 || topicPageInFlight
+                || navigation.current() != topicScreen)
+        {
+            return;
+        }
+        int margin = MemoryBudget.topicPrefetchMargin();
+        int above = topicScreen.firstVisibleIndex();
+        if (above >= 0 && above < margin)
+        {
+            if (canRestoreTopics())
+            {
+                restoreTopicsAbove();
+                return;
+            }
+            if (topicsAbove > 0)
+            {
+                topicScreen.setStatus("top of loaded - press Refresh",
+                        updateLabel);
+            }
+        }
+        if (!topicsExhausted && topics.length - 1
+                - topicScreen.lastVisibleIndex() < margin)
+        {
+            loadMoreTopics(false);
+        }
+    }
+
+    /**
+     * One page of further topics.
+     *
+     * @param manual pressed rather than provoked by scrolling; only changes
+     *               how loudly an empty page reports itself
+     */
+    private void loadMoreTopics(final boolean manual)
+    {
+        final TopicListScreen screen = topicScreen;
+        if (screen == null) { return; }
+        if (topicPageInFlight)
+        {
+            if (manual) { screen.setStatus("loading...", updateLabel); }
+            return;
+        }
+        if (topicsExhausted)
+        {
+            if (manual)
+            {
+                showAlert("No more topics.", AlertType.INFO, screen);
+            }
+            return;
+        }
+        ForumTopic offset = null;
+        for (int i = topics.length - 1; i >= 0; i--)
+        {
+            if (topics[i] != null) { offset = topics[i]; break; }
+        }
+        if (offset == null) { return; }
+        final ForumTopic pageOffset = offset;
+        final int selected = selectedTopicId();
+        topicPageInFlight = true;
+        screen.setStatus("loading...", updateLabel);
+        final AsyncScope.Token asked = scope.capture();
+        Worker pageWorker = manual ? worker : syncWorker;
+        boolean submitted = pageWorker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getForumTopics/more"; }
+            public Object run() throws Exception
+            {
+                return telegram.getForumTopics(screen.peer(), pageOffset,
+                        MemoryBudget.topicPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics/more");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen != screen)
+                {
+                    dropStale("messages.getForumTopics/more");
+                    return;
+                }
+                ForumTopicPage page = (ForumTopicPage) result;
+                int fresh = TopicWindow.countNew(topics, page.topics);
+                if (page.total > topicTotal) { topicTotal = page.total; }
+                appendTopicPage(page.topics);
+                showTopicList(selected);
+                // Latched rather than retried; see the dialog twin.
+                if (fresh == 0 || (topicTotal > 0
+                        && topicsAbove + topics.length >= topicTotal))
+                {
+                    topicsExhausted = true;
+                    if (manual && fresh == 0)
+                    {
+                        showAlert("No more topics.", AlertType.INFO, screen);
+                    }
+                }
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics/more");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen == screen)
+                {
+                    screen.setStatus(connectionLabel, updateLabel);
+                }
+                if (manual)
+                {
+                    showAlertThen("Could not load more topics", error, screen);
+                }
+                else
+                {
+                    Diag.warn("topic page failed: " + shortMessage(error));
+                }
+            }
+        });
+        if (!submitted)
+        {
+            // The worker drops rather than queues; the next viewport event
+            // retries, which is the whole recovery.
+            topicPageInFlight = false;
+            screen.setStatus(connectionLabel, updateLabel);
+        }
+    }
+
+    /** Bring back the run of topics immediately above the window. */
+    private void restoreTopicsAbove()
+    {
+        final TopicListScreen screen = topicScreen;
+        if (screen == null || topicPageInFlight || !canRestoreTopics())
+        {
+            return;
+        }
+        final ForumTopic from = topicAboveStack[topicAboveDepth - 1];
+        final int selected = selectedTopicId();
+        topicPageInFlight = true;
+        screen.setStatus("loading...", updateLabel);
+        final AsyncScope.Token asked = scope.capture();
+        boolean submitted = syncWorker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getForumTopics/back"; }
+            public Object run() throws Exception
+            {
+                // A null offset is the top of the list, which is where the
+                // first run ever dropped came from.
+                return telegram.getForumTopics(screen.peer(), from,
+                        MemoryBudget.topicPageSize());
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object result)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics/back");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen != screen || !canRestoreTopics()) { return; }
+                ForumTopicPage page = (ForumTopicPage) result;
+                if (page.topics.length == 0)
+                {
+                    // The run is gone from the server's list. Drop the restore
+                    // point rather than asking again on every keypress.
+                    topicAboveDepth--;
+                    topicAbove = from;
+                    return;
+                }
+                topicAboveDepth--;
+                if (page.total > topicTotal) { topicTotal = page.total; }
+                prependTopicPage(page.topics, from);
+                showTopicList(selected);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameSession())
+                {
+                    dropStale("messages.getForumTopics/back");
+                    return;
+                }
+                topicPageInFlight = false;
+                if (topicScreen == screen)
+                {
+                    screen.setStatus(connectionLabel, updateLabel);
+                }
+                Diag.warn("topic page back failed: " + shortMessage(error));
+            }
+        });
+        if (!submitted)
+        {
+            topicPageInFlight = false;
+            screen.setStatus(connectionLabel, updateLabel);
+        }
+    }
+
+    /** Extend the window downwards, dropping as much off the top as it gains. */
+    private void appendTopicPage(ForumTopic[] page)
+    {
+        ForumTopic[] merged = TopicWindow.merge(topics, page);
+        int cap = MemoryBudget.maxTopics();
+        int drop = merged.length - cap;
+        if (drop > 0)
+        {
+            pushTopicRestorePoint(merged[drop - 1]);
+            topicsAbove += drop;
+            merged = TopicWindow.keepLast(merged, cap);
+        }
+        topics = merged;
+    }
+
+    /** Extend the window upwards with a restored run, giving up the bottom. */
+    private void prependTopicPage(ForumTopic[] page, ForumTopic restoredFrom)
+    {
+        int before = topics.length;
+        ForumTopic[] merged = TopicWindow.merge(page, topics);
+        int gained = merged.length - before;
+        topics = TopicWindow.keepFirst(merged, MemoryBudget.maxTopics());
+        topicsAbove -= gained;
+        if (topicsAbove < 0) { topicsAbove = 0; }
+        topicAbove = restoredFrom;
+        // Room reappeared below, so whatever was decided about the end of the
+        // list was decided about a window that no longer exists.
+        if (topics.length < merged.length) { topicsExhausted = false; }
+    }
+
+    private void pushTopicRestorePoint(ForumTopic lastDropped)
+    {
+        if (topicAboveDepth >= topicAboveStack.length)
+        {
+            int grown = topicAboveStack.length == 0
+                    ? 8 : topicAboveStack.length * 2;
+            if (grown > MAX_TOPIC_RESTORE_POINTS)
+            {
+                grown = MAX_TOPIC_RESTORE_POINTS;
+            }
+            if (grown > topicAboveStack.length)
+            {
+                ForumTopic[] bigger = new ForumTopic[grown];
+                System.arraycopy(topicAboveStack, 0, bigger, 0,
+                        topicAboveDepth);
+                topicAboveStack = bigger;
+            }
+            else
+            {
+                // Full. Forget the oldest, which is the way back to the top -
+                // so say so and stop offering a scroll that would land
+                // somewhere arbitrary. Refresh still returns there.
+                System.arraycopy(topicAboveStack, 1, topicAboveStack, 0,
+                        topicAboveDepth - 1);
+                topicAboveDepth--;
+                topicTopLost = true;
+            }
+        }
+        topicAboveStack[topicAboveDepth++] = topicAbove;
+        topicAbove = lastDropped;
+    }
+
+    /** Whether there is a run above the window that can still be fetched. */
+    private boolean canRestoreTopics()
+    {
+        return topicAboveDepth > 0;
+    }
+
+    private int selectedTopicId()
+    {
+        ForumTopic selected = topicScreen == null
+                ? null : topicScreen.selectedTopic();
+        return selected == null ? 0 : selected.id;
+    }
+
     private void openSavedMessages()
     {
         Peer self = telegram.peers().self();
@@ -3456,14 +4046,25 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      */
     private void openDialog(Peer peer)
     {
+        if (peer != null && peer.kind == Peer.CHANNEL && peer.forum)
+        {
+            openForumTopics(peer);
+            return;
+        }
+        openChat(peer);
+    }
+
+    /** Open one flat transcript; forums route through the topic list. */
+    private void openChat(Peer peer)
+    {
         try
         {
             // Reclaim before committing, not after failing. The estimate is the
             // shape of what follows: a ChatScreen, the emoji sheet on first
             // paint, a wrapped transcript and the inflated history response.
             MemoryPressure.reserve(CHAT_OPEN_BYTES);
-            bindOpenPeer(peer);
-            rebindReadMark(peer);
+            bindOpenPeer(peer, null);
+            rebindReadMark(peer, 0);
             historyPageInFlight = false;
             historyExhausted = false;
             historyForwardStalled = false;
@@ -3609,7 +4210,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     unseenLiveMessages = 0;
                     screen.setNewMessageCount(0);
                 }
-                updateEditCommand(screen);
+                updateFocusCommands(screen);
                 maybeLoadHistory();
                 scheduleVisibleThumbnails();
             }
@@ -3617,15 +4218,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         return screen;
     }
 
-    /** Keep Edit out of the menu unless the focused row can actually use it. */
-    private void updateEditCommand(ChatScreen screen)
+    /**
+     * Keep per-message commands out of the menu unless the focused row can
+     * actually use them: Edit for an own editable text, Comments for a
+     * channel post the server offers a thread on.
+     */
+    private void updateFocusCommands(ChatScreen screen)
     {
         if (screen == null) { return; }
         if (editCommandScreen != screen)
         {
             editCommandScreen = screen;
             editCommandVisible = false;
+            commentsCommandVisible = false;
             screen.removeCommand(cmdEditMessage);
+            screen.removeCommand(cmdOpenComments);
         }
         Message selected = null;
         int id = screen.focusedMessageId();
@@ -3638,11 +4245,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 break;
             }
         }
-        boolean visible = selected != null && selected.canEditText();
-        if (visible == editCommandVisible) { return; }
-        if (visible) { screen.addCommand(cmdEditMessage); }
-        else { screen.removeCommand(cmdEditMessage); }
-        editCommandVisible = visible;
+        boolean edit = selected != null && selected.canEditText();
+        if (edit != editCommandVisible)
+        {
+            if (edit) { screen.addCommand(cmdEditMessage); }
+            else { screen.removeCommand(cmdEditMessage); }
+            editCommandVisible = edit;
+        }
+        boolean comments = selected != null && selected.hasComments
+                && selected.id > 0;
+        if (comments != commentsCommandVisible)
+        {
+            if (comments) { screen.addCommand(cmdOpenComments); }
+            else { screen.removeCommand(cmdOpenComments); }
+            commentsCommandVisible = comments;
+        }
     }
 
     private void loadOpenHistory(final Peer peer)
@@ -3656,7 +4273,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 long accountId = cacheAccountId();
                 Cached cached = accountId == 0 ? null
                         : conversationCache.loadHistory(
-                                accountId, Dc.isTest(), peer);
+                                accountId, Dc.isTest(), peer, openThreadId());
                 if (cached != null && cached.messages().length > 0)
                 {
                     setOpenHistory(cached.messages());
@@ -3675,7 +4292,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         chatScreen.setStatus(fallback ? "cached/refreshing"
                 : ("loading... / " + connectionLabel));
         final boolean hasFallback = fallback;
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         // Once cached rows are painted this is a refresh, not a reason to
         // reject a reaction selected from those rows. Even without a cache the
         // request only populates the already-open screen, so it belongs on the
@@ -3691,13 +4308,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // pending RPC and can trip a read timeout; this is the same
                 // allocation one level up, on a thread that can afford to pause.
                 MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
-                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
+                return telegram.getHistory(peer, asked.thread(),
+                        MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
             public void onSuccess(final Object result)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory");
                     return;
@@ -3705,7 +4323,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 try
                 {
                     setOpenHistory((Message[]) result);
-                    cacheHistory(peer, openHistory);
+                    cacheHistory(peer, asked.thread(), openHistory);
                     applyKnownReadState(openHistory, peer);
                     // setMessages word-wraps the window and is where the heap
                     // peaks; the guard is here rather than around the fetch for
@@ -3724,7 +4342,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (asked.sameChat(openPeer))
+                if (asked.sameChat(openPeer, openThreadId()))
                 {
                     if (hasFallback && openHistory.length > 0)
                     {
@@ -3832,7 +4450,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int offsetId = openHistory[openHistory.length - 1].id;
         historyPageInFlight = true;
         chatScreen.setStatus("loading older messages...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         final int atRequest = historyNavigation;
         // Viewport paging is speculative background work. Letting it occupy
         // the user's worker made a reaction (and even the next chat open)
@@ -3846,8 +4464,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
-                return telegram.getHistoryBefore(peer, offsetId,
-                        MemoryBudget.historyPageSize());
+                return telegram.getHistoryBefore(peer, asked.thread(),
+                        offsetId, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -3874,7 +4492,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/older");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/older");
                     return;
@@ -3891,7 +4509,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // out again without being news.
                 boolean older = carriesOlderThan(page, oldestOpenId());
                 mergeHistoryPage(page);
-                cacheHistory(peer, openHistory);
+                cacheHistory(peer, asked.thread(), openHistory);
                 applyKnownReadState(openHistory, peer);
                 chatScreen.setMessages(openHistory);
                 scheduleInlineThumbnails(peer);
@@ -3917,7 +4535,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     return;
                 }
                 historyPageInFlight = false;
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/older");
                     return;
@@ -4003,10 +4621,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * server message in that chat, so it stays defensible, and dropping it would
      * only re-fetch what was already known.
      */
-    private void rebindReadMark(Peer peer)
+    private void rebindReadMark(Peer peer, int thread)
     {
-        if (readMark != null && readMark.ownedBy(peer)) { return; }
-        readMark = ReadMark.forPeer(peer);
+        if (readMark != null && readMark.ownedBy(peer, thread)) { return; }
+        readMark = ReadMark.forPeer(peer, thread);
         historyForwardStalled = false;
     }
 
@@ -4037,14 +4655,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // and be retried the moment the worker frees up.
         historyNavigation++;
         chatScreen.setStatus("loading the latest...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/latest"; }
             public Object run() throws Exception
             {
                 MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
-                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
+                return telegram.getHistory(peer, asked.thread(),
+                        MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -4055,7 +4674,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/latest");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/latest");
                     return;
@@ -4066,7 +4685,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // what they asked for; the pages they had can be fetched again
                 // by scrolling back.
                 setOpenHistory(page);
-                cacheHistory(peer, openHistory);
+                cacheHistory(peer, asked.thread(), openHistory);
                 applyKnownReadState(openHistory, peer);
                 chatScreen.setMessages(openHistory);
                 scheduleInlineThumbnails(peer);
@@ -4090,7 +4709,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/latest");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/latest");
                     return;
@@ -4157,9 +4776,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         if (openPeer == null || chatScreen == null) { return; }
         final Peer peer = openPeer;
-        int at = findDialog(peer);
-        final int readMaxId = at < 0 ? 0 : dialogs[at].readInboxMaxId;
-        int unread = at < 0 ? 0 : dialogs[at].unreadCount;
+        // A thread carries its own cursor and badge; the dialog row aggregates
+        // the whole peer and would send a topic reader to the wrong place.
+        int at = openThread == null ? findDialog(peer) : -1;
+        final int readMaxId = openThread != null
+                ? openThread.readInboxMaxId
+                : (at < 0 ? 0 : dialogs[at].readInboxMaxId);
+        int unread = openThread != null
+                ? openThread.unreadCount
+                : (at < 0 ? 0 : dialogs[at].unreadCount);
 
         if (readMaxId <= 0)
         {
@@ -4187,7 +4812,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // because a background prefetch holds the latch.
         historyNavigation++;
         chatScreen.setStatus("finding the first unread...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.getHistory/unread"; }
@@ -4198,8 +4823,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // have been deleted, and a page centred on it contains the
                 // boundary in both directions so the earliest still-available
                 // unread is in it.
-                return telegram.getHistoryAround(peer, readMaxId,
-                        MemoryBudget.historyPageSize());
+                return telegram.getHistoryAround(peer, asked.thread(),
+                        readMaxId, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -4210,14 +4835,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/unread");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/unread");
                     return;
                 }
                 Message[] page = (Message[]) result;
                 mergeHistoryPage(page);
-                cacheHistory(peer, openHistory);
+                cacheHistory(peer, asked.thread(), openHistory);
                 applyKnownReadState(openHistory, peer);
                 chatScreen.setMessages(openHistory);
                 scheduleInlineThumbnails(peer);
@@ -4245,7 +4870,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/unread");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/unread");
                     return;
@@ -4266,7 +4891,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     /** How far the open conversation may be marked read, or 0. */
     private int knownNewestId()
     {
-        return ReadMark.newestKnownIdFor(readMark, openPeer);
+        return ReadMark.newestKnownIdFor(readMark, openPeer, openThreadId());
     }
 
     /**
@@ -4288,7 +4913,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int offsetId = newestOpenId();
         historyPageInFlight = true;
         chatScreen.setStatus("loading newer messages...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         final int atRequest = historyNavigation;
         boolean submitted = syncWorker.submit(new Worker.Task()
         {
@@ -4296,8 +4921,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             public Object run() throws Exception
             {
                 MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
-                return telegram.getHistoryAfter(peer, offsetId,
-                        MemoryBudget.historyPageSize());
+                return telegram.getHistoryAfter(peer, asked.thread(),
+                        offsetId, MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
@@ -4320,7 +4945,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     dropStale("messages.getHistory/newer");
                     return;
                 }
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/newer");
                     return;
@@ -4328,7 +4953,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 Message[] page = (Message[]) result;
                 int before = newestOpenId();
                 mergeHistoryPage(page);
-                cacheHistory(peer, openHistory);
+                cacheHistory(peer, asked.thread(), openHistory);
                 applyKnownReadState(openHistory, peer);
                 chatScreen.setMessages(openHistory);
                 scheduleInlineThumbnails(peer);
@@ -4346,7 +4971,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     return;
                 }
                 historyPageInFlight = false;
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.getHistory/newer");
                     return;
@@ -4562,7 +5187,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // requestMarkRead already refuses a missing chat and a non-id, which is
         // what knownNewestId() answers when no conversation is open or the mark
         // belongs to another one.
-        requestMarkRead(openPeer, knownNewestId());
+        requestMarkRead(openPeer, openThreadId(), knownNewestId());
     }
 
     // -------------------------------------------------------- live updates
@@ -4593,12 +5218,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             Message incoming = batch.messages[i];
             if (incoming != null && !incoming.outgoing
-                    && samePeer(openPeer, incoming.peer)
+                    && belongsToOpenThread(incoming)
                     && !hasOpenMessage(incoming.id))
             {
                 incomingForOpen++;
             }
             if (!mergeMessage(batch.messages[i])) { refresh = true; }
+            mergeTopicRow(batch.messages[i]);
         }
         for (int i = 0; i < batch.edits.length; i++)
         {
@@ -4617,6 +5243,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             showDialogList(selectedPeer);
         }
+        if (topicScreen != null && display.getCurrent() == topicScreen)
+        {
+            showTopicList(selectedTopicId());
+        }
         if (chatScreen != null && display.getCurrent() == chatScreen)
         {
             if (following) { unseenLiveMessages = 0; }
@@ -4628,8 +5258,105 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             chatScreen.setStatus(connectionLabel + "/" + updateLabel);
         }
         cacheDialogs(dialogs);
-        if (openPeer != null) { cacheHistory(openPeer, openHistory); }
+        if (openPeer != null)
+        {
+            cacheHistory(openPeer, openThreadId(), openHistory);
+        }
         if (refresh) { scheduleSnapshotRefresh(); }
+    }
+
+    /**
+     * Whether a live message belongs in the open transcript.
+     *
+     * The peer alone stopped being the answer when a transcript became
+     * (peer, thread): a forum's topics share one peer, and a message for
+     * topic 401 merged into topic 400's screen is a message in a conversation
+     * it was never sent to. Acknowledgement follows the same answer - a
+     * transcript the reader is not looking at must not be marked read.
+     */
+    private boolean belongsToOpenThread(Message message)
+    {
+        if (message == null || !samePeer(openPeer, message.peer))
+        {
+            return false;
+        }
+        if (openThread == null)
+        {
+            // No thread open. A forum has no flat transcript in this client -
+            // its peer being "open" means its topic list is - so only a
+            // non-forum peer matches here.
+            return !openPeer.forum;
+        }
+        return openPeer.forum
+                ? message.threadRootIn(true) == openThread.rootId
+                : message.inThread(openThread.rootId);
+    }
+
+    /**
+     * Fold one live message into its topic-list row, when a forum's list is
+     * held.
+     *
+     * A row outside the retained window is deliberately dropped - it comes
+     * back on the next refresh, the same honesty the dialog window keeps. A
+     * promotion is refused while the window has scrolled, for the reason
+     * {@code promoteDialog} refuses one: the row's new place is not somewhere
+     * this window can put it.
+     */
+    private void mergeTopicRow(Message message)
+    {
+        if (topicScreen == null || message == null || message.peer == null
+                || !samePeer(topicScreen.peer(), message.peer))
+        {
+            return;
+        }
+        int root = message.threadRootIn(true);
+        int at = TopicWindow.indexOf(topics, root);
+        if (at < 0) { return; }
+        ForumTopic row = topics[at];
+        if (message.id > row.topMessageId)
+        {
+            row.topMessageId = message.id;
+            row.lastMessage = Dialog.clipPreview(message.summaryText());
+            row.lastDate = message.date;
+            row.lastOutgoing = message.outgoing;
+        }
+        if (!message.outgoing)
+        {
+            if (openThread != null && openThread.rootId == root
+                    && samePeer(openPeer, message.peer))
+            {
+                // The reader is inside this topic; the transcript path is
+                // acknowledging it.
+                row.unreadCount = 0;
+                row.readInboxMaxId = Math.max(row.readInboxMaxId, message.id);
+            }
+            else
+            {
+                row.unreadCount++;
+            }
+        }
+        promoteTopicRow(at);
+    }
+
+    /** Move a live row above the unpinned run, when the window is at the top. */
+    private void promoteTopicRow(int index)
+    {
+        if (topicsAbove > 0) { return; }
+        if (index < 0 || index >= topics.length || topics[index] == null
+                || topics[index].pinned)
+        {
+            return;
+        }
+        int insert = 0;
+        while (insert < topics.length && topics[insert] != null
+                && topics[insert].pinned)
+        {
+            insert++;
+        }
+        if (index <= insert) { return; }
+        ForumTopic moved = topics[index];
+        System.arraycopy(topics, insert, topics, insert + 1, index - insert);
+        topics[insert] = moved;
     }
 
     /** Merge one server message into the bounded dialog/history snapshots. */
@@ -4644,7 +5371,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             // Everything below needs the row and is skipped; the transcript and
             // the acknowledgement do not, and skipping those left an open chat
             // silently unread for as long as it stayed open.
-            if (samePeer(openPeer, message.peer))
+            if (belongsToOpenThread(message))
             {
                 // The open peer rather than the update's, for the same reason
                 // the retained row is preferred below: it is the one carrying an
@@ -4653,7 +5380,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 mergeOpenHistory(message);
                 if (!message.outgoing)
                 {
-                    requestMarkRead(openPeer, message.id);
+                    requestMarkRead(openPeer, openThreadId(), message.id);
                 }
             }
             // Still false: the row itself is genuinely missing and a refresh is
@@ -4672,17 +5399,20 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         dialog.lastMessageOutgoing = message.outgoing;
         dialog.date = message.date;
 
-        boolean opened = samePeer(openPeer, message.peer);
+        boolean opened = belongsToOpenThread(message);
         if (!message.outgoing)
         {
             if (opened)
             {
                 dialog.unreadCount = 0;
                 dialog.readInboxMaxId = Math.max(dialog.readInboxMaxId, message.id);
-                requestMarkRead(message.peer, message.id);
+                requestMarkRead(message.peer, openThreadId(), message.id);
             }
             else
             {
+                // Another topic of an open forum lands here too: its message
+                // grows the aggregate row and is not acknowledged, because the
+                // reader is not looking at it.
                 dialog.unreadCount++;
             }
         }
@@ -4746,8 +5476,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (accountId == 0 || conversationCache == null) { return; }
         try
         {
+            // The record the edit belongs to: a forum message's topic, or the
+            // peer's own transcript. A comment thread's record is not derivable
+            // from one message and is simply refetched.
+            int thread = edited.peer.forum ? edited.threadRootIn(true) : 0;
             Cached cached = conversationCache.loadHistory(
-                    accountId, Dc.isTest(), edited.peer);
+                    accountId, Dc.isTest(), edited.peer, thread);
             if (cached == null) { return; }
             Message[] messages = cached.messages();
             for (int i = 0; i < messages.length; i++)
@@ -4756,7 +5490,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 {
                     messages[i] = edited;
                     conversationCache.saveHistory(accountId, Dc.isTest(),
-                            edited.peer, messages);
+                            edited.peer, thread, messages);
                     return;
                 }
             }
@@ -4770,6 +5504,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private boolean applyReadState(ReadState read)
     {
         if (read == null || read.peer == null) { return false; }
+        if (read.threadRootId > 0)
+        {
+            // A thread cursor names no dialog row, so a missing row is not a
+            // reason to refresh the snapshot; the aggregate row gets its own
+            // updateReadChannelInbox when the server moves it.
+            applyThreadRead(read);
+            return true;
+        }
         int at = findDialog(read.peer);
         if (at < 0) { return false; }
         Dialog dialog = dialogs[at];
@@ -4791,6 +5533,33 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             applyKnownReadState(openHistory, read.peer);
         }
         return true;
+    }
+
+    /**
+     * A per-thread read cursor from another device, onto the topic row it
+     * names. The update carries no unread count, so the badge is zeroed only
+     * when the cursor demonstrably passed the newest message this client
+     * knows the topic to have.
+     */
+    private void applyThreadRead(ReadState read)
+    {
+        if (topicScreen == null || !samePeer(topicScreen.peer(), read.peer))
+        {
+            return;
+        }
+        int at = TopicWindow.indexOf(topics, read.threadRootId);
+        if (at < 0 || read.inboxMaxId < 0) { return; }
+        ForumTopic row = topics[at];
+        if (read.inboxMaxId > row.readInboxMaxId)
+        {
+            row.readInboxMaxId = read.inboxMaxId;
+            if (row.topMessageId > 0
+                    && row.readInboxMaxId >= row.topMessageId)
+            {
+                row.unreadCount = 0;
+            }
+        }
+        localReads.applyTopic(row, topicScreen.peer());
     }
 
     private boolean applyReactionUpdate(ReactionUpdate update)
@@ -4870,20 +5639,30 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     }
 
     /**
-     * Bind the open chat, bumping the chat generation when it really moved.
+     * Bind the open transcript, bumping the chat generation when it really
+     * moved.
      *
-     * The single assignment point for {@code openPeer}, so that no path can
-     * change which conversation is open without the guards noticing.
+     * The single assignment point for {@code openPeer} <em>and</em>
+     * {@code openThread}, so that no path can change which conversation is
+     * open - peer or thread - without the guards noticing.
      */
-    private void bindOpenPeer(Peer next)
+    private void bindOpenPeer(Peer next, ThreadInfo thread)
     {
-        if (!samePeer(openPeer, next))
+        int nextThread = thread == null ? 0 : thread.rootId;
+        if (!samePeer(openPeer, next) || nextThread != openThreadId())
         {
             unseenLiveMessages = 0;
             if (chatScreen != null) { chatScreen.setNewMessageCount(0); }
         }
-        scope.chatChanged(next);
+        scope.chatChanged(next, nextThread);
         openPeer = next;
+        openThread = next == null ? null : thread;
+    }
+
+    /** The open thread's root id, or 0 for a plain transcript. */
+    private int openThreadId()
+    {
+        return openThread == null ? 0 : openThread.rootId;
     }
 
     private boolean hasOpenMessage(int messageId)
@@ -4919,9 +5698,9 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
      * the remote state stale. One thread drains the whole queue, so the second
      * producer joins it rather than starting another.
      */
-    private void requestMarkRead(Peer peer, int maxId)
+    private void requestMarkRead(Peer peer, int thread, int maxId)
     {
-        if (!readQueue.offer(peer, maxId)) { return; }
+        if (!readQueue.offer(peer, thread, maxId)) { return; }
         new Thread(new Runnable()
         {
             public void run()
@@ -4989,7 +5768,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void submitSnapshotRefresh()
     {
         final Peer target = openPeer;
-        final AsyncScope.Token asked = scope.capture(target);
+        final AsyncScope.Token asked = scope.capture(target, openThreadId());
         boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "updates.snapshotRefresh"; }
@@ -5009,6 +5788,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 if (target != null)
                 {
                     snapshot.history = telegram.getHistory(target,
+                            asked.thread(),
                             Math.min(MemoryBudget.maxHistory(), Math.max(
                             MemoryBudget.historyPageSize(), openHistory.length)));
                 }
@@ -5057,14 +5837,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
                 cacheDialogs(dialogs);
                 if (snapshot.history != null
-                        && samePeer(openPeer, snapshot.peer))
+                        && samePeer(openPeer, snapshot.peer)
+                        && asked.thread() == openThreadId())
                 {
                     // Merged, not assigned. This is the newest page; assigning
                     // it would throw away every older page a reader had
                     // scrolled back to and drop them at the bottom again.
                     mergeHistoryPage(snapshot.history);
                     applyKnownReadState(openHistory, openPeer);
-                    cacheHistory(openPeer, openHistory);
+                    cacheHistory(openPeer, asked.thread(), openHistory);
                 }
                 snapshotRefreshScheduled = false;
                 if (dialogList != null && display.getCurrent() == dialogList)
@@ -5122,6 +5903,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             Diag.warn("compose refused: no chat to compose for");
             return;
         }
+        if (openThread != null && openThread.closed
+                && next.ownedBy(openPeer, openThreadId()))
+        {
+            // Said before anything is typed, not after a send fails. The
+            // server is still the authority - an admin can post into a closed
+            // topic, and their send simply succeeds elsewhere.
+            showAlert("This topic is closed; new messages can't be sent to it.",
+                    AlertType.INFO, chatScreen);
+            return;
+        }
         if (composeBox == null)
         {
             composeBox = new TextBox("Message", "", 1000, TextField.ANY);
@@ -5132,7 +5923,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         String draft = next.isEdit() ? next.originalText() : "";
         if (!next.isEdit())
         {
-            try { draft = draftStore.load(next.peer()); }
+            try { draft = draftStore.load(next.peer(), next.threadRootId()); }
             catch (Throwable t) { Diag.error("draft load failed", t); }
         }
         // Published before the screen goes up, so the autosave thread cannot
@@ -5265,7 +6056,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
         final Peer source = openPeer;
         showBusy("Open user", "Resolving this Telegram user...");
-        final AsyncScope.Token asked = scope.capture(source);
+        final AsyncScope.Token asked = scope.capture(source, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "resolve message entity"; }
@@ -5292,7 +6083,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object value)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("resolve message entity");
                     return;
@@ -5303,7 +6094,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("resolve message entity");
                     return;
@@ -5384,7 +6175,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // The id, not the Message: the reply travels as an int, and holding the
         // whole message would keep a body alive past the history window that
         // evicted it.
-        openComposer(ComposerState.reply(openPeer, message.id));
+        openComposer(ComposerState.reply(openPeer, openThreadId(), message.id));
     }
 
     private void beginEdit()
@@ -5396,7 +6187,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     AlertType.INFO, chatScreen);
             return;
         }
-        openComposer(ComposerState.edit(openPeer, message.id, message.text));
+        openComposer(ComposerState.edit(openPeer, openThreadId(), message.id,
+                message.text));
     }
 
     private void beginForward()
@@ -5484,7 +6276,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final Message message = actionMessage;
         final Peer source = actionPeer;
         showBusy("Forward", "Forwarding message...");
-        final AsyncScope.Token asked = scope.capture(source);
+        final AsyncScope.Token asked = scope.capture(source, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.forwardMessages"; }
@@ -5501,7 +6293,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // Only the pop and the status line are dropped - and the status
                 // line would otherwise be written into whichever chat the user
                 // moved to, claiming a forward it knows nothing about.
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.forwardMessages");
                     return;
@@ -5564,7 +6356,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         final int messageId = actionMessage.id;
         final Peer peer = actionPeer;
         showBusy("Delete", "Deleting message...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return peer.kind == Peer.CHANNEL
@@ -5583,7 +6375,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // transcript: message ids are unique per peer, not globally, so
                 // deleting id 4711 from whichever chat happens to be open can
                 // and did strip an unrelated message from it.
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("deleteMessages");
                     scheduleSnapshotRefresh();
@@ -5644,11 +6436,15 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private void markAllReadNow()
     {
         if (openPeer == null) { return; }
-        int dialog = findDialog(openPeer);
+        // A thread has its own cursor; the dialog row aggregates the whole
+        // forum, and its top message can be another topic's - marking a topic
+        // read up to it would tell the server about messages of a thread the
+        // reader never opened.
+        int dialog = openThread == null ? findDialog(openPeer) : -1;
         int maxId = ReadMark.highest(knownNewestId(),
                 dialog >= 0 ? dialogs[dialog].topMessageId : 0, openHistory);
         if (maxId <= 0) { return; }
-        requestMarkRead(openPeer, maxId);
+        requestMarkRead(openPeer, openThreadId(), maxId);
         if (dialog >= 0)
         {
             dialogs[dialog].unreadCount = 0;
@@ -5658,7 +6454,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // Recorded outside the row as well as on it. The next snapshot refresh
         // replaces that object, and without this the badge comes back seconds
         // after the user cleared it.
-        localReads.cleared(openPeer, maxId);
+        localReads.cleared(openPeer, openThreadId(), maxId);
         showAlert("All loaded messages are marked as read.",
                 AlertType.INFO, chatScreen);
     }
@@ -6001,7 +6797,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // The screen instance itself is part of the guard: a result must land
         // on the exact Loading screen it was requested for, or nowhere.
         actorsScreen.setLines(new String[] { "Loading reaction details..." });
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = syncWorker.submit(new Worker.Task()
         {
             public String name() { return "messages.getMessageReactionsList"; }
@@ -6013,7 +6809,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object result)
             {
-                if (!asked.sameChat(openPeer)
+                if (!asked.sameChat(openPeer, openThreadId())
                         || reactionActorsScreen != actorsScreen
                         || navigation.current() != actorsScreen)
                 {
@@ -6045,7 +6841,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer)
+                if (!asked.sameChat(openPeer, openThreadId())
                         || reactionActorsScreen != actorsScreen
                         || navigation.current() != actorsScreen)
                 {
@@ -6099,7 +6895,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // the client - and doing that to a conversation the reader moved to in
         // the meantime is indistinguishable from the client opening a chat by
         // itself.
-        final AsyncScope.Token asked = scope.capture(openPeer);
+        final AsyncScope.Token asked = scope.capture(openPeer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "open forwarded source"; }
@@ -6126,14 +6922,17 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object value)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("open forwarded source");
                     return;
                 }
                 ForwardOpen result = (ForwardOpen) value;
-                bindOpenPeer(result.peer);
-                rebindReadMark(openPeer);
+                // The source opens as a plain transcript, thread-less even
+                // when it is a forum: the forwarded message is what the reader
+                // asked to see, and it is focused either way.
+                bindOpenPeer(result.peer, null);
+                rebindReadMark(openPeer, 0);
                 historyPageInFlight = false;
                 historyExhausted = false;
                 historyForwardStalled = false;
@@ -6155,7 +6954,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("open forwarded source");
                     return;
@@ -6179,6 +6978,96 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         Peer peer;
         int messageId;
         Message[] messages;
+    }
+
+    private static final class CommentsOpen
+    {
+        DiscussionInfo info;
+        Message[] messages;
+    }
+
+    /**
+     * Open the focused channel post's comment thread.
+     *
+     * The {@link #openForwardSource} shape: a foreground navigation the user
+     * just pressed, so it takes the user's worker with a status line on the
+     * chat it returns to - not the maintenance lane's Loading screen, which is
+     * for work forced into the background. One task maps the post to its root
+     * in the linked discussion group and fetches the first page, one worker
+     * occupancy for both round trips.
+     */
+    private void openComments()
+    {
+        final Message post = selectedOpenMessage();
+        if (post == null || !post.hasComments || post.id <= 0) { return; }
+        final Peer channel = openPeer;
+        final ChatScreen returnChat = chatScreen;
+        if (channel == null || returnChat == null) { return; }
+        returnChat.setStatus("opening comments...");
+        final AsyncScope.Token asked = scope.capture(openPeer, openThreadId());
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.getDiscussionMessage"; }
+            public Object run() throws Exception
+            {
+                MemoryPressure.reserve(MemoryBudget.inflateOutputBytes() / 4);
+                CommentsOpen result = new CommentsOpen();
+                result.info = telegram.getDiscussionMessage(channel, post.id);
+                result.messages = telegram.getHistory(
+                        result.info.discussionPeer,
+                        result.info.rootMessageId,
+                        MemoryBudget.historyPageSize());
+                return result;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object value)
+            {
+                if (!asked.sameChat(openPeer, openThreadId()))
+                {
+                    dropStale("open comments");
+                    return;
+                }
+                CommentsOpen result = (CommentsOpen) value;
+                DiscussionInfo info = result.info;
+                bindOpenPeer(info.discussionPeer, new ThreadInfo(
+                        info.rootMessageId, false, info.readInboxMaxId,
+                        info.unreadCount, "Comments"));
+                rebindReadMark(openPeer, openThreadId());
+                historyPageInFlight = false;
+                historyExhausted = false;
+                historyForwardStalled = false;
+                telegram.setActivePeer(openPeer);
+                openHistory = new Message[0];
+                setOpenHistory(result.messages);
+                applyKnownReadState(openHistory, openPeer);
+                chatScreen = createChatScreen(openPeer);
+                chatScreen.setThread(openThread);
+                chatScreen.setTitle("Comments (" + post.repliesCount + ")");
+                chatScreen.resetMessages(openHistory);
+                scheduleInlineThumbnails(openPeer);
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+                pushScreen(chatScreen);
+                markRead();
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameChat(openPeer, openThreadId()))
+                {
+                    dropStale("open comments");
+                    return;
+                }
+                returnChat.setStatus(connectionLabel + "/" + updateLabel);
+                showAlertThen("Cannot open comments", error, returnChat);
+            }
+        });
+        if (!submitted)
+        {
+            returnChat.setStatus(connectionLabel + "/" + updateLabel);
+            showRefused("Comments not opened",
+                    "Try Comments again in a moment.", returnChat);
+        }
     }
 
     private void toggleReaction(int at)
@@ -6212,7 +7101,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         // reaction was in flight sent it against the chat the user had moved
         // to - a reaction on a message that was never selected.
         final Peer peer = openPeer;
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.sendReaction"; }
@@ -6225,7 +7114,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             public void onSuccess(Object ignored)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.sendReaction");
                     return;
@@ -6235,7 +7124,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public void onFailure(Throwable error)
             {
-                if (!asked.sameChat(openPeer))
+                if (!asked.sameChat(openPeer, openThreadId()))
                 {
                     dropStale("messages.sendReaction");
                     return;
@@ -6439,19 +7328,21 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (previous == null || peer == null) { return; }
         photoReferenceExpired = false;
         photoScreen.setStatus("refreshing photo reference...");
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "refresh expired photo reference"; }
             public Object run() throws Exception
             {
-                return telegram.getHistory(peer, MemoryBudget.historyPageSize());
+                return telegram.getHistory(peer, asked.thread(),
+                        MemoryBudget.historyPageSize());
             }
         }, new Worker.Callback()
         {
             public void onSuccess(Object result)
             {
-                if (!asked.sameChat(openPeer) || photoScreen == null)
+                if (!asked.sameChat(openPeer, openThreadId())
+                        || photoScreen == null)
                 {
                     dropStale("refresh expired photo reference");
                     return;
@@ -6472,7 +7363,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             {
                 // The latch decides what Retry does next, so it is only worth
                 // setting while there is still a photo screen to press it on.
-                if (!asked.sameChat(openPeer) || photoScreen == null)
+                if (!asked.sameChat(openPeer, openThreadId())
+                        || photoScreen == null)
                 {
                     dropStale("refresh expired photo reference");
                     return;
@@ -6517,7 +7409,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             popComposer();
             return;
         }
-        if (!session.ownedBy(openPeer))
+        if (!session.ownedBy(openPeer, openThreadId()))
         {
             // Should be unreachable - the composer sits directly on top of its
             // own chat screen. It is checked because the consequence of being
@@ -6543,7 +7435,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
         final Peer peer = session.peer();
         final int replyToMessageId = session.replyToMessageId();
-        final AsyncScope.Token asked = scope.capture(peer);
+        final int threadRootId = session.threadRootId();
+        final AsyncScope.Token asked = scope.capture(peer, threadRootId);
 
         boolean submitted = worker.submit(new Worker.Task()
         {
@@ -6551,7 +7444,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
             public Object run() throws Exception
             {
-                return telegram.enqueueMessage(peer, text, replyToMessageId);
+                return telegram.enqueueMessage(peer, text, replyToMessageId,
+                        threadRootId);
             }
         }, new Worker.Callback()
         {
@@ -6562,13 +7456,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 // the message is on its way whatever the screen does now. Only
                 // the screen half is conditional.
                 //
-                // The draft is cleared against the captured peer, so it happens
-                // even if the reader has moved on - the message it was a draft
-                // of has been sent, and leaving it would send a second copy the
-                // next time that chat is opened.
+                // The draft is cleared against the captured conversation, so it
+                // happens even if the reader has moved on - the message it was
+                // a draft of has been sent, and leaving it would send a second
+                // copy the next time that chat is opened.
                 if (asked.sameSession())
                 {
-                    try { draftStore.save(peer, ""); }
+                    try { draftStore.save(peer, threadRootId, ""); }
                     catch (Throwable t) { Diag.error("draft clear failed", t); }
                 }
 
@@ -6583,7 +7477,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
                 closeComposer();
                 popComposer();
-                if (chatScreen != null && asked.sameChat(openPeer))
+                if (chatScreen != null
+                        && asked.sameChat(openPeer, openThreadId()))
                 {
                     chatScreen.appendLocal((replyToMessageId > 0
                             ? ("[reply to #" + replyToMessageId + "] ") : "")
@@ -6626,7 +7521,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             return;
         }
         final Peer peer = session.peer();
-        final AsyncScope.Token asked = scope.capture(peer);
+        final AsyncScope.Token asked = scope.capture(peer,
+                session.threadRootId());
         boolean submitted = worker.submit(new Worker.Task()
         {
             public String name() { return "messages.editMessage"; }
@@ -6646,7 +7542,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 }
                 closeComposer();
                 popComposer();
-                if (asked.sameChat(openPeer) && chatScreen != null)
+                if (asked.sameChat(openPeer, openThreadId())
+                        && chatScreen != null)
                 {
                     chatScreen.setStatus("edit accepted / " + connectionLabel);
                 }
@@ -6793,7 +7690,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             for (int i = 0; i < messages.length; i++)
             {
                 if (messages[i].peerKind == openPeer.kind
-                        && messages[i].peerId == openPeer.id)
+                        && messages[i].peerId == openPeer.id
+                        && messages[i].threadRootId == openThreadId())
                 {
                     chatScreen.appendLocal("[" + messages[i].stateName()
                             + "] " + messages[i].text);
@@ -6849,7 +7747,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             if (composer != session) { return; }
             if (!text.equals(lastSavedDraft))
             {
-                draftStore.save(session.peer(), text);
+                draftStore.save(session.peer(), session.threadRootId(), text);
                 lastSavedDraft = text;
             }
         }

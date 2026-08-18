@@ -48,6 +48,8 @@ public final class CacheIntegrityTest implements Test
         oneDamagedConversationDoesNotHideTheOthers();
         versionOneHistoryMigratesOnRead();
         versionTwoHistoryMigratesOnRead();
+        threadTranscriptsAreCachedApart();
+        dialogCacheCarriesTheForumFlag();
         aDamagedRecordIsRemovedRatherThanLeftToFailAgain();
         anotherAccountCacheIsNeverShown();
         theOtherEnvironmentCacheIsNeverShown();
@@ -128,7 +130,7 @@ public final class CacheIntegrityTest implements Test
         try
         {
             RmsConversationCache cache = new RmsConversationCache();
-            cache.saveHistory(ACCOUNT, false, peer(7), new Message[] { message(1, "seven") });
+            cache.saveHistory(ACCOUNT, false, peer(7), 0, new Message[] { message(1, "seven") });
             Message withEntity = message(2, "eight@example.test");
             MessageEntity entity = new MessageEntity();
             entity.type = MessageEntity.EMAIL;
@@ -136,7 +138,7 @@ public final class CacheIntegrityTest implements Test
             entity.length = withEntity.text.length();
             withEntity.entities = new MessageEntity[] { entity };
             withEntity.editDate = 1235;
-            cache.saveHistory(ACCOUNT, false, peer(8),
+            cache.saveHistory(ACCOUNT, false, peer(8), 0,
                     new Message[] { withEntity });
 
             int[] ids = rms.recordIds(HISTORY);
@@ -145,7 +147,7 @@ public final class CacheIntegrityTest implements Test
             rms.restart();
 
             RmsConversationCache reopened = new RmsConversationCache();
-            Cached eight = reopened.loadHistory(ACCOUNT, false, peer(8));
+            Cached eight = reopened.loadHistory(ACCOUNT, false, peer(8), 0);
             Assert.isTrue("the intact conversation still loads", eight != null);
             Assert.equal("with its message", "eight@example.test",
                     eight.messages()[0].text);
@@ -165,27 +167,20 @@ public final class CacheIntegrityTest implements Test
         EmulatorRecords.swapIn(rms);
         try
         {
-            RmsConversationCache cache = new RmsConversationCache();
-            cache.saveHistory(ACCOUNT, false, peer(7),
-                    new Message[] { message(3, "old cache") });
-            int id = rms.recordIds(HISTORY)[0];
-            byte[] raw = rms.peek(HISTORY, id);
-            RecordEnvelope v3 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
-                    3, 3, ACCOUNT, false);
-            Assert.isTrue("fixture starts as v3", v3.isOk());
-            byte[] oldPayload = new byte[v3.payload.length - 8];
-            System.arraycopy(v3.payload, 0, oldPayload, 0,
-                    oldPayload.length);
-            rms.poke(HISTORY, id, RecordEnvelope.wrap(HISTORY_MAGIC, 1,
-                    ACCOUNT, false, oldPayload));
+            storeLegacyHistory(1, 3, "old cache", false, 0);
             rms.restart();
 
             Cached loaded = new RmsConversationCache().loadHistory(
-                    ACCOUNT, false, peer(7));
+                    ACCOUNT, false, peer(7), 0);
             Assert.isTrue("v1 history remains readable", loaded != null);
             Assert.equal("v1 text", "old cache", loaded.messages()[0].text);
             Assert.equal("v1 entities default empty", 0,
                     loaded.messages()[0].entities.length);
+            Assert.equal("v1 thread facts default off", 0,
+                    loaded.messages()[0].replyToTopId);
+            Assert.isTrue("a pre-thread record belongs to no topic",
+                    new RmsConversationCache().loadHistory(
+                            ACCOUNT, false, peer(7), 400) == null);
         }
         finally { EmulatorRecords.restore(); }
     }
@@ -196,30 +191,11 @@ public final class CacheIntegrityTest implements Test
         EmulatorRecords.swapIn(rms);
         try
         {
-            RmsConversationCache cache = new RmsConversationCache();
-            Message current = message(4, "v2@example.test");
-            MessageEntity entity = new MessageEntity();
-            entity.type = MessageEntity.EMAIL;
-            entity.offset = 0;
-            entity.length = current.text.length();
-            current.entities = new MessageEntity[] { entity };
-            current.editDate = 1235;
-            cache.saveHistory(ACCOUNT, false, peer(7),
-                    new Message[] { current });
-            int id = rms.recordIds(HISTORY)[0];
-            byte[] raw = rms.peek(HISTORY, id);
-            RecordEnvelope v3 = RecordEnvelope.unwrap(raw, HISTORY_MAGIC,
-                    3, 3, ACCOUNT, false);
-            Assert.isTrue("v2 fixture starts as v3", v3.isOk());
-            byte[] v2Payload = new byte[v3.payload.length - 4];
-            System.arraycopy(v3.payload, 0, v2Payload, 0,
-                    v2Payload.length);
-            rms.poke(HISTORY, id, RecordEnvelope.wrap(HISTORY_MAGIC, 2,
-                    ACCOUNT, false, v2Payload));
+            storeLegacyHistory(2, 4, "v2@example.test", true, 0);
             rms.restart();
 
             Cached loaded = new RmsConversationCache().loadHistory(
-                    ACCOUNT, false, peer(7));
+                    ACCOUNT, false, peer(7), 0);
             Assert.isTrue("v2 history remains readable", loaded != null);
             Assert.equal("v2 entity survives", 1,
                     loaded.messages()[0].entities.length);
@@ -227,6 +203,146 @@ public final class CacheIntegrityTest implements Test
                     loaded.messages()[0].editDate);
         }
         finally { EmulatorRecords.restore(); }
+    }
+
+    /**
+     * A topic transcript and the peer's own are separate records: saving one
+     * replaces only its own, loading asks by (peer, thread), and the thread
+     * facts a topic is bucketed by survive the round trip.
+     */
+    private static void threadTranscriptsAreCachedApart() throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            RmsConversationCache cache = new RmsConversationCache();
+            Message flat = message(3, "the peer's own");
+            Message inTopic = message(600, "inside the topic");
+            inTopic.replyToTopId = 400;
+            inTopic.forumTopic = true;
+            inTopic.hasComments = true;
+            inTopic.repliesCount = 12;
+            cache.saveHistory(ACCOUNT, false, peer(7), 0,
+                    new Message[] { flat });
+            cache.saveHistory(ACCOUNT, false, peer(7), 400,
+                    new Message[] { inTopic });
+            rms.restart();
+
+            RmsConversationCache reopened = new RmsConversationCache();
+            Cached topic = reopened.loadHistory(ACCOUNT, false, peer(7), 400);
+            Assert.isTrue("the topic transcript loads", topic != null);
+            Assert.equal("with its text", "inside the topic",
+                    topic.messages()[0].text);
+            Assert.equal("its thread root", 400,
+                    topic.messages()[0].replyToTopId);
+            Assert.isTrue("its forum flag", topic.messages()[0].forumTopic);
+            Assert.isTrue("its comments flag", topic.messages()[0].hasComments);
+            Assert.equal("and its comment count", 12,
+                    topic.messages()[0].repliesCount);
+
+            Cached own = reopened.loadHistory(ACCOUNT, false, peer(7), 0);
+            Assert.isTrue("the peer's own transcript is untouched",
+                    own != null);
+            Assert.equal("and still its own", "the peer's own",
+                    own.messages()[0].text);
+
+            // Saving the topic again replaces the topic record only.
+            reopened.saveHistory(ACCOUNT, false, peer(7), 400,
+                    new Message[] { message(601, "newer topic page") });
+            Assert.equal("the peer's own survives a topic save",
+                    "the peer's own", new RmsConversationCache().loadHistory(
+                            ACCOUNT, false, peer(7), 0).messages()[0].text);
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    /**
+     * The forum flag is what routes an offline open to the topic screen, so
+     * the dialog cache has to carry it - and a v1 record without it still
+     * reads, as a plain chat.
+     */
+    private static void dialogCacheCarriesTheForumFlag() throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            Dialog forum = dialog(9);
+            forum.peer = new Peer(Peer.CHANNEL, 9);
+            forum.peer.title = "Topics";
+            forum.peer.forum = true;
+            new RmsConversationCache().saveDialogs(ACCOUNT, false,
+                    new Dialog[] { forum });
+            rms.restart();
+
+            Cached loaded = new RmsConversationCache().loadDialogs(
+                    ACCOUNT, false);
+            Assert.isTrue("the list loads", loaded != null);
+            Assert.isTrue("and the forum flag survives",
+                    loaded.dialogs()[0].peer.forum);
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    /**
+     * Write a record in one of the pre-thread formats, byte for byte as the
+     * old writer produced it. Hand-built rather than derived from the current
+     * writer, which emits v4 and no longer knows these shapes.
+     */
+    private static void storeLegacyHistory(int version, int messageId,
+            String text, boolean withEntity, int editDate) throws Exception
+    {
+        tg.tl.TlWriter w = new tg.tl.TlWriter(256);
+        Peer peer = peer(7);
+        w.writeInt(peer.kind);
+        w.writeLong(peer.id);
+        w.writeLong(NOW);
+        w.writeInt(1);
+        w.writeInt(messageId);
+        w.writeInt(1234);                    // date
+        w.writeInt(0);                       // flags
+        w.writeString(text);
+        writeLegacyPeer(w, peer);            // message.peer
+        w.writeInt(0);                       // no sender
+        w.writeInt(0);                       // no media
+        w.writeInt(0);                       // replyToMessageId
+        w.writeInt(0);                       // reactions
+        w.writeInt(0);                       // no forward
+        if (version >= 2)
+        {
+            if (withEntity)
+            {
+                w.writeInt(1);
+                w.writeInt(MessageEntity.EMAIL);
+                w.writeInt(0);
+                w.writeInt(text.length());
+                w.writeString("");
+                w.writeLong(0);
+            }
+            else { w.writeInt(0); }
+        }
+        if (version >= 3) { w.writeInt(editDate); }
+
+        byte[] wrapped = RecordEnvelope.wrap(HISTORY_MAGIC, version, ACCOUNT,
+                false, w.toByteArray());
+        RecordStore rs = RecordStore.openRecordStore(HISTORY, true);
+        rs.addRecord(wrapped, 0, wrapped.length);
+        rs.closeRecordStore();
+    }
+
+    private static void writeLegacyPeer(tg.tl.TlWriter w, Peer peer)
+    {
+        w.writeInt(1);
+        w.writeInt(peer.kind);
+        w.writeLong(peer.id);
+        w.writeLong(peer.accessHash);
+        w.writeString(peer.title == null ? "" : peer.title);
+        w.writeString("");
+        w.writeString("");
+        w.writeString("");
+        w.writeInt(0);                       // not self
+        w.writeInt(0);                       // no avatar
     }
 
     private static void aDamagedRecordIsRemovedRatherThanLeftToFailAgain()
@@ -260,7 +376,7 @@ public final class CacheIntegrityTest implements Test
         {
             RmsConversationCache cache = new RmsConversationCache();
             cache.saveDialogs(ACCOUNT, false, new Dialog[] { dialog(7) });
-            cache.saveHistory(ACCOUNT, false, peer(7),
+            cache.saveHistory(ACCOUNT, false, peer(7), 0,
                     new Message[] { message(1, "private") });
             rms.restart();
 
@@ -268,7 +384,7 @@ public final class CacheIntegrityTest implements Test
             Assert.isTrue("the dialog list is not shown",
                     other.loadDialogs(999999L, false) == null);
             Assert.isTrue("nor the conversation",
-                    other.loadHistory(999999L, false, peer(7)) == null);
+                    other.loadHistory(999999L, false, peer(7), 0) == null);
         }
         finally { EmulatorRecords.restore(); }
     }
@@ -364,7 +480,7 @@ public final class CacheIntegrityTest implements Test
         {
             RmsConversationCache cache = new RmsConversationCache();
             cache.saveDialogs(ACCOUNT, false, new Dialog[] { dialog(7) });
-            cache.saveHistory(ACCOUNT, false, peer(7),
+            cache.saveHistory(ACCOUNT, false, peer(7), 0,
                     new Message[] { message(1, "gone after logout") });
 
             cache.clear();

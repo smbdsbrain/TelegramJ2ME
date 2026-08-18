@@ -317,7 +317,7 @@ public final class AccountWipeTest implements Test
         Peer peer = new Peer(Peer.USER, 4242);
         peer.accessHash = 99;
         peer.title = "Anna Novikova";
-        drafts.save(peer, "see you at eight");
+        drafts.save(peer, 0, "see you at eight");
         outbox.add(peer, "on my way", 7788, 1000);
         UpdateState cursor = new UpdateState();
         cursor.accountId = 776655443322L;
@@ -332,7 +332,7 @@ public final class AccountWipeTest implements Test
 
         Assert.isTrue("the erasure completes", wipe.run().complete);
 
-        Assert.equal("account B finds no draft", "", drafts.load(peer));
+        Assert.equal("account B finds no draft", "", drafts.load(peer, 0));
         Assert.equal("no queued message", 0, outbox.list().length);
         Assert.isTrue("no update cursor",
                 updates.load(776655443322L, TEST_ENV) == null);

@@ -352,6 +352,27 @@ public final class UpdateSync
         }
     }
 
+    /**
+     * Seed one channel's pts cursor from a response that carried it.
+     *
+     * Only fills an absent cursor: a present one is maintained by the update
+     * stream, and a snapshot's pts taken later must not walk it backwards.
+     * Exists for channels outside the dialog window - a discussion group, a
+     * freshly opened forum - whose recovery would otherwise start from a full
+     * snapshot every time.
+     */
+    public void seedChannelPts(long channelId, int pts)
+    {
+        if (pts <= 0) { return; }
+        synchronized (lock)
+        {
+            if (!activated || state == null
+                    || state.channelPts(channelId) >= 0) { return; }
+            state.setChannelPts(channelId, pts);
+            saveState();
+        }
+    }
+
     public void setActivePeer(Peer peer)
     {
         synchronized (lock)
@@ -1105,6 +1126,23 @@ public final class UpdateSync
                     update.num(Api.F_UPDATE_READ_CHANNEL_OUTBOX__CHANNEL_ID)));
             read.outboxMaxId = update.intAt(
                     Api.F_UPDATE_READ_CHANNEL_OUTBOX__MAX_ID);
+            batch.reads.addElement(read);
+            return true;
+        }
+        if (update.id == Api.UPDATE_READ_CHANNEL_DISCUSSION_INBOX)
+        {
+            // The one live carrier of per-thread read state: a topic or a
+            // comment thread read on another device. No pts, so it is applied
+            // unconditionally like the outbox tick above - and it carries no
+            // unread count, which is why that field stays at its "not carried"
+            // default rather than zeroing a badge.
+            ReadState read = new ReadState();
+            read.peer = peers.resolve(new Peer(Peer.CHANNEL, update.num(
+                    Api.F_UPDATE_READ_CHANNEL_DISCUSSION_INBOX__CHANNEL_ID)));
+            read.threadRootId = update.intAt(
+                    Api.F_UPDATE_READ_CHANNEL_DISCUSSION_INBOX__TOP_MSG_ID);
+            read.inboxMaxId = update.intAt(
+                    Api.F_UPDATE_READ_CHANNEL_DISCUSSION_INBOX__READ_MAX_ID);
             batch.reads.addElement(read);
             return true;
         }

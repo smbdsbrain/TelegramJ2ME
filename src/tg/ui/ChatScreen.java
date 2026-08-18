@@ -9,6 +9,7 @@ import tg.api.Media;
 import tg.api.Message;
 import tg.api.Peer;
 import tg.api.ReactionSummary;
+import tg.api.ThreadInfo;
 import tg.mem.MemoryBudget;
 
 /**
@@ -69,6 +70,7 @@ public class ChatScreen extends Canvas
     private int[] lineMessageOffsets = new int[0];
     private Message[] currentMessages = new Message[0];
     private Peer peer;
+    private ThreadInfo thread;
     private final int thumbnailCapacity;
     private final int[] thumbnailIds;
     private final Image[] thumbnails;
@@ -169,6 +171,16 @@ public class ChatScreen extends Canvas
 
     public void setPeer(Peer value) { peer = value; }
     public Peer peer() { return peer; }
+
+    /**
+     * The thread this transcript shows - a forum topic or a comment thread -
+     * or null for the peer's own history. Held here because the navigation
+     * stack can carry two ChatScreens, and {@code restoreScreen} rebinds the
+     * open conversation from whichever it lands on.
+     */
+    public void setThread(ThreadInfo value) { thread = value; }
+    public ThreadInfo thread() { return thread; }
+
     public Message[] messages() { return currentMessages; }
 
     /** Transient one-line status, e.g. "sending..." */
@@ -402,7 +414,8 @@ public class ChatScreen extends Canvas
                     }
                     count++;
                 }
-                String reply = replyLine(m, messages);
+                String reply = replyLine(m, messages,
+                        thread == null ? 0 : thread.rootId);
                 if (reply.length() > 0)
                 {
                     int replyStart = count;
@@ -462,6 +475,15 @@ public class ChatScreen extends Canvas
                 {
                     count = wrap(reactionLine, width, pass, count,
                             m.outgoing, m.id, 2000);
+                }
+                if (m.hasComments && m.repliesCount > 0)
+                {
+                    // The entry into a channel post's discussion thread; the
+                    // count is display-capped the way the unread badge is.
+                    count = wrap((m.repliesCount > 999 ? "999+"
+                            : String.valueOf(m.repliesCount)) + " comments",
+                            width, pass, count, m.outgoing, m.id, 2100);
+                    if (pass == 1) { meta[count - 1] = true; }
                 }
             }
         }
@@ -573,7 +595,8 @@ public class ChatScreen extends Canvas
         if (m == null) { return 0; }
         int count = 0;
         if (senderLine(m).length() > 0) { count++; }
-        String reply = replyLine(m, currentMessages);
+        String reply = replyLine(m, currentMessages,
+                thread == null ? 0 : thread.rootId);
         if (reply.length() > 0) { count += countWrapped(reply, width); }
         if (m.forwarded != null && m.forwarded.label.length() > 0)
         {
@@ -1077,11 +1100,25 @@ public class ChatScreen extends Canvas
 
     public static String replyLine(Message message, Message[] messages)
     {
-        if (message == null || message.replyToMessageId <= 0) { return ""; }
+        return replyLine(message, messages, 0);
+    }
+
+    /**
+     * @param threadRootId suppresses the caption a thread's plumbing would
+     *                     otherwise paint on every row: inside a topic every
+     *                     message "replies to" the topic's root service
+     *                     message, and that is membership, not an answer
+     */
+    public static String replyLine(Message message, Message[] messages,
+                                   int threadRootId)
+    {
+        if (message == null) { return ""; }
+        int target = message.visibleReplyTo(threadRootId);
+        if (target <= 0) { return ""; }
         for (int i = 0; i < messages.length; i++)
         {
             Message source = messages[i];
-            if (source == null || source.id != message.replyToMessageId)
+            if (source == null || source.id != target)
             {
                 continue;
             }
@@ -1094,7 +1131,7 @@ public class ChatScreen extends Canvas
             return text.length() == 0 ? ("Reply to " + author)
                     : ("Reply to " + author + ": " + text);
         }
-        return "Reply to #" + message.replyToMessageId;
+        return "Reply to #" + target;
     }
 
     public synchronized boolean hasThumbnail(int messageId)

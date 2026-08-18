@@ -24,6 +24,20 @@ public final class Message
     public ForwardInfo forwarded;
     public int replyToMessageId;
 
+    /**
+     * Raw thread facts from the reply header, kept unresolved on purpose: a
+     * forum topic and a comment thread derive membership differently, and at
+     * parse time nothing here can reliably say which kind of peer this is -
+     * {@link PeerCache} is bounded and can have dropped it. The open
+     * transcript applies {@link #threadRootIn} or {@link #inThread} instead.
+     */
+    public int replyToTopId;
+    public boolean forumTopic;
+
+    /** Comment count of a channel post, when the server offers a thread. */
+    public int repliesCount;
+    public boolean hasComments;
+
     /** Conversation this message belongs to. */
     public Peer peer;
 
@@ -55,11 +69,15 @@ public final class Message
             m.media = Media.from(obj.obj(Api.F_MESSAGE__MEDIA));
             m.forwarded = ForwardInfo.from(
                     obj.obj(Api.F_MESSAGE__FWD_FROM), peers);
-            TlObj reply = obj.obj(Api.F_MESSAGE__REPLY_TO);
-            if (reply != null && reply.id == Api.MESSAGE_REPLY_HEADER)
+            readReplyHeader(m, obj.obj(Api.F_MESSAGE__REPLY_TO));
+            TlObj replies = obj.obj(Api.F_MESSAGE__REPLIES);
+            if (replies != null && replies.id == Api.MESSAGE_REPLIES)
             {
-                m.replyToMessageId = reply.intAt(
-                        Api.F_MESSAGE_REPLY_HEADER__REPLY_TO_MSG_ID);
+                m.hasComments = replies.num(Api.F_MESSAGE_REPLIES__COMMENTS) != 0;
+                if (m.hasComments)
+                {
+                    m.repliesCount = replies.intAt(Api.F_MESSAGE_REPLIES__REPLIES);
+                }
             }
             m.reactions = ReactionSummary.from(
                     obj.obj(Api.F_MESSAGE__REACTIONS));
@@ -80,11 +98,25 @@ public final class Message
             m.peer = resolvePeer(obj.obj(Api.F_MESSAGE_SERVICE__PEER_ID), peers);
             m.text = "[service message]";
             m.sender = resolveSender(obj.obj(Api.F_MESSAGE_SERVICE__FROM_ID), peers);
+            readReplyHeader(m, obj.obj(Api.F_MESSAGE_SERVICE__REPLY_TO));
             return m;
         }
 
         // messageEmpty, or anything the schema gained since this was written.
         return null;
+    }
+
+    private static void readReplyHeader(Message m, TlObj reply)
+    {
+        if (reply != null && reply.id == Api.MESSAGE_REPLY_HEADER)
+        {
+            m.replyToMessageId = reply.intAt(
+                    Api.F_MESSAGE_REPLY_HEADER__REPLY_TO_MSG_ID);
+            m.replyToTopId = reply.intAt(
+                    Api.F_MESSAGE_REPLY_HEADER__REPLY_TO_TOP_ID);
+            m.forumTopic = reply.num(
+                    Api.F_MESSAGE_REPLY_HEADER__FORUM_TOPIC) != 0;
+        }
     }
 
     private static Peer resolveSender(TlObj fromId, PeerCache peers)
@@ -126,6 +158,61 @@ public final class Message
                     MemoryBudget.messageEntityLimit());
         }
         return entities;
+    }
+
+    /**
+     * The topic this message belongs to, in a forum supergroup.
+     *
+     * A topic message carries the {@code forum_topic} flag; its root is
+     * {@code reply_to_top_id} when the message replies to something inside
+     * the topic, and {@code reply_to_msg_id} when the topic root itself is
+     * what it answers. A forum message with no header at all lives in
+     * General.
+     *
+     * @param forumPeer whether the conversation peer is a forum
+     * @return the topic root id, or 0 when the peer is not a forum
+     */
+    public int threadRootIn(boolean forumPeer)
+    {
+        if (forumTopic)
+        {
+            return replyToTopId != 0 ? replyToTopId : replyToMessageId;
+        }
+        return forumPeer ? ForumTopic.GENERAL_ID : 0;
+    }
+
+    /**
+     * Whether this message belongs to the comment thread rooted at
+     * {@code root} in a discussion group. Discussion replies do not carry
+     * the forum flag: a direct comment answers the root, a nested one names
+     * it as the top.
+     */
+    public boolean inThread(int root)
+    {
+        return id == root || replyToTopId == root || replyToMessageId == root;
+    }
+
+    /**
+     * The message this one visibly answers inside a {@code (peer, thread)}
+     * transcript, or 0.
+     *
+     * Every message in a thread carries a reply header naming the thread's
+     * root - that is how membership travels on the wire - so inside the
+     * thread's own transcript a target equal to the root is membership, not
+     * an answer, and rendering it as one captioned every plain message with
+     * "Reply to" the root service message. A real reply within the thread
+     * names its target in {@code reply_to_msg_id} and moves the root to
+     * {@code reply_to_top_id}, which is what this keeps.
+     *
+     * @param threadRootId the open transcript's root, 0 for a plain chat
+     */
+    public int visibleReplyTo(int threadRootId)
+    {
+        if (threadRootId > 0 && replyToMessageId == threadRootId)
+        {
+            return 0;
+        }
+        return replyToMessageId;
     }
 
     /** Local visibility rule; the server remains authoritative on permissions. */

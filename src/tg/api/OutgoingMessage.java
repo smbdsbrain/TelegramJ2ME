@@ -10,7 +10,7 @@ import tg.tl.Utf8;
 public final class OutgoingMessage
 {
     private static final int MAGIC = 0x54474f32; // TGO2
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     private static final int MAX_TEXT_BYTES = 4096;
     private static final int MAX_ERROR_BYTES = 1024;
 
@@ -26,6 +26,14 @@ public final class OutgoingMessage
     public String peerTitle = "";
     public String text = "";
     public int replyToMessageId;
+
+    /**
+     * Topic or comment thread the message sends into, 0 for none. Stored
+     * before the first send: a power cut between enqueue and send must not
+     * demote a topic message to General on the retry.
+     */
+    public int threadRootId;
+
     public long randomId;
     public long createdAt;
     public int attempts;
@@ -74,6 +82,7 @@ public final class OutgoingMessage
         out.writeString(message.peerTitle == null ? "" : message.peerTitle);
         out.writeString(message.text == null ? "" : message.text);
         out.writeInt(message.replyToMessageId);
+        out.writeInt(message.threadRootId);
         out.writeLong(message.randomId);
         out.writeLong(message.createdAt);
         out.writeInt(message.attempts);
@@ -87,7 +96,7 @@ public final class OutgoingMessage
         TlReader in = new TlReader(raw);
         if (in.readInt() != MAGIC) { throw new IOException("bad outbox record magic"); }
         int version = in.readInt();
-        if (version != 1 && version != VERSION)
+        if (version < 1 || version > VERSION)
         {
             throw new IOException("unsupported outbox version");
         }
@@ -100,6 +109,7 @@ public final class OutgoingMessage
         message.peerTitle = in.readString();
         message.text = in.readString();
         if (version >= 2) { message.replyToMessageId = in.readInt(); }
+        if (version >= 3) { message.threadRootId = in.readInt(); }
         message.randomId = in.readLong();
         message.createdAt = in.readLong();
         message.attempts = in.readInt();
