@@ -23,6 +23,7 @@
     dialog-hash- does messages.getDialogs honour a hash, and of what? (no writes)
     reactions  - read global/per-peer allowed reaction policies (no writes)
     send       - send a message using a stored session
+    forum      - forum topics end to end against the prepared test group
     updates    - wait for proactive messages/read state and catch-up
 
 .EXAMPLE
@@ -34,7 +35,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('handshake', 'config', 'obfs-config', 'http-config',
                  'proxy-config', 'login', 'dialogs', 'dialog-hash',
-                 'reactions', 'send', 'updates')]
+                 'reactions', 'send', 'forum', 'updates')]
     [string]$Scenario = 'handshake',
 
     [ValidateSet('test', 'production')]
@@ -66,6 +67,7 @@ $mainClass = @{
     'dialog-hash' = "tgtest.LiveDialogHashTest"
     reactions = "tgtest.LiveReactionsTest"
     send      = "tgtest.LiveSendTest"
+    forum     = "tgtest.LiveForumTest"
     updates   = "tgtest.LiveUpdatesTest"
 }[$Scenario]
 
