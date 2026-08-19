@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- Incoming message formatting (issue #18): bold, italic, underline,
+  strikethrough, inline code, preformatted blocks and block quotes are laid
+  out with bounded MIDP fonts while preserving UTF-16 and emoji boundaries.
+- Lightweight spoilers use a static dotted bitmap mask with no animation or
+  timer. A focused concealed message exposes a `Reveal spoiler` command, and
+  revealing it changes paint state without reflowing the transcript.
+- A live `forumspoiler` emulator scenario covers a spoiler containing an emoji
+  and a link in a real forum topic, including the dialog list, topic list,
+  concealed transcript, reveal action and post-reveal link action.
+
+### Changed
+
+- Visual entities may overlap each other and actionable entities; styles are
+  combined, while only invalid UTF-16 ranges and exact duplicates are dropped.
+  Entity retention remains bounded and fails closed by concealing the whole
+  message if its spoiler count exceeds the cap.
+- Links, mentions, email addresses and phone numbers overlapping a concealed
+  spoiler are unavailable until the message is revealed.
+- Dialog and topic previews, full-text views, replies, forwards and search
+  representations redact concealed ranges before clipping or caching them.
+
+### Fixed
+
+- Spoiler text no longer leaks through the dialog list or forum topic list.
+  Verified in a real topic and in the chat list on a physical Nokia E6-00.
+
+### Compatibility notes
+
+- Dialog cache is v3. Older v1/v2 dialog records stored only flattened preview
+  text and are deliberately discarded because their missing entities make old
+  spoiler previews impossible to conceal safely; dialogs are fetched again.
+  History, auth keys, outbox, drafts and update cursors are unchanged.
+- Formatting is incoming-only. LaTeX, custom emoji, animated spoiler particles,
+  collapsed block quotes and formatted-message composition remain out of scope.
+
 ## 1.1.0
 
 ### Added
