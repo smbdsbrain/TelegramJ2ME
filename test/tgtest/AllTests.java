@@ -69,6 +69,7 @@ public final class AllTests
             new TopicWindowTest(),
             new MessageSearchTest(),
             new MessageEntityTest(),
+            new RichTextTest(),
             new Phase4ContentTest(),
             new Phase5AuthTest(),
             new Phase6Test(),

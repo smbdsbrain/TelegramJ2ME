@@ -1,6 +1,8 @@
 package tgtest;
 
 import tg.api.Api;
+import tg.api.Dialog;
+import tg.api.ForumTopic;
 import tg.api.Message;
 import tg.api.MessageEntity;
 import tg.app.ExternalAction;
@@ -14,7 +16,9 @@ public final class MessageEntityTest implements Test
     public void run() throws Exception
     {
         parsesSupportedEntities();
-        rejectsBrokenUtf16AndOverlap();
+        parsesFormattingAndAllowsOverlap();
+        concealsSpoilersAndPrioritizesPrivacy();
+        concealsDialogAndTopicPreviews();
         detectsBoundedOutboundEntities();
         detectsWhenServerVectorIsEmpty();
         upgradesCachedMessageOnDemand();
@@ -89,7 +93,7 @@ public final class MessageEntityTest implements Test
         Assert.equal("mention text", "@alice", parsed[1].text(text));
     }
 
-    private static void rejectsBrokenUtf16AndOverlap()
+    private static void parsesFormattingAndAllowsOverlap()
     {
         String text = "A\ud83d\ude00BCDEF";
         TlObj split = entity(Api.MESSAGE_ENTITY_URL, 1, 1);
@@ -98,8 +102,89 @@ public final class MessageEntityTest implements Test
         TlObj outside = entity(Api.MESSAGE_ENTITY_PHONE, 99, 3);
         MessageEntity[] parsed = MessageEntity.from(
                 new TlObj[] { split, valid, overlap, outside }, text, 8);
-        Assert.equal("only valid non-overlapping range", 1, parsed.length);
+        Assert.equal("valid overlapping ranges survive", 2, parsed.length);
         Assert.equal("valid starts after emoji", 3, parsed[0].offset);
+
+        String rich = "bold code quote secret";
+        TlObj bold = entity(Api.MESSAGE_ENTITY_BOLD, 0, 9);
+        TlObj italic = entity(Api.MESSAGE_ENTITY_ITALIC, 5, 4);
+        TlObj underline = entity(Api.MESSAGE_ENTITY_UNDERLINE, 0, 4);
+        TlObj strike = entity(Api.MESSAGE_ENTITY_STRIKE, 5, 4);
+        TlObj code = entity(Api.MESSAGE_ENTITY_CODE, 5, 4);
+        TlObj pre = entity(Api.MESSAGE_ENTITY_PRE, 5, 4);
+        TlObj quote = entity(Api.MESSAGE_ENTITY_BLOCKQUOTE, 10, 5);
+        TlObj spoiler = entity(Api.MESSAGE_ENTITY_SPOILER, 16, 6);
+        parsed = MessageEntity.from(new TlObj[] { bold, italic, underline,
+                strike, code, pre, quote, spoiler }, rich, 8);
+        Assert.equal("all basic formatting parsed", 8, parsed.length);
+        Assert.equal("spoiler receives first slot", MessageEntity.SPOILER,
+                parsed[0].type);
+        Assert.equal("bold retained", MessageEntity.BOLD, parsed[1].type);
+        Assert.equal("blockquote retained", MessageEntity.BLOCKQUOTE,
+                parsed[7].type);
+    }
+
+    private static void concealsSpoilersAndPrioritizesPrivacy()
+    {
+        String text = "open hidden\nline https://x.test";
+        int hidden = text.indexOf("hidden");
+        int url = text.indexOf("https");
+        TlObj bold = entity(Api.MESSAGE_ENTITY_BOLD, 0, 4);
+        TlObj spoiler = entity(Api.MESSAGE_ENTITY_SPOILER, hidden, 11);
+        TlObj link = entity(Api.MESSAGE_ENTITY_URL, url,
+                "https://x.test".length());
+        MessageEntity[] parsed = MessageEntity.from(
+                new TlObj[] { bold, link, spoiler }, text, 2);
+        Assert.equal("bounded vector", 2, parsed.length);
+        Assert.equal("spoiler before action", MessageEntity.SPOILER,
+                parsed[0].type);
+        Assert.equal("action before decoration", MessageEntity.URL,
+                parsed[1].type);
+        Assert.equal("plain fallback hides content and keeps newline",
+                "open ******\n**** https://x.test",
+                MessageEntity.conceal(text, parsed));
+        Assert.isTrue("overlapping action recognized as concealed",
+                MessageEntity.overlapsSpoiler(parsed, hidden, 3));
+
+        TlObj s1 = entity(Api.MESSAGE_ENTITY_SPOILER, 0, 1);
+        TlObj s2 = entity(Api.MESSAGE_ENTITY_SPOILER, 2, 1);
+        TlObj s3 = entity(Api.MESSAGE_ENTITY_SPOILER, 4, 1);
+        parsed = MessageEntity.from(new TlObj[] { s1, link, s2, s3 }, text, 2);
+        Assert.equal("overflow keeps two bounded records", 2, parsed.length);
+        Assert.equal("overflow becomes a spoiler", MessageEntity.SPOILER,
+                parsed[0].type);
+        Assert.equal("overflow conceals the whole message", text.length(),
+                parsed[0].length);
+        Assert.equal("overflow still keeps action", MessageEntity.URL,
+                parsed[1].type);
+    }
+
+    private static void concealsDialogAndTopicPreviews()
+    {
+        Message message = new Message();
+        message.text = "prefix secret-value suffix";
+        message.date = 1234;
+        message.outgoing = true;
+        MessageEntity spoiler = new MessageEntity();
+        spoiler.type = MessageEntity.SPOILER;
+        spoiler.offset = message.text.indexOf("secret-value");
+        spoiler.length = "secret-value".length();
+        message.entities = new MessageEntity[] { spoiler };
+
+        Dialog dialog = new Dialog();
+        dialog.setPreview(message);
+        Assert.equal("dialog preview conceals spoiler before caching",
+                "prefix ************ suffix", dialog.lastMessage);
+        Assert.isTrue("dialog preview keeps outgoing state",
+                dialog.lastMessageOutgoing);
+        Assert.equal("dialog preview keeps date", 1234, dialog.date);
+
+        ForumTopic topic = new ForumTopic();
+        topic.setPreview(message);
+        Assert.equal("topic preview conceals spoiler",
+                "prefix ************ suffix", topic.lastMessage);
+        Assert.isTrue("topic preview keeps outgoing state", topic.lastOutgoing);
+        Assert.equal("topic preview keeps date", 1234, topic.lastDate);
     }
 
     private static void normalizesSafeTargets()
@@ -156,10 +241,12 @@ public final class MessageEntityTest implements Test
 
     private static TlObj entity(int id, int offset, int length)
     {
-        TlObj value = new TlObj(id, 3);
-        value.nums[0] = offset;
-        value.nums[1] = length;
-        value.refs = new Object[3];
+        int fields = id == Api.MESSAGE_ENTITY_BLOCKQUOTE ? 4 : 3;
+        TlObj value = new TlObj(id, fields);
+        int at = id == Api.MESSAGE_ENTITY_BLOCKQUOTE ? 2 : 0;
+        value.nums[at] = offset;
+        value.nums[at + 1] = length;
+        value.refs = new Object[fields];
         return value;
     }
 }

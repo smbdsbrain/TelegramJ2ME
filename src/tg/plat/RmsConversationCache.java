@@ -54,13 +54,15 @@ public final class RmsConversationCache implements AccountStore
      * TGD4/TGH4 - the envelope-wrapped generation.
      *
      * History v4 keys the record by (peer, thread) and carries the thread
-     * facts a topic transcript needs; dialog v2 carries the peer's forum
-     * flag, so an offline forum open routes to the topic screen rather than
-     * a flat transcript. Older versions read as thread 0 with the flag off.
+     * facts a topic transcript needs. Dialog v3 is a privacy generation: v1/v2
+     * stored a flattened preview without entities, so a spoiler cached by an
+     * older build cannot be identified and concealed on upgrade. Those dialog
+     * records are deliberately discarded and fetched again. The payload shape
+     * otherwise remains v2, including the peer's forum flag.
      */
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
-    private static final int DIALOG_VERSION = 2;
+    private static final int DIALOG_VERSION = 3;
     private static final int HISTORY_VERSION = 4;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
@@ -96,7 +98,7 @@ public final class RmsConversationCache implements AccountStore
                 catch (Throwable t) { continue; }
 
                 RecordEnvelope envelope = RecordEnvelope.unwrap(raw,
-                        DIALOG_MAGIC, 1, DIALOG_VERSION,
+                        DIALOG_MAGIC, DIALOG_VERSION, DIALOG_VERSION,
                         accountId, test);
                 if (!envelope.isOk())
                 {

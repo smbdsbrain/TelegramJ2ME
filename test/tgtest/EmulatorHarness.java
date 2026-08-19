@@ -78,6 +78,9 @@ public final class EmulatorHarness
 
     public Display display() { return display; }
 
+    /** The live application instance, for desktop-only E2E instrumentation. */
+    public tg.app.TgMidlet application() { return midlet; }
+
     public Displayable current() { return display.getCurrent(); }
 
     /** Invoke a command as the user would, on the current screen. */

@@ -7,6 +7,7 @@ import javax.microedition.lcdui.Image;
 
 import tg.api.Media;
 import tg.api.Message;
+import tg.api.MessageEntity;
 import tg.api.Peer;
 import tg.api.ReactionSummary;
 import tg.api.ThreadInfo;
@@ -57,6 +58,7 @@ public class ChatScreen extends Canvas
     private final Font font;
     private final Font metaFont;
     private final int lineHeight;
+    private final RichText richText;
     private final Metrics metrics = new Metrics();
     private Theme theme;
     private int lastLayoutWidth = -1;
@@ -68,6 +70,8 @@ public class ChatScreen extends Canvas
     private boolean[] meta = new boolean[0];
     private int[] lineMessageIds = new int[0];
     private int[] lineMessageOffsets = new int[0];
+    /** UTF-16 offset in Message.text, or -1 for metadata/media rows. */
+    private int[] lineTextStarts = new int[0];
     private Message[] currentMessages = new Message[0];
     private Peer peer;
     private ThreadInfo thread;
@@ -90,6 +94,8 @@ public class ChatScreen extends Canvas
     public String status() { return displayStatus(); }
     private boolean mediaPreviews = true;
     private int focusedMessageId;
+    private int[] revealedSpoilerIds = new int[0];
+    private int revealedSpoilerCount;
     private ActivationListener activationListener;
     private ViewportListener viewportListener;
 
@@ -130,9 +136,10 @@ public class ChatScreen extends Canvas
      */
     public ChatScreen(Theme theme, int thumbnailCapacity, int windowScreens)
     {
-        font = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+        richText = new RichText();
+        font = richText.plainFont();
         metaFont = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
-        lineHeight = Math.max(font.getHeight(), EmojiText.GLYPH);
+        lineHeight = richText.lineHeight();
         this.theme = theme == null ? Theme.byId(Theme.LIGHT) : theme;
         if (thumbnailCapacity < 2) { thumbnailCapacity = 2; }
         this.thumbnailCapacity = thumbnailCapacity;
@@ -160,6 +167,7 @@ public class ChatScreen extends Canvas
     public void setTheme(Theme value)
     {
         theme = value == null ? Theme.byId(Theme.LIGHT) : value;
+        richText.themeChanged();
         repaint();
     }
 
@@ -218,6 +226,39 @@ public class ChatScreen extends Canvas
     }
 
     public int focusedMessageId() { return focusedMessageId; }
+
+    public boolean hasConcealedSpoilers(int messageId)
+    {
+        Message message = messageById(messageId);
+        return message != null && MessageEntity.hasSpoiler(message.entities)
+                && !isSpoilerRevealed(messageId);
+    }
+
+    /** Reveal every spoiler in one message without changing its layout. */
+    public void revealSpoilers(int messageId)
+    {
+        if (!hasConcealedSpoilers(messageId)) { return; }
+        if (revealedSpoilerCount == revealedSpoilerIds.length)
+        {
+            int grown = revealedSpoilerIds.length == 0
+                    ? 4 : revealedSpoilerIds.length * 2;
+            int[] next = new int[grown];
+            System.arraycopy(revealedSpoilerIds, 0, next, 0,
+                    revealedSpoilerCount);
+            revealedSpoilerIds = next;
+        }
+        revealedSpoilerIds[revealedSpoilerCount++] = messageId;
+        repaint();
+    }
+
+    public boolean isSpoilerRevealed(int messageId)
+    {
+        for (int i = 0; i < revealedSpoilerCount; i++)
+        {
+            if (revealedSpoilerIds[i] == messageId) { return true; }
+        }
+        return false;
+    }
 
     /** Display lines currently laid out. Bounded by the window, not the history. */
     public int transcriptLineCount() { return lines.length; }
@@ -345,6 +386,8 @@ public class ChatScreen extends Canvas
     public void resetMessages(Message[] messages)
     {
         clearThumbnails();
+        revealedSpoilerIds = new int[0];
+        revealedSpoilerCount = 0;
         anchorMessageId = 0;
         layoutMessages(messages, false);
         viewportChanged();
@@ -378,6 +421,11 @@ public class ChatScreen extends Canvas
                 meta = new boolean[count];
                 lineMessageIds = new int[count];
                 lineMessageOffsets = new int[count];
+                lineTextStarts = new int[count];
+                for (int line = 0; line < count; line++)
+                {
+                    lineTextStarts[line] = -1;
+                }
                 count = 0;
             }
             for (int i = windowLast; i >= windowFirst; i--)
@@ -448,8 +496,8 @@ public class ChatScreen extends Canvas
                             m.id, 195);
                     if (pass == 1) { meta[count - 1] = true; }
                 }
-                count = wrap(m.text, width, pass, count, m.outgoing, m.id,
-                        200);
+                count = wrapRich(m.text, width, pass, count, m.outgoing,
+                        m.id, 200, m.entities);
                 if (m.media != null)
                 {
                     count = wrap(m.media.label, width, pass, count,
@@ -604,7 +652,7 @@ public class ChatScreen extends Canvas
         }
         if (m.text != null && m.text.length() > 0)
         {
-            count += countWrapped(m.text, width);
+            count += countWrappedRich(m.text, width, m.entities);
         }
         if (m.media != null)
         {
@@ -656,6 +704,8 @@ public class ChatScreen extends Canvas
         boolean[] newMeta = new boolean[newLines.length];
         int[] newMessageIds = new int[newLines.length];
         int[] newMessageOffsets = new int[newLines.length];
+        int[] newTextStarts = new int[newLines.length];
+        for (int i = 0; i < newTextStarts.length; i++) { newTextStarts[i] = -1; }
         System.arraycopy(lines, 0, newLines, 0, lines.length);
         System.arraycopy(outgoing, 0, newOut, 0, outgoing.length);
         System.arraycopy(meta, 0, newMeta, 0, meta.length);
@@ -663,6 +713,8 @@ public class ChatScreen extends Canvas
                 lineMessageIds.length);
         System.arraycopy(lineMessageOffsets, 0, newMessageOffsets, 0,
                 lineMessageOffsets.length);
+        System.arraycopy(lineTextStarts, 0, newTextStarts, 0,
+                lineTextStarts.length);
 
         int at = lines.length;
         newLines[at] = "You";
@@ -677,6 +729,7 @@ public class ChatScreen extends Canvas
         meta = newMeta;
         lineMessageIds = newMessageIds;
         lineMessageOffsets = newMessageOffsets;
+        lineTextStarts = newTextStarts;
         wrapInto(text, width, at, true, 0, 1);
         scroll.appended(maxTop());
         repaint();
@@ -712,6 +765,8 @@ public class ChatScreen extends Canvas
         int visible = visibleLines();
 
         int y = metrics.bodyTop;
+        int paintedMessageId = 0;
+        Message paintedMessage = null;
         for (int i = 0; i < visible; i++)
         {
             int idx = scroll.top() + i;
@@ -753,6 +808,36 @@ public class ChatScreen extends Canvas
                             y - (messageOffset - 1100) * lineHeight,
                             Graphics.TOP | Graphics.LEFT);
                     g.setClip(clipX, clipY, clipWidth, clipHeight);
+                }
+            }
+            else if (s != null && lineTextStarts[idx] >= 0)
+            {
+                int id = lineMessageIds[idx];
+                if (paintedMessage == null || paintedMessageId != id)
+                {
+                    paintedMessage = messageById(id);
+                    paintedMessageId = id;
+                }
+                if (paintedMessage != null)
+                {
+                    boolean focused = id == focusedMessageId;
+                    boolean quoted = richText.quotedAt(paintedMessage.entities,
+                            lineTextStarts[idx]);
+                    int x = metrics.padding;
+                    if (quoted)
+                    {
+                        g.setColor(focused ? theme.selectionText : theme.accent);
+                        g.fillRect(x, y, 2, lineHeight);
+                        x += 6;
+                    }
+                    int textColor = outgoing[idx]
+                            ? theme.outgoingText : theme.text;
+                    richText.drawLine(g, paintedMessage.text,
+                            lineTextStarts[idx],
+                            lineTextStarts[idx] + s.length(), x, y,
+                            paintedMessage.entities, isSpoilerRevealed(id),
+                            focused, textColor,
+                            focused ? theme.selectionText : theme.secondaryText);
                 }
             }
             else if (s != null)
@@ -970,6 +1055,12 @@ public class ChatScreen extends Canvas
         return -1;
     }
 
+    private Message messageById(int id)
+    {
+        int at = messageIndex(id);
+        return at < 0 ? null : currentMessages[at];
+    }
+
     private void viewportChanged()
     {
         ViewportListener listener = viewportListener;
@@ -1018,6 +1109,62 @@ public class ChatScreen extends Canvas
             start = skipSpace(text, end);
         }
         return count == 0 ? 1 : count;
+    }
+
+    private int wrapRich(String text, int width, int pass, int at,
+                         boolean isOutgoing, int messageId, int messageOffset,
+                         MessageEntity[] entities)
+    {
+        if (text == null || text.length() == 0) { return at; }
+        if (pass == 0) { return at + countWrappedRich(text, width, entities); }
+        int start = 0;
+        while (start < text.length() && at < lines.length)
+        {
+            int end = lineEndRich(text, start, width, entities);
+            lines[at] = text.substring(start, end);
+            outgoing[at] = isOutgoing;
+            meta[at] = false;
+            lineMessageIds[at] = messageId;
+            lineMessageOffsets[at] = messageOffset++;
+            lineTextStarts[at] = start;
+            at++;
+            start = skipSpace(text, end);
+        }
+        return at;
+    }
+
+    private int countWrappedRich(String text, int width,
+                                 MessageEntity[] entities)
+    {
+        int count = 0;
+        int start = 0;
+        while (start < text.length())
+        {
+            int end = lineEndRich(text, start, width, entities);
+            count++;
+            start = skipSpace(text, end);
+        }
+        return count == 0 ? 1 : count;
+    }
+
+    private int lineEndRich(String text, int start, int width,
+                            MessageEntity[] entities)
+    {
+        int hardBreak = text.indexOf('\n', start);
+        int limit = hardBreak >= 0 ? hardBreak : text.length();
+        limit = richText.blockBoundary(start, limit, entities);
+        if (limit <= start) { return limit; }
+
+        int available = width - (richText.quotedAt(entities, start) ? 6 : 0);
+        if (available < 1) { available = 1; }
+        int fit = richText.fitEnd(text, start, limit, available, entities);
+        if (fit >= limit) { return limit; }
+        for (int i = fit; i > start; i--)
+        {
+            if (text.charAt(i) == ' ') { return i; }
+        }
+        return fit > start ? fit
+                : Math.min(limit, EmojiText.nextBoundary(text, start));
     }
 
     private int wrapInto(String text, int width, int at, boolean isOutgoing,

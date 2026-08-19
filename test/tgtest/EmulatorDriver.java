@@ -3,6 +3,14 @@ package tgtest;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+import javax.imageio.ImageIO;
 
 import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
@@ -13,9 +21,19 @@ import javax.microedition.lcdui.Item;
 import javax.microedition.rms.RecordEnumeration;
 import javax.microedition.rms.RecordStore;
 
+import org.microemu.device.j2se.J2SEMutableImage;
+
+import tg.api.Api;
 import tg.api.Dialog;
+import tg.api.DialogPage;
+import tg.api.ForumTopic;
+import tg.api.ForumTopicPage;
+import tg.api.Message;
+import tg.api.MessageEntity;
 import tg.api.Peer;
+import tg.api.Requests;
 import tg.api.Telegram;
+import tg.api.UpdateSync;
 import tg.crypto.Rng;
 import tg.diag.CrashLog;
 import tg.diag.Diag;
@@ -25,9 +43,11 @@ import tg.mt.ConnectionConfig;
 import tg.mt.Dc;
 import tg.plat.RmsAuthKeyStore;
 import tg.tl.TlReader;
+import tg.tl.TlWriter;
 import tg.ui.ChatScreen;
 import tg.ui.DialogListScreen;
 import tg.ui.JpegDecoder;
+import tg.ui.TopicListScreen;
 
 /**
  * Drives the client through MicroEmulator's MIDP runtime from a script.
@@ -53,6 +73,9 @@ import tg.ui.JpegDecoder;
  *   scroll &lt;title&gt; [pages]      read a chat backwards, then forwards again
  *   chats  [pages]              scroll the chat list down and back up again
  *   hashprobe [limit]           does messages.getDialogs honour a hash?
+ *   formatting &lt;dir&gt;           send rich text to Saved Messages and capture
+ *                                concealed/revealed spoiler screenshots
+ *   forumspoiler &lt;forum&gt; &lt;topic&gt; &lt;dir&gt;  verify list previews in a topic
  * </pre>
  *
  * The code file exists because the sign-in code arrives on the user's phone and
@@ -164,6 +187,15 @@ public final class EmulatorDriver
             else if ("hashprobe".equals(scenario))
             {
                 exit = hashProbe(arg(args, 1));
+            }
+            else if ("formatting".equals(scenario))
+            {
+                exit = formatting(app, arg(args, 1)) ? 0 : 1;
+            }
+            else if ("forumspoiler".equals(scenario))
+            {
+                exit = forumSpoiler(app, arg(args, 1), arg(args, 2),
+                        arg(args, 3)) ? 0 : 1;
             }
             else
             {
@@ -1791,6 +1823,756 @@ public final class EmulatorDriver
         Thread.sleep(12000);
         System.out.println("after send: " + EmulatorHarness.describe(app.current()));
         return true;
+    }
+
+    /**
+     * Exercise server-side visual entities through the real Saved Messages
+     * history and capture the actual 240x320 Canvas before and after reveal.
+     *
+     * This is deliberately desktop-test instrumentation. The product composer
+     * remains plain text; reflection reaches the already-authenticated
+     * Telegram instance only to issue the wire request needed to seed E2E data.
+     */
+    private static boolean formatting(EmulatorHarness app, String outputPath)
+            throws Exception
+    {
+        if (outputPath == null || outputPath.length() == 0)
+        {
+            System.out.println("formatting needs an output directory");
+            return false;
+        }
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run the login scenario first");
+            return false;
+        }
+
+        // Let getDialogs and its avatar work leave the foreground connection
+        // before the test-only request uses it.
+        Thread.sleep(6000);
+        Telegram telegram = telegram(app);
+        Peer self = telegram.peers().self();
+        if (self == null || !telegram.peers().isAddressable(self))
+        {
+            System.out.println("self peer is not addressable");
+            return false;
+        }
+
+        String marker = marker();
+        String styleText = marker + " styles"
+                + "\nBold Italic Underline Strike Code Combo";
+        String quoteText = marker + " quote"
+                + "\nQuoted line"
+                + "\npre_value();";
+        String spoilerText = marker + " spoiler"
+                + "\nSpoiler: secret https://example.com";
+        MessageEntity[][] sent = new MessageEntity[][] {
+                styleEntities(styleText), quoteEntities(quoteText),
+                spoilerEntities(spoilerText) };
+        String[] texts = new String[] { styleText, quoteText, spoilerText };
+        UpdateSync sync = updateSync(telegram);
+        for (int i = 0; i < texts.length; i++)
+        {
+            byte[] result = invoke(telegram, formattedSend(self, texts[i],
+                    System.currentTimeMillis() + i, sent[i]));
+            sync.acceptSent(result, self, texts[i]);
+            Thread.sleep(250);
+        }
+        System.out.println("formatted messages accepted by Telegram: marker="
+                + marker + " entities=" + sent[0].length + "/"
+                + sent[1].length + "/" + sent[2].length);
+
+        Displayable list = app.current();
+        if (!app.press("Saved Messages"))
+        {
+            System.out.println("could not open Saved Messages");
+            return false;
+        }
+        app.awaitChange(list, 60000);
+        if (!app.awaitCommand("Older", 60000))
+        {
+            System.out.println("Saved Messages did not become a chat screen");
+            return false;
+        }
+
+        int[] styleTypes = new int[] {
+                MessageEntity.BOLD, MessageEntity.ITALIC,
+                MessageEntity.UNDERLINE, MessageEntity.STRIKE,
+                MessageEntity.CODE };
+        int[] quoteTypes = new int[] {
+                MessageEntity.PRE, MessageEntity.BLOCKQUOTE };
+        int[] spoilerTypes = new int[] {
+                MessageEntity.SPOILER, MessageEntity.URL };
+        Message styled = awaitMessage(app, marker + " styles", styleTypes, 60000);
+        Message quoted = awaitMessage(app, marker + " quote", quoteTypes, 60000);
+        Message received = awaitMessage(app, marker + " spoiler",
+                spoilerTypes, 60000);
+        if (styled == null || quoted == null || received == null)
+        {
+            System.out.println("one or more formatted messages did not arrive");
+            return false;
+        }
+        ChatScreen chat = (ChatScreen) app.current();
+        chat.focusMessage(received.id);
+        Thread.sleep(500);
+
+        if (!hasEntityTypes(styled.entities, styleTypes)
+                || !hasEntityTypes(quoted.entities, quoteTypes)
+                || !hasEntityTypes(received.entities, spoilerTypes))
+        {
+            System.out.println("history lost one or more formatting entities");
+            return false;
+        }
+        if (!chat.hasConcealedSpoilers(received.id)
+                || !app.awaitCommand("Reveal spoiler", 5000))
+        {
+            System.out.println("concealed spoiler did not offer Reveal spoiler");
+            return false;
+        }
+
+        int linesBefore = chat.transcriptLineCount();
+        File output = new File(outputPath);
+        if (!output.isDirectory() && !output.mkdirs())
+        {
+            System.out.println("could not create screenshot directory");
+            return false;
+        }
+        File concealed = new File(output, "formatting-concealed.png");
+        captureCanvas(chat, concealed, 3);
+
+        // Plain-text surfaces must redact the entire spoiler, including the
+        // overlapping URL.
+        Displayable before = app.current();
+        if (!app.press("View full text"))
+        {
+            System.out.println("View full text command missing");
+            return false;
+        }
+        app.awaitChange(before, 5000);
+        javax.microedition.lcdui.TextBox full =
+                (javax.microedition.lcdui.TextBox) app.current();
+        String concealedText = full.getString();
+        if (concealedText.indexOf("secret") >= 0
+                || concealedText.indexOf("example.com") >= 0
+                || concealedText.indexOf('*') < 0)
+        {
+            System.out.println("plain-text spoiler redaction failed");
+            return false;
+        }
+        before = app.current();
+        app.press("Back");
+        app.awaitChange(before, 5000);
+
+        // The actionable URL intersects the spoiler, so the picker must not
+        // expose it until the same message is revealed.
+        before = app.current();
+        if (!app.press("Links")) { return false; }
+        app.awaitChange(before, 5000);
+        javax.microedition.lcdui.List links =
+                (javax.microedition.lcdui.List) app.current();
+        if (links.size() != 1
+                || !"(no supported actions)".equals(links.getString(0)))
+        {
+            System.out.println("concealed URL leaked into the action picker");
+            return false;
+        }
+        before = app.current();
+        app.press("Back");
+        app.awaitChange(before, 5000);
+
+        if (!app.press("Reveal spoiler"))
+        {
+            System.out.println("could not reveal spoiler");
+            return false;
+        }
+        Thread.sleep(300);
+        if (!chat.isSpoilerRevealed(received.id)
+                || chat.transcriptLineCount() != linesBefore)
+        {
+            System.out.println("reveal changed layout or did not persist");
+            return false;
+        }
+        File revealed = new File(output, "formatting-revealed.png");
+        captureCanvas(chat, revealed, 3);
+
+        before = app.current();
+        if (!app.press("View full text")) { return false; }
+        app.awaitChange(before, 5000);
+        full = (javax.microedition.lcdui.TextBox) app.current();
+        if (full.getString().indexOf("secret https://example.com") < 0)
+        {
+            System.out.println("revealed text is still redacted");
+            return false;
+        }
+        before = app.current();
+        app.press("Back");
+        app.awaitChange(before, 5000);
+        before = app.current();
+        if (!app.press("Links")) { return false; }
+        app.awaitChange(before, 5000);
+        links = (javax.microedition.lcdui.List) app.current();
+        if (links.size() != 1 || links.getString(0).indexOf("example.com") < 0)
+        {
+            System.out.println("revealed URL did not reach the action picker");
+            return false;
+        }
+        app.press("Back");
+
+        System.out.println("FORMATTING E2E PASS"
+                + " messageId=" + received.id
+                + " lines=" + linesBefore
+                + " concealed=" + concealed.getAbsolutePath()
+                + " revealed=" + revealed.getAbsolutePath());
+        return true;
+    }
+
+    /** Real forum/topic spoiler round trip, including both preview screens. */
+    private static boolean forumSpoiler(EmulatorHarness app, String forumTitle,
+                                        String topicTitle, String outputPath)
+            throws Exception
+    {
+        if (forumTitle == null || forumTitle.length() == 0
+                || topicTitle == null || topicTitle.length() == 0
+                || outputPath == null || outputPath.length() == 0)
+        {
+            System.out.println("forumspoiler needs forum, topic and output dir");
+            return false;
+        }
+        if (!connect(app)) { return false; }
+        if (EmulatorHarness.command(app.current(), "Saved Messages") == null)
+        {
+            System.out.println("no stored session; run login first");
+            return false;
+        }
+        Thread.sleep(6000);
+
+        Telegram telegram = telegram(app);
+        DialogPage page = telegram.getDialogs(60);
+        Dialog forumRow = findDialog(page.dialogs, forumTitle);
+        if (forumRow == null || forumRow.peer == null || !forumRow.peer.forum)
+        {
+            System.out.println("prepared forum was not found");
+            return false;
+        }
+        Peer forum = forumRow.peer;
+        ForumTopicPage topicPage = telegram.getForumTopics(forum, null, 40);
+        ForumTopic topic = findTopic(topicPage.topics, topicTitle);
+        if (topic == null || topic.id <= ForumTopic.GENERAL_ID)
+        {
+            System.out.println("prepared named topic was not found");
+            return false;
+        }
+
+        String marker = marker();
+        String secret = "secret-topic-value";
+        String text = marker + " spoiler " + secret;
+        MessageEntity spoiler = new MessageEntity();
+        spoiler.type = MessageEntity.SPOILER;
+        spoiler.offset = text.indexOf(secret);
+        spoiler.length = secret.length();
+        MessageEntity[] entities = new MessageEntity[] { spoiler };
+        byte[] result = invoke(telegram, formattedSend(forum, text,
+                System.currentTimeMillis(), entities, topic.id));
+        updateSync(telegram).acceptSent(result, forum, text);
+        System.out.println("forum spoiler accepted by Telegram: marker=" + marker);
+
+        // Re-read both authoritative list endpoints. This catches a parser path
+        // that works in getHistory but leaks in getDialogs/getForumTopics.
+        Thread.sleep(500);
+        Dialog refreshedDialog = findDialog(
+                telegram.getDialogs(60).dialogs, forumTitle);
+        ForumTopic refreshedTopic = findTopic(
+                telegram.getForumTopics(forum, null, 40).topics, topicTitle);
+        if (!concealedPreview(refreshedDialog == null ? null
+                        : refreshedDialog.lastMessage, marker, secret)
+                || !concealedPreview(refreshedTopic == null ? null
+                        : refreshedTopic.lastMessage, marker, secret))
+        {
+            System.out.println("server list preview disclosed the spoiler");
+            return false;
+        }
+
+        Dialog live = awaitDialogPreview(app, forum, marker, 30000);
+        if (live == null || !concealedPreview(live.lastMessage, marker, secret))
+        {
+            System.out.println("live dialog row disclosed the spoiler");
+            return false;
+        }
+
+        File output = new File(outputPath);
+        if (!output.isDirectory() && !output.mkdirs())
+        {
+            System.out.println("could not create screenshot directory");
+            return false;
+        }
+
+        // Narrow the real list to the prepared forum so the screenshot contains
+        // no unrelated chat titles or previews.
+        Displayable before = app.current();
+        if (!app.press("Filter loaded")) { return false; }
+        app.awaitChange(before, 5000);
+        if (!app.type(forumTitle)) { return false; }
+        before = app.current();
+        if (!app.press("Apply")) { return false; }
+        app.awaitChange(before, 5000);
+        DialogListScreen dialogScreen = dialogScreen(app);
+        if (dialogScreen == null || dialogScreen.dialogCount() < 1)
+        {
+            System.out.println("forum filter did not isolate the row");
+            return false;
+        }
+        boolean selectedForum = false;
+        for (int i = 0; i < dialogScreen.dialogCount(); i++)
+        {
+            if (samePeer(dialogScreen.selectedPeer(), forum))
+            {
+                selectedForum = true;
+                break;
+            }
+            app.key(Canvas.KEY_NUM8);
+            Thread.sleep(60);
+        }
+        if (!selectedForum)
+        {
+            System.out.println("forum filter matches did not contain the peer");
+            return false;
+        }
+        captureCanvas(dialogScreen, new File(output,
+                "forum-dialog-list-concealed.png"), 3);
+
+        before = app.current();
+        if (!app.press("Open")) { return false; }
+        app.awaitChange(before, 10000);
+        TopicListScreen topicScreen = awaitTopicScreen(app, 60000);
+        if (topicScreen == null || !selectTopic(app, topicScreen, topicTitle))
+        {
+            System.out.println("topic list did not expose the prepared topic");
+            return false;
+        }
+        ForumTopic uiTopic = topicScreen.selectedTopic();
+        if (uiTopic == null
+                || !concealedPreview(uiTopic.lastMessage, marker, secret))
+        {
+            System.out.println("topic row disclosed the spoiler");
+            return false;
+        }
+        captureCanvas(topicScreen, new File(output,
+                "forum-topic-list-concealed.png"), 3);
+
+        before = app.current();
+        if (!app.press("Open")) { return false; }
+        app.awaitChange(before, 10000);
+        if (!app.awaitCommand("Older", 60000)) { return false; }
+        Message received = awaitMessage(app, marker,
+                new int[] { MessageEntity.SPOILER }, 60000);
+        if (received == null) { return false; }
+        ChatScreen chat = (ChatScreen) app.current();
+        chat.focusMessage(received.id);
+        Thread.sleep(300);
+        if (!chat.hasConcealedSpoilers(received.id)
+                || !app.awaitCommand("Reveal spoiler", 5000))
+        {
+            System.out.println("topic chat did not conceal the spoiler");
+            return false;
+        }
+        int lines = chat.transcriptLineCount();
+        captureCanvas(chat, new File(output, "forum-chat-concealed.png"), 3);
+        if (!app.press("Reveal spoiler")) { return false; }
+        Thread.sleep(300);
+        if (!chat.isSpoilerRevealed(received.id)
+                || chat.transcriptLineCount() != lines)
+        {
+            System.out.println("forum reveal changed layout");
+            return false;
+        }
+        captureCanvas(chat, new File(output, "forum-chat-revealed.png"), 3);
+
+        System.out.println("FORUM SPOILER E2E PASS"
+                + " messageId=" + received.id
+                + " topicId=" + topic.id
+                + " output=" + output.getAbsolutePath());
+        return true;
+    }
+
+    private static Dialog findDialog(Dialog[] dialogs, String title)
+    {
+        if (dialogs == null) { return null; }
+        for (int i = 0; i < dialogs.length; i++)
+        {
+            Dialog dialog = dialogs[i];
+            if (dialog != null && title.equals(dialog.title().trim()))
+            {
+                return dialog;
+            }
+        }
+        return null;
+    }
+
+    private static ForumTopic findTopic(ForumTopic[] topics, String title)
+    {
+        if (topics == null) { return null; }
+        for (int i = 0; i < topics.length; i++)
+        {
+            ForumTopic topic = topics[i];
+            if (topic != null && title.equals(topic.title.trim())) { return topic; }
+        }
+        return null;
+    }
+
+    private static boolean concealedPreview(String preview, String marker,
+                                             String secret)
+    {
+        return preview != null && preview.indexOf(marker) >= 0
+                && preview.indexOf(secret) < 0 && preview.indexOf('*') >= 0;
+    }
+
+    private static Dialog awaitDialogPreview(EmulatorHarness app, Peer peer,
+                                             String marker, int timeoutMs)
+            throws Exception
+    {
+        Field field = tg.app.TgMidlet.class.getDeclaredField("dialogs");
+        field.setAccessible(true);
+        for (int waited = 0; waited < timeoutMs; waited += 250)
+        {
+            Dialog[] rows = (Dialog[]) field.get(app.application());
+            for (int i = 0; rows != null && i < rows.length; i++)
+            {
+                Dialog row = rows[i];
+                if (row != null && samePeer(row.peer, peer)
+                        && row.lastMessage != null
+                        && row.lastMessage.indexOf(marker) >= 0)
+                {
+                    return row;
+                }
+            }
+            Thread.sleep(250);
+        }
+        return null;
+    }
+
+    private static TopicListScreen awaitTopicScreen(EmulatorHarness app,
+                                                     int timeoutMs)
+            throws Exception
+    {
+        for (int waited = 0; waited < timeoutMs; waited += 250)
+        {
+            if (app.current() instanceof TopicListScreen)
+            {
+                TopicListScreen screen = (TopicListScreen) app.current();
+                if (screen.topicCount() > 0) { return screen; }
+            }
+            Thread.sleep(250);
+        }
+        return null;
+    }
+
+    private static boolean selectTopic(EmulatorHarness app,
+                                       TopicListScreen screen, String title)
+            throws Exception
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            ForumTopic selected = screen.selectedTopic();
+            if (selected != null && title.equals(selected.title.trim()))
+            {
+                return true;
+            }
+            app.key(Canvas.KEY_NUM8);
+            Thread.sleep(60);
+        }
+        return false;
+    }
+
+    private static boolean samePeer(Peer one, Peer two)
+    {
+        return one != null && two != null
+                && one.kind == two.kind && one.id == two.id;
+    }
+
+    private static Message awaitMessage(EmulatorHarness app, String marker,
+                                        int[] requiredTypes, int timeoutMs)
+            throws Exception
+    {
+        Message candidate = null;
+        for (int waited = 0; waited < timeoutMs; waited += 250)
+        {
+            Displayable current = app.current();
+            if (current instanceof ChatScreen)
+            {
+                Message[] messages = ((ChatScreen) current).messages();
+                for (int i = 0; i < messages.length; i++)
+                {
+                    Message message = messages[i];
+                    if (message != null && message.text != null
+                            && message.text.indexOf(marker) >= 0)
+                    {
+                        candidate = message;
+                        if (hasEntityTypes(message.entities, requiredTypes))
+                        {
+                            return message;
+                        }
+                    }
+                }
+            }
+            Thread.sleep(250);
+        }
+        if (candidate != null)
+        {
+            StringBuffer types = new StringBuffer();
+            MessageEntity[] entities = candidate.entities;
+            for (int i = 0; entities != null && i < entities.length; i++)
+            {
+                if (i > 0) { types.append(','); }
+                types.append(entities[i].type);
+            }
+            System.out.println("timed out waiting for authoritative entities;"
+                    + " received types=" + types);
+        }
+        return candidate;
+    }
+
+    private static MessageEntity[] styleEntities(String text)
+    {
+        MessageEntity[] entities = new MessageEntity[8];
+        int count = 0;
+        count = add(entities, count, MessageEntity.BOLD, text, "Bold");
+        count = add(entities, count, MessageEntity.ITALIC, text, "Italic");
+        count = add(entities, count, MessageEntity.UNDERLINE, text, "Underline");
+        count = add(entities, count, MessageEntity.STRIKE, text, "Strike");
+        count = add(entities, count, MessageEntity.CODE, text, "Code");
+        count = add(entities, count, MessageEntity.BOLD, text, "Combo");
+        count = add(entities, count, MessageEntity.ITALIC, text, "Combo");
+        count = add(entities, count, MessageEntity.UNDERLINE, text, "Combo");
+        return entities;
+    }
+
+    private static MessageEntity[] quoteEntities(String text)
+    {
+        MessageEntity[] entities = new MessageEntity[2];
+        int count = 0;
+        count = add(entities, count, MessageEntity.BLOCKQUOTE, text,
+                "Quoted line");
+        add(entities, count, MessageEntity.PRE, text, "pre_value();");
+        return entities;
+    }
+
+    private static MessageEntity[] spoilerEntities(String text)
+    {
+        MessageEntity[] entities = new MessageEntity[2];
+        int count = 0;
+        count = add(entities, count, MessageEntity.SPOILER, text,
+                "secret https://example.com");
+        add(entities, count, MessageEntity.URL, text,
+                "https://example.com");
+        return entities;
+    }
+
+    /** Short, unique and deliberately free of digits that look like a phone. */
+    private static String marker()
+    {
+        long value = System.currentTimeMillis() / 1000L;
+        StringBuffer out = new StringBuffer("E2E");
+        for (int i = 0; i < 6; i++)
+        {
+            out.append((char) ('A' + (int) (value % 26L)));
+            value /= 26L;
+        }
+        return out.toString();
+    }
+
+    private static int add(MessageEntity[] entities, int count, int type,
+                           String text, String value)
+    {
+        int offset = text.indexOf(value);
+        if (offset < 0) { throw new IllegalArgumentException(value); }
+        MessageEntity entity = new MessageEntity();
+        entity.type = type;
+        entity.offset = offset;
+        entity.length = value.length();
+        entities[count] = entity;
+        return count + 1;
+    }
+
+    private static byte[] formattedSend(Peer peer, String text, long randomId,
+                                        MessageEntity[] entities)
+    {
+        return formattedSend(peer, text, randomId, entities, 0);
+    }
+
+    private static byte[] formattedSend(Peer peer, String text, long randomId,
+                                        MessageEntity[] entities,
+                                        int threadRootId)
+    {
+        TlWriter writer = new TlWriter(text.length() * 3 + 160);
+        writer.writeInt(Api.MESSAGES_SEND_MESSAGE);
+        boolean inThread = threadRootId > ForumTopic.GENERAL_ID;
+        writer.writeInt((1 << 3) | (inThread ? 1 : 0));
+        Requests.writeInputPeer(writer, peer);
+        if (inThread)
+        {
+            writer.writeInt(Api.INPUT_REPLY_TO_MESSAGE);
+            writer.writeInt(1);              // flags.0: top_msg_id present
+            writer.writeInt(threadRootId);   // reply_to_msg_id
+            writer.writeInt(threadRootId);   // top_msg_id
+        }
+        writer.writeString(text);
+        writer.writeLong(randomId);
+        writer.writeVectorHeader(entities.length);
+        for (int i = 0; i < entities.length; i++)
+        {
+            writeFormattingEntity(writer, entities[i]);
+        }
+        return writer.toByteArray();
+    }
+
+    private static void writeFormattingEntity(TlWriter writer,
+                                              MessageEntity entity)
+    {
+        int constructor;
+        if (entity.type == MessageEntity.BOLD)
+        {
+            constructor = Api.MESSAGE_ENTITY_BOLD;
+        }
+        else if (entity.type == MessageEntity.ITALIC)
+        {
+            constructor = Api.MESSAGE_ENTITY_ITALIC;
+        }
+        else if (entity.type == MessageEntity.UNDERLINE)
+        {
+            constructor = Api.MESSAGE_ENTITY_UNDERLINE;
+        }
+        else if (entity.type == MessageEntity.STRIKE)
+        {
+            constructor = Api.MESSAGE_ENTITY_STRIKE;
+        }
+        else if (entity.type == MessageEntity.CODE)
+        {
+            constructor = Api.MESSAGE_ENTITY_CODE;
+        }
+        else if (entity.type == MessageEntity.SPOILER)
+        {
+            constructor = Api.MESSAGE_ENTITY_SPOILER;
+        }
+        else if (entity.type == MessageEntity.URL)
+        {
+            constructor = Api.MESSAGE_ENTITY_URL;
+        }
+        else if (entity.type == MessageEntity.PRE)
+        {
+            writer.writeInt(Api.MESSAGE_ENTITY_PRE);
+            writer.writeInt(entity.offset);
+            writer.writeInt(entity.length);
+            writer.writeString("");
+            return;
+        }
+        else if (entity.type == MessageEntity.BLOCKQUOTE)
+        {
+            writer.writeInt(Api.MESSAGE_ENTITY_BLOCKQUOTE);
+            writer.writeInt(0);              // flags: expanded, not collapsed
+            writer.writeInt(entity.offset);
+            writer.writeInt(entity.length);
+            return;
+        }
+        else
+        {
+            throw new IllegalArgumentException("entity " + entity.type);
+        }
+        writer.writeInt(constructor);
+        writer.writeInt(entity.offset);
+        writer.writeInt(entity.length);
+    }
+
+    private static boolean hasEntityTypes(MessageEntity[] entities,
+                                          int[] required)
+    {
+        if (entities == null) { return false; }
+        for (int i = 0; i < required.length; i++)
+        {
+            boolean found = false;
+            for (int j = 0; j < entities.length; j++)
+            {
+                if (entities[j] != null && entities[j].type == required[i])
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) { return false; }
+        }
+        return true;
+    }
+
+    private static Telegram telegram(EmulatorHarness app) throws Exception
+    {
+        Field field = tg.app.TgMidlet.class.getDeclaredField("telegram");
+        field.setAccessible(true);
+        return (Telegram) field.get(app.application());
+    }
+
+    private static UpdateSync updateSync(Telegram telegram) throws Exception
+    {
+        Field field = Telegram.class.getDeclaredField("updates");
+        field.setAccessible(true);
+        return (UpdateSync) field.get(telegram);
+    }
+
+    private static byte[] invoke(Telegram telegram, byte[] query)
+            throws Exception
+    {
+        Method method = Telegram.class.getDeclaredMethod("invoke",
+                new Class[] { byte[].class });
+        method.setAccessible(true);
+        try
+        {
+            return (byte[]) method.invoke(telegram, new Object[] { query });
+        }
+        catch (InvocationTargetException wrapped)
+        {
+            Throwable cause = wrapped.getCause();
+            if (cause instanceof Exception) { throw (Exception) cause; }
+            throw wrapped;
+        }
+    }
+
+    private static void captureCanvas(Canvas canvas, File file, int scale)
+            throws Exception
+    {
+        int width = canvas.getWidth();
+        int height = canvas.getHeight();
+        J2SEMutableImage image = new J2SEMutableImage(width, height);
+        Method paint = null;
+        Class type = canvas.getClass();
+        while (type != null && paint == null)
+        {
+            try
+            {
+                paint = type.getDeclaredMethod("paint", new Class[] {
+                        javax.microedition.lcdui.Graphics.class });
+            }
+            catch (NoSuchMethodException missing) { type = type.getSuperclass(); }
+        }
+        if (paint == null) { throw new NoSuchMethodException("Canvas.paint"); }
+        paint.setAccessible(true);
+        paint.invoke(canvas, new Object[] { image.getGraphics() });
+
+        int[] pixels = new int[width * height];
+        image.getRGB(pixels, 0, width, 0, 0, width, height);
+        BufferedImage nativeImage = new BufferedImage(
+                width, height, BufferedImage.TYPE_INT_RGB);
+        nativeImage.setRGB(0, 0, width, height, pixels, 0, width);
+        BufferedImage scaled = new BufferedImage(width * scale, height * scale,
+                BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = scaled.createGraphics();
+        try
+        {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            graphics.drawImage(nativeImage, 0, 0,
+                    scaled.getWidth(), scaled.getHeight(), null);
+        }
+        finally { graphics.dispose(); }
+        ImageIO.write(scaled, "png", file);
     }
 
     /** Held for the run, so nothing can collect it. */

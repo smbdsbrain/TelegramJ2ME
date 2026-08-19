@@ -234,6 +234,14 @@ public final class Message
         {
             return media == null ? "" : media.label;
         }
-        return media == null ? text : text + " " + media.label;
+        String visible = visibleText(false);
+        return media == null ? visible : visible + " " + media.label;
+    }
+
+    /** Text for a plain widget, optionally exposing Telegram spoilers. */
+    public String visibleText(boolean revealSpoilers)
+    {
+        String value = text == null ? "" : text;
+        return revealSpoilers ? value : MessageEntity.conceal(value, entities);
     }
 }

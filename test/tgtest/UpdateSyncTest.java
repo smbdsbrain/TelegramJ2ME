@@ -150,9 +150,13 @@ public final class UpdateSyncTest implements Test
         waitForState(sync, UpdateSync.LIVE);
         Assert.equal("initial recovery called", 1, rpc.differenceCalls);
 
-        sync.accept(shortMessage(1, 200, "one", 11, 1, 21));
+        sync.accept(shortMessageWithSpoiler(1, 200, "one", 11, 1, 21));
         capture.waitMessages(1);
         Assert.equal("exact text", "one", capture.lastMessage.text);
+        Assert.equal("short update retains formatting entity", 1,
+                capture.lastMessage.entities.length);
+        Assert.equal("short update spoiler type", tg.api.MessageEntity.SPOILER,
+                capture.lastMessage.entities[0].type);
         Assert.equal("exact pts", 11, waitPts(sync, 11));
 
         sync.accept(shortMessage(1, 200, "duplicate", 11, 1, 21));
@@ -818,6 +822,25 @@ public final class UpdateSyncTest implements Test
         w.writeInt(pts);
         w.writeInt(count);
         w.writeInt(date);
+        return w.toByteArray();
+    }
+
+    private static byte[] shortMessageWithSpoiler(int id, long userId,
+            String text, int pts, int count, int date)
+    {
+        TlWriter w = new TlWriter(80);
+        w.writeInt(Api.UPDATE_SHORT_MESSAGE);
+        w.writeInt(1 << 7);                  // entities
+        w.writeInt(id);
+        w.writeLong(userId);
+        w.writeString(text);
+        w.writeInt(pts);
+        w.writeInt(count);
+        w.writeInt(date);
+        w.writeVectorHeader(1);
+        w.writeInt(Api.MESSAGE_ENTITY_SPOILER);
+        w.writeInt(0);
+        w.writeInt(text.length());
         return w.toByteArray();
     }
 

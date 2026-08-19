@@ -1231,6 +1231,9 @@ public final class UpdateSync
                 obj.num(Api.F_UPDATE_SHORT_MESSAGE__USER_ID)));
         message.sender = message.outgoing ? peers.self() : message.peer;
         message.text = obj.strOrEmpty(Api.F_UPDATE_SHORT_MESSAGE__MESSAGE);
+        message.entities = MessageEntity.fromOrDetect(
+                obj.vec(Api.F_UPDATE_SHORT_MESSAGE__ENTITIES), message.text,
+                MemoryBudget.messageEntityLimit());
         return message;
     }
 
@@ -1245,6 +1248,9 @@ public final class UpdateSync
         message.sender = peers.resolve(new Peer(Peer.USER,
                 obj.num(Api.F_UPDATE_SHORT_CHAT_MESSAGE__FROM_ID)));
         message.text = obj.strOrEmpty(Api.F_UPDATE_SHORT_CHAT_MESSAGE__MESSAGE);
+        message.entities = MessageEntity.fromOrDetect(
+                obj.vec(Api.F_UPDATE_SHORT_CHAT_MESSAGE__ENTITIES), message.text,
+                MemoryBudget.messageEntityLimit());
         return message;
     }
 

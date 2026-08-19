@@ -33,6 +33,7 @@ public final class CacheIntegrityTest implements Test
 {
     private static final String DIALOGS = "tgdialogcache";
     private static final String HISTORY = "tghistorycache";
+    private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
 
     private static final long ACCOUNT = 31337L;
@@ -50,6 +51,7 @@ public final class CacheIntegrityTest implements Test
         versionTwoHistoryMigratesOnRead();
         threadTranscriptsAreCachedApart();
         dialogCacheCarriesTheForumFlag();
+        oldDialogPreviewsAreDiscardedForPrivacy();
         aDamagedRecordIsRemovedRatherThanLeftToFailAgain();
         anotherAccountCacheIsNeverShown();
         theOtherEnvironmentCacheIsNeverShown();
@@ -136,7 +138,11 @@ public final class CacheIntegrityTest implements Test
             entity.type = MessageEntity.EMAIL;
             entity.offset = 0;
             entity.length = withEntity.text.length();
-            withEntity.entities = new MessageEntity[] { entity };
+            MessageEntity spoiler = new MessageEntity();
+            spoiler.type = MessageEntity.SPOILER;
+            spoiler.offset = 0;
+            spoiler.length = withEntity.text.length();
+            withEntity.entities = new MessageEntity[] { spoiler, entity };
             withEntity.editDate = 1235;
             cache.saveHistory(ACCOUNT, false, peer(8), 0,
                     new Message[] { withEntity });
@@ -151,8 +157,10 @@ public final class CacheIntegrityTest implements Test
             Assert.isTrue("the intact conversation still loads", eight != null);
             Assert.equal("with its message", "eight@example.test",
                     eight.messages()[0].text);
-            Assert.equal("entity survives cache round trip", 1,
+            Assert.equal("overlapping entities survive cache round trip", 2,
                     eight.messages()[0].entities.length);
+            Assert.equal("spoiler type survives cache round trip",
+                    MessageEntity.SPOILER, eight.messages()[0].entities[0].type);
             Assert.equal("edit date survives cache round trip", 1235,
                     eight.messages()[0].editDate);
             Assert.equal("and the damaged one was dropped", 1,
@@ -259,8 +267,8 @@ public final class CacheIntegrityTest implements Test
 
     /**
      * The forum flag is what routes an offline open to the topic screen, so
-     * the dialog cache has to carry it - and a v1 record without it still
-     * reads, as a plain chat.
+     * the current dialog cache has to carry it. Pre-privacy records are tested
+     * separately below and deliberately do not migrate.
      */
     private static void dialogCacheCarriesTheForumFlag() throws Exception
     {
@@ -281,6 +289,45 @@ public final class CacheIntegrityTest implements Test
             Assert.isTrue("the list loads", loaded != null);
             Assert.isTrue("and the forum flag survives",
                     loaded.dialogs()[0].peer.forum);
+        }
+        finally { EmulatorRecords.restore(); }
+    }
+
+    /**
+     * Dialog v1/v2 retained only a ready-to-paint string. If that string was
+     * written before spoiler redaction existed, no range metadata survives to
+     * distinguish a secret from ordinary text. Showing it while the network
+     * refreshes is a disclosure, so the privacy generation must drop it.
+     */
+    private static void oldDialogPreviewsAreDiscardedForPrivacy()
+            throws Exception
+    {
+        FaultyRecords rms = new FaultyRecords();
+        EmulatorRecords.swapIn(rms);
+        try
+        {
+            RmsConversationCache cache = new RmsConversationCache();
+            Dialog leaked = dialog(9);
+            leaked.lastMessage = "secret from an old spoiler";
+            cache.saveDialogs(ACCOUNT, false, new Dialog[] { leaked });
+            int id = rms.recordIds(DIALOGS)[0];
+            byte[] record = rms.peek(DIALOGS, id);
+            // The envelope version is outside the payload checksum. Re-label
+            // the otherwise current shape exactly as a v2 writer did.
+            record[4] = 0;
+            record[5] = 0;
+            record[6] = 0;
+            record[7] = 2;
+            rms.poke(DIALOGS, id, record);
+            rms.restart();
+
+            RmsConversationCache reopened = new RmsConversationCache();
+            Assert.isTrue("old unclassifiable preview is never shown",
+                    reopened.loadDialogs(ACCOUNT, false) == null);
+            Assert.equal("old dialog cache is removed", 0,
+                    rms.recordIds(DIALOGS).length);
+            Assert.equal("privacy invalidation is reported as a drop", 1,
+                    reopened.droppedRecords());
         }
         finally { EmulatorRecords.restore(); }
     }

@@ -41,6 +41,27 @@ public final class Dialog
 
     public boolean lastMessageOutgoing;
 
+    /**
+     * Adopt one authoritative message as this row's preview.
+     *
+     * Keep the privacy decision here rather than at each caller: a spoiler
+     * must be concealed before the text is clipped, cached or handed to the
+     * Canvas. The old dialog cache retained only this flattened string, so a
+     * caller that copied {@link Message#text} directly made the leak durable.
+     */
+    public void setPreview(Message message)
+    {
+        if (message == null)
+        {
+            lastMessage = "";
+            lastMessageOutgoing = false;
+            return;
+        }
+        lastMessage = clipPreview(message.summaryText());
+        date = message.date;
+        lastMessageOutgoing = message.outgoing;
+    }
+
     public String title()
     {
         return peer == null ? "?" : peer.title;

@@ -1189,9 +1189,7 @@ public final class Telegram
             Message last = findMessage(messages, entry.topMessageId, reference);
             if (last != null)
             {
-                entry.lastMessage = Dialog.clipPreview(last.summaryText());
-                entry.date = last.date;
-                entry.lastMessageOutgoing = last.outgoing;
+                entry.setPreview(last);
             }
             out[w++] = entry;
         }
@@ -1324,9 +1322,7 @@ public final class Telegram
             Message last = findMessage(messages, t.topMessageId, channel);
             if (last != null)
             {
-                t.lastMessage = Dialog.clipPreview(last.summaryText());
-                t.lastDate = last.date;
-                t.lastOutgoing = last.outgoing;
+                t.setPreview(last);
             }
             out[w++] = t;
         }

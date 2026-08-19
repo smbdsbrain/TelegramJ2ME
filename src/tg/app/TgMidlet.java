@@ -213,6 +213,8 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             new Command("View full text", Command.SCREEN, 2);
     private final Command cmdEntityActions =
             new Command("Links", Command.SCREEN, 2);
+    private final Command cmdRevealSpoiler =
+            new Command("Reveal spoiler", Command.SCREEN, 1);
     private final Command cmdOpenEntity = new Command("Select", Command.ITEM, 1);
     private final Command cmdOpenExternal =
             new Command("Open externally", Command.SCREEN, 1);
@@ -305,6 +307,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private ChatScreen editCommandScreen;
     private boolean editCommandVisible;
     private boolean commentsCommandVisible;
+    private boolean revealSpoilerCommandVisible;
     private TextBox composeBox;
     private List outboxList;
     private ReactionScreen reactionScreen;
@@ -1225,6 +1228,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                 && (d == chatScreen || d == fullTextBox))
         {
             showEntityPicker();
+        }
+        else if (c == cmdRevealSpoiler && d == chatScreen)
+        {
+            int messageId = chatScreen.focusedMessageId();
+            chatScreen.revealSpoilers(messageId);
+            updateFocusCommands(chatScreen);
         }
         else if (c == cmdOpenEntity && d == entityList)
         {
@@ -4231,8 +4240,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             editCommandScreen = screen;
             editCommandVisible = false;
             commentsCommandVisible = false;
+            revealSpoilerCommandVisible = false;
             screen.removeCommand(cmdEditMessage);
             screen.removeCommand(cmdOpenComments);
+            screen.removeCommand(cmdRevealSpoiler);
         }
         Message selected = null;
         int id = screen.focusedMessageId();
@@ -4259,6 +4270,14 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             if (comments) { screen.addCommand(cmdOpenComments); }
             else { screen.removeCommand(cmdOpenComments); }
             commentsCommandVisible = comments;
+        }
+        boolean reveal = selected != null
+                && screen.hasConcealedSpoilers(selected.id);
+        if (reveal != revealSpoilerCommandVisible)
+        {
+            if (reveal) { screen.addCommand(cmdRevealSpoiler); }
+            else { screen.removeCommand(cmdRevealSpoiler); }
+            revealSpoilerCommandVisible = reveal;
         }
     }
 
@@ -5316,9 +5335,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         if (message.id > row.topMessageId)
         {
             row.topMessageId = message.id;
-            row.lastMessage = Dialog.clipPreview(message.summaryText());
-            row.lastDate = message.date;
-            row.lastOutgoing = message.outgoing;
+            row.setPreview(message);
         }
         if (!message.outgoing)
         {
@@ -5395,9 +5412,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             message.read = true;
         }
         dialog.topMessageId = message.id;
-        dialog.lastMessage = Dialog.clipPreview(message.summaryText());
-        dialog.lastMessageOutgoing = message.outgoing;
-        dialog.date = message.date;
+        dialog.setPreview(message);
 
         boolean opened = belongsToOpenThread(message);
         if (!message.outgoing)
@@ -5454,9 +5469,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             edited.peer = dialogs[dialogAt].peer;
             if (dialogs[dialogAt].topMessageId == edited.id)
             {
-                dialogs[dialogAt].lastMessage = Dialog.clipPreview(
-                        edited.summaryText());
-                dialogs[dialogAt].lastMessageOutgoing = edited.outgoing;
+                dialogs[dialogAt].setPreview(edited);
             }
         }
         if (samePeer(openPeer, edited.peer))
@@ -5978,11 +5991,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     {
         entityMessage = selectedOpenMessage();
         if (entityMessage == null) { return; }
-        String text = entityMessage.text == null ? "" : entityMessage.text;
+        boolean revealed = chatScreen != null
+                && chatScreen.isSpoilerRevealed(entityMessage.id);
+        String text = entityMessage.visibleText(revealed);
         MessageEntity[] actions = entityMessage.ensureEntities();
         fullTextBox = new TextBox("Message #" + entityMessage.id, text,
                 Math.max(1, text.length()), TextField.ANY);
-        if (actions.length > 0)
+        if (hasVisibleEntityAction(entityMessage, actions, revealed))
         {
             fullTextBox.addCommand(cmdEntityActions);
         }
@@ -5999,12 +6014,19 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         }
         if (entityMessage == null) { return; }
         entityMessage.ensureEntities();
+        boolean revealed = chatScreen != null
+                && chatScreen.isSpoilerRevealed(entityMessage.id);
         MessageEntity[] candidates = new MessageEntity[entityMessage.entities.length];
         String[] labels = new String[entityMessage.entities.length];
         int count = 0;
         for (int i = 0; i < entityMessage.entities.length; i++)
         {
             MessageEntity entity = entityMessage.entities[i];
+            if (!revealed && MessageEntity.overlapsSpoiler(
+                    entityMessage.entities, entity.offset, entity.length))
+            {
+                continue;
+            }
             ExternalAction.Target target = ExternalAction.target(
                     entity, entityMessage.text);
             if (target == null) { continue; }
@@ -6021,6 +6043,23 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         entityList.addCommand(cmdBack);
         entityList.setCommandListener(this);
         pushScreen(entityList);
+    }
+
+    private static boolean hasVisibleEntityAction(Message message,
+                                                   MessageEntity[] entities,
+                                                   boolean spoilersRevealed)
+    {
+        for (int i = 0; i < entities.length; i++)
+        {
+            MessageEntity entity = entities[i];
+            if (entity == null || !entity.actionable()) { continue; }
+            if (spoilersRevealed || !MessageEntity.overlapsSpoiler(
+                    message.entities, entity.offset, entity.length))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String entityTypeName(int type)

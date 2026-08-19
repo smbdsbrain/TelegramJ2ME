@@ -223,6 +223,7 @@ updateShortMessage.out
 updateShortMessage.id
 updateShortMessage.user_id
 updateShortMessage.message
+updateShortMessage.entities
 updateShortMessage.pts
 updateShortMessage.pts_count
 updateShortMessage.date
@@ -231,6 +232,7 @@ updateShortChatMessage.id
 updateShortChatMessage.from_id
 updateShortChatMessage.chat_id
 updateShortChatMessage.message
+updateShortChatMessage.entities
 updateShortChatMessage.pts
 updateShortChatMessage.pts_count
 updateShortChatMessage.date
@@ -421,6 +423,22 @@ messageEntityMentionName.length
 messageEntityMentionName.user_id
 messageEntityPhone.offset
 messageEntityPhone.length
+messageEntityBold.offset
+messageEntityBold.length
+messageEntityItalic.offset
+messageEntityItalic.length
+messageEntityUnderline.offset
+messageEntityUnderline.length
+messageEntityStrike.offset
+messageEntityStrike.length
+messageEntityCode.offset
+messageEntityCode.length
+messageEntityPre.offset
+messageEntityPre.length
+messageEntityBlockquote.offset
+messageEntityBlockquote.length
+messageEntitySpoiler.offset
+messageEntitySpoiler.length
 
 auth.exportedAuthorization.id
 auth.exportedAuthorization.bytes

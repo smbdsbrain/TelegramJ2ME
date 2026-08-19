@@ -49,6 +49,12 @@
              which - if any - comes back messages.dialogsNotModified. Uses the
              profile's stored session but does not start the client. -Pages is
              the page size here. Lists dialogs and nothing else.
+    formatting sends one visual-entity fixture to Saved Messages, verifies
+             spoiler redaction/reveal against the real history, and writes
+             concealed/revealed Canvas screenshots to -ScreenshotDir.
+    forumspoiler sends a spoiler into -TopicTitle of the forum named by
+             -ChatTitle, verifies both list previews, and captures the dialog,
+             topic and chat screens to -ScreenshotDir.
     rc-identity, rc-sender, rc-receiver and rc-cleanup are private roles used by
              tools/rc-e2e.ps1 against an exact packaged normal or minified JAR.
              They exchange usernames only through -StateDir and never print
@@ -142,7 +148,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('probe', 'route', 'login', 'session', 'photos', 'minheap',
-                 'scroll', 'chats', 'hashprobe', 'navigate', 'rc-identity',
+                 'scroll', 'chats', 'hashprobe', 'navigate', 'formatting',
+                 'forumspoiler', 'rc-identity',
                  'rc-sender', 'rc-receiver', 'rc-cleanup')]
     [string]$Scenario = 'probe',
     [string]$Mode = 'Auto',
@@ -150,6 +157,7 @@ param(
     [string]$CodeFile = '',
     [string]$SendText = '',
     [string]$ChatTitle = '',
+    [string]$TopicTitle = '',
     [int]$Pages = 40,
     [switch]$SingleSocket,
     [ValidateSet('on', 'off')][string]$Pictures = 'on',
@@ -162,6 +170,7 @@ param(
     [switch]$SkipBuild,
     [string]$ArtifactName = '',
     [string]$StateDir = '',
+    [string]$ScreenshotDir = '',
     [ValidateSet('', 'a', 'b')][string]$Role = '',
     [string[]]$JavaArgs = @()
 )
@@ -201,6 +210,15 @@ if ($isRcRole -and (-not $ArtifactName -or -not $StateDir -or -not $Role)) {
 }
 if ($isRcRole -and -not $SkipBuild) {
     Write-Bad "$Scenario drives an exact packaged JAR and requires -SkipBuild"
+    exit 1
+}
+if ($Scenario -eq 'formatting' -and -not $ScreenshotDir) {
+    Write-Bad "-Scenario formatting needs -ScreenshotDir"
+    exit 1
+}
+if ($Scenario -eq 'forumspoiler' -and
+        (-not $ChatTitle -or -not $TopicTitle -or -not $ScreenshotDir)) {
+    Write-Bad "-Scenario forumspoiler needs -ChatTitle, -TopicTitle and -ScreenshotDir"
     exit 1
 }
 
@@ -281,6 +299,8 @@ switch ($Scenario) {
     'chats'   { $driverArgs += @("$Pages", $Pictures) }
     'hashprobe' { $driverArgs += "$Pages" }
     'navigate'  { $driverArgs += @($Mode, $ChatTitle) }
+    'formatting' { $driverArgs += $ScreenshotDir }
+    'forumspoiler' { $driverArgs += @($ChatTitle, $TopicTitle, $ScreenshotDir) }
     'rc-identity' { $driverArgs = @('identity', $StateDir, $Role) }
     'rc-sender'   { $driverArgs = @('sender', $StateDir, $Role) }
     'rc-receiver' { $driverArgs = @('receiver', $StateDir, $Role) }

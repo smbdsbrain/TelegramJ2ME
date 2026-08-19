@@ -39,6 +39,20 @@ public final class ForumTopic
 
     public boolean lastOutgoing;
 
+    /** Entity-aware preview shared by initial pages and live topic updates. */
+    public void setPreview(Message message)
+    {
+        if (message == null)
+        {
+            lastMessage = "";
+            lastOutgoing = false;
+            return;
+        }
+        lastMessage = Dialog.clipPreview(message.summaryText());
+        lastDate = message.date;
+        lastOutgoing = message.outgoing;
+    }
+
     /**
      * Read a {@code forumTopic} constructor.
      *
