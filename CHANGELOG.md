@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The generated Telegram API schema now targets layer 225, pinned to the final
+  official Telegram Desktop layer-225 TL commit and converted to JSON offline.
+  The public JSON endpoint's exact older hash is monitored without allowing an
+  unknown schema change to pass.
+- Exact packaged E2E accepts current semantic-version artifact names. The live
+  forum gate deletes and verifies both probe messages even after a failed run.
+
+### Testing
+
+- Live production config, dialogs, reactions and forum flows pass at layer 225.
+  Normal and minified packaged JARs also pass the two-account flow under both
+  ordinary and fragmented slow-network transport, with server cleanup
+  confirmed after every run.
+
 ## 1.2.0
 
 ### Added

@@ -83,12 +83,19 @@ public final class LiveConfigTest
             System.out.println();
             System.out.println("re-parsing via the generated TL table...");
             tg.tl.TlObj cfg = tg.tl.TlParser.parse(new TlReader(result));
+            int parsedDc = cfg.intAt(tg.api.Api.F_CONFIG__THIS_DC);
+            tg.tl.TlObj[] parsedOptions =
+                    cfg.vec(tg.api.Api.F_CONFIG__DC_OPTIONS);
             System.out.println("  constructor  = 0x" + Integer.toHexString(cfg.id));
             System.out.println("  fields       = " + cfg.nums.length);
-            System.out.println("  this_dc      = " + cfg.intAt(4 + 1));
-            System.out.println("  dc_options   = " + cfg.vec(6).length + " entries");
+            System.out.println("  this_dc      = " + parsedDc);
+            System.out.println("  dc_options   = " + parsedOptions.length + " entries");
             System.out.println("  table covers " + tg.api.TlSchema.constructorCount()
                                + " constructors");
+            if (cfg.id != CONFIG || parsedDc != dcId || parsedOptions.length == 0)
+            {
+                throw new AssertionError("generated Config parse disagrees with server");
+            }
 
             System.out.println();
             System.out.println("=== SUCCESS: encrypted MTProto 2.0 session works ===");

@@ -70,6 +70,9 @@ classes. It obtains both usernames from authorized self-profile screens, keeps
 them under ignored `local/`, verifies the profiles are distinct without
 printing identities, and deletes them after the run.
 
+The script name is retained for compatibility, but its artifact validation
+accepts any `TelegramJ2ME-<semver>[-min]` release candidate, not only 1.0 RCs.
+
 ## Cutting a release after device approval
 
 1. Bump `$AppVersion` in [tools/build.ps1](../tools/build.ps1). It is the single

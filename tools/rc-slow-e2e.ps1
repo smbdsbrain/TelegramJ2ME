@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run exact packaged RC E2E under a small heap and deterministic slow network.
+    Run exact packaged release E2E under a small heap and deterministic slow network.
 
 .DESCRIPTION
     Uses the same two saved production profiles and cleanup contract as

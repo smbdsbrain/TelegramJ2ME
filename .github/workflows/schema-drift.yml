@@ -2,8 +2,8 @@ name: Schema drift
 
 # Ask Telegram whether the pinned layer and schema are still current.
 #
-# Deliberately not part of CI. schema/api.json, schema/mtproto.json and
-# Layer.LAYER are pinned so that a clone builds the same JAR today and in two
+# Deliberately not part of CI. schema/api.tl, its derived api.json,
+# schema/mtproto.json and Layer.LAYER are pinned so that a clone builds the same JAR today and in two
 # years; a build step that downloaded the *current* schema would break every
 # clone the day the layer changes. So the network lives here instead: on a
 # schedule, on demand, and nowhere near a pull request.
@@ -110,7 +110,7 @@ jobs:
                        --json number --jq '[.[].number] | first // empty' 2>/dev/null || true)
           if [ -n "$existing" ]; then
             gh issue close "$existing" \
-              --comment 'The pinned layer and both schema files match the official endpoints again.'
+              --comment 'The pinned reviewed schema now matches the production layer; any documented public JSON lag is exact and monitored.'
             echo "closed #$existing"
           else
             echo "nothing to close"

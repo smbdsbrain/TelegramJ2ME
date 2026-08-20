@@ -4,12 +4,10 @@ Report whether Telegram's current layer and schema still match the pinned copy.
 
 Why this exists
 ---------------
-schema/api.json and schema/mtproto.json are verbatim downloads, and
-src/tg/mt/Layer.java pins the layer number by hand because the JSON does not
-carry one. The pairing is therefore asserted, not verified: nothing in the
-build notices when Telegram moves on, and getting it wrong is not a build
-error - the server simply interprets our requests against a layer we are not
-speaking.
+schema/api.json is derived offline from the reviewed schema/api.tl source,
+schema/mtproto.json remains a verbatim public download, and src/tg/mt/Layer.java
+pins the layer number.  The public API JSON endpoint may lag the server's layer;
+the provenance record names the one exact lagging hash that is acceptable.
 
 This script is the check that would otherwise depend on a maintainer
 remembering to look. It is deliberately *not* part of the build:
@@ -44,6 +42,7 @@ Usage:
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -104,6 +103,19 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def load_tl_importer(repo):
+    path = repo / "tools" / "import-tl-schema.py"
+    if not path.exists():
+        raise Malformed("%s is missing" % path)
+    try:
+        spec = importlib.util.spec_from_file_location("import_tl_schema", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception as exc:
+        raise Malformed("cannot load %s: %s" % (path, exc))
+
+
 def read_pinned(repo=REPO):
     """The layer, schema hashes and counts this repository currently ships."""
     layer_java = repo / "src" / "tg" / "mt" / "Layer.java"
@@ -112,7 +124,7 @@ def read_pinned(repo=REPO):
     if not m:
         raise Malformed("no LAYER constant in %s" % layer_java)
 
-    pinned = {"layer": int(m.group(1)), "schemas": {}}
+    pinned = {"layer": int(m.group(1)), "schemas": {}, "api_source": None}
     for name in SCHEMA_URLS:
         path = repo / "schema" / name
         data = path.read_bytes()
@@ -122,6 +134,27 @@ def read_pinned(repo=REPO):
             "bytes": len(data),
             "constructors": counts[0],
             "methods": counts[1],
+        }
+
+    source_path = repo / "schema" / "api.tl"
+    if source_path.exists():
+        try:
+            source_data = source_path.read_bytes()
+            source_text = source_data.decode("utf-8")
+            rendered = load_tl_importer(repo).render_tl(source_text)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise Malformed("cannot read pinned api.tl: %s" % exc)
+        counts = count_schema(rendered, "api.tl conversion")
+        marker = re.search(r"^//\s*LAYER\s+(\d+)\s*$", source_text,
+                           re.MULTILINE)
+        pinned["api_source"] = {
+            "sha256": sha256(source_data),
+            "bytes": len(source_data),
+            "constructors": counts[0],
+            "methods": counts[1],
+            "layer": int(marker.group(1)) if marker else None,
+            "derived_sha256": sha256(rendered),
+            "matches_api_json": rendered == (repo / "schema" / "api.json").read_bytes(),
         }
     return pinned
 
@@ -172,7 +205,12 @@ def parse_upstream_record(text):
     refresh - files replaced, table not updated, or the reverse - visible
     without a network round trip.
     """
-    record = {"layer": None, "schemas": {}}
+    record = {
+        "layer": None,
+        "schemas": {},
+        "api_source": {},
+        "accepted_live_sha256": {},
+    }
 
     m = re.search(r"^##\s+Layer\s+(\d+)\s*$", text, re.MULTILINE)
     if m:
@@ -209,6 +247,28 @@ def parse_upstream_record(text):
                     entry["constructors"] = int(cm.group(1))
                     entry["methods"] = int(cm.group(2))
 
+    source_hash = re.search(
+        r"^Pinned API TL SHA-256:\s*`([0-9a-fA-F]{64})`\s*$",
+        text, re.MULTILINE)
+    source_commit = re.search(
+        r"^Pinned API TL commit:\s*`([0-9a-fA-F]{40})`\s*$",
+        text, re.MULTILINE)
+    source_contents = re.search(
+        r"^Pinned API TL contents:\s*(\d+)\s+constructors?,\s*"
+        r"(\d+)\s+methods?\s*$", text, re.MULTILINE)
+    lag_hash = re.search(
+        r"^Known lagging API endpoint SHA-256:\s*`([0-9a-fA-F]{64})`\s*$",
+        text, re.MULTILINE)
+    if source_hash:
+        record["api_source"]["sha256"] = source_hash.group(1).lower()
+    if source_commit:
+        record["api_source"]["commit"] = source_commit.group(1).lower()
+    if source_contents:
+        record["api_source"]["constructors"] = int(source_contents.group(1))
+        record["api_source"]["methods"] = int(source_contents.group(2))
+    if lag_hash:
+        record["accepted_live_sha256"]["api.json"] = lag_hash.group(1).lower()
+
     return record
 
 
@@ -239,6 +299,32 @@ def check_pinned_record(pinned, record):
         if "methods" in claimed and claimed["methods"] != actual["methods"]:
             problems.append("%s has %d methods but UPSTREAM.md records %d"
                             % (name, actual["methods"], claimed["methods"]))
+
+    source = pinned.get("api_source")
+    if source is not None:
+        claimed = record.get("api_source", {})
+        if not claimed:
+            problems.append("UPSTREAM.md records nothing about api.tl")
+        elif claimed.get("sha256") != source["sha256"]:
+            problems.append("api.tl hashes %s but UPSTREAM.md records %s"
+                            % (source["sha256"], claimed.get("sha256", "nothing")))
+        if claimed.get("constructors") != source["constructors"]:
+            problems.append("api.tl has %d constructors but UPSTREAM.md records %s"
+                            % (source["constructors"],
+                               claimed.get("constructors", "nothing")))
+        if claimed.get("methods") != source["methods"]:
+            problems.append("api.tl has %d methods but UPSTREAM.md records %s"
+                            % (source["methods"], claimed.get("methods", "nothing")))
+        if not claimed.get("commit"):
+            problems.append("UPSTREAM.md records no full Telegram Desktop commit for api.tl")
+        if source["layer"] != pinned["layer"]:
+            problems.append("api.tl marks layer %s but Layer.java pins layer %d"
+                            % (source["layer"], pinned["layer"]))
+        if not source["matches_api_json"]:
+            problems.append("api.json is not the deterministic conversion of api.tl")
+        lag = record.get("accepted_live_sha256", {}).get("api.json")
+        if not lag:
+            problems.append("UPSTREAM.md records no known lagging API endpoint SHA-256")
 
     return problems
 
@@ -298,7 +384,8 @@ def check(repo=REPO, fetch=None, online=False):
     report["pinned"] = pinned
 
     upstream_md = (repo / "schema" / "UPSTREAM.md").read_text(encoding="utf-8")
-    record_problems = check_pinned_record(pinned, parse_upstream_record(upstream_md))
+    record = parse_upstream_record(upstream_md)
+    record_problems = check_pinned_record(pinned, record)
     if record_problems:
         report["problems"].extend(record_problems)
         report["status"] = STATUS_PINNED_MISMATCH
@@ -343,9 +430,20 @@ def check(repo=REPO, fetch=None, online=False):
             report["problems"].append("%s check malformed: %s" % (name, exc))
 
     layer_moved = live["layer"] is not None and live["layer"] != pinned["layer"]
+    known_lag = record.get("accepted_live_sha256", {}).get("api.json")
+    api_live = live["schemas"].get("api.json")
+    api_hash_is_known_lag = bool(
+        api_live and known_lag and api_live["sha256"] == known_lag)
+    # When config.json is unavailable, the exact documented old hash is not
+    # evidence of drift either: deciding whether its allowance still applies
+    # requires the layer answer that is missing. STATUS_UNAVAILABLE wins.
+    api_is_known_lag = bool(
+        api_hash_is_known_lag
+        and (live["layer"] is None or live["layer"] == pinned["layer"]))
     schemas_moved = sorted(
         name for name, entry in live["schemas"].items()
-        if entry["sha256"] != pinned["schemas"][name]["sha256"])
+        if entry["sha256"] != pinned["schemas"][name]["sha256"]
+        and not (name == "api.json" and api_is_known_lag))
 
     if layer_moved:
         report["findings"].append(
@@ -355,13 +453,20 @@ def check(repo=REPO, fetch=None, online=False):
             report["findings"].append(
                 "%s changed: pinned %s, current %s."
                 % (name, pinned["schemas"][name]["sha256"], live["schemas"][name]["sha256"]))
+    if api_is_known_lag and live["layer"] == pinned["layer"]:
+        report["findings"].append(
+            "api.json endpoint still serves the documented older schema %s; "
+            "production config and the pinned reviewed TL source are both layer %d."
+            % (known_lag, pinned["layer"]))
 
     if layer_moved or schemas_moved:
         statuses.append(STATUS_DRIFT)
         report["next_steps"].extend(drift_next_steps(layer_moved, schemas_moved))
-    elif live["layer"] is not None and len(live["schemas"]) == len(SCHEMA_URLS):
+    elif (live["layer"] is not None
+          and len(live["schemas"]) == len(SCHEMA_URLS)
+          and not api_is_known_lag):
         report["findings"].append(
-            "Layer %d and both schema files are byte-identical to the pinned copy."
+            "Layer %d and both public schema files match the pinned copy."
             % pinned["layer"])
 
     report["status"] = worst(statuses)
@@ -377,19 +482,15 @@ def drift_next_steps(layer_moved, schemas_moved):
                  "in-place correction to the current layer, occasionally the first half "
                  "of a layer bump. Diff before assuming."]
     else:
-        steps = ["The layer number moved but both schema files are byte-identical to "
-                 "the pinned copy. Observed on 2026-08-08 with config.json at layer "
-                 "225 and /schema/json still serving the layer-223 document: the JSON "
-                 "endpoints lag the layer number, so there is nothing to regenerate "
-                 "from yet. Raising Layer.LAYER alone would claim a layer whose "
-                 "constructor ids this build does not have. Wait for the JSON to move, "
-                 "or take the difference from the .tl text schema deliberately."]
+        steps = ["The production layer moved while the public schema files did not. "
+                 "Do not raise Layer.LAYER alone: pin and review the final official "
+                 "Telegram Desktop TL source for the exact production layer, or wait "
+                 "for the public JSON endpoint to catch up."]
 
     steps.append(
-        "On a branch: download both schema files, update schema/UPSTREAM.md "
-        "(hashes, counts, retrieved date), set Layer.LAYER, re-run "
-        "tools/bootstrap.ps1 and tools/verify-tl-ids.py, measure the JAR size "
-        "delta and test against a live account before merging.")
+        "On a branch: update the pinned source and schema/UPSTREAM.md together "
+        "with Layer.LAYER, regenerate, run tools/verify-tl-ids.py, measure both "
+        "JAR variants and test against a live account before merging.")
     steps.append(
         "Nothing is upgraded automatically: a new layer can change constructor "
         "ids of types already parsed, so it is a reviewed commit or it is a "
@@ -457,8 +558,8 @@ def format_issue_body(report):
     pinned = report["pinned"]
     live = report["live"] or {"layer": None, "schemas": {}}
     lines = [
-        "Telegram's official endpoints no longer match the schema pinned in this "
-        "repository. Opened and updated automatically by "
+        "Telegram's production layer or schema endpoints no longer match the "
+        "accepted pinned state in this repository. Opened and updated automatically by "
         "`.github/workflows/schema-drift.yml`; it never edits `schema/` or "
         "`Layer.java`.",
         "",

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run the marked two-account scenario against one exact packaged RC JAR.
+    Run the marked two-account scenario against one exact packaged release JAR.
 
 .DESCRIPTION
     Uses the saved live (account A) and bigchats (account B) MicroEmulator
@@ -21,8 +21,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_env.ps1')
 
-if ($ArtifactName -notmatch '^TelegramJ2ME-1\.0\.0-rc[0-9]+(?:-min)?$') {
-    Write-Bad 'RC E2E requires a TelegramJ2ME-1.0.0-rcN[-min] artifact name'
+if ($ArtifactName -notmatch '^TelegramJ2ME-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:-min)?$') {
+    Write-Bad 'Packaged E2E requires a TelegramJ2ME-<semver>[-min] artifact name'
     exit 1
 }
 $artifactJar = Join-RepoPath 'dist' "$ArtifactName.jar"

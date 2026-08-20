@@ -14,6 +14,7 @@ Run:
 
 import hashlib
 import importlib.util
+import json
 import shutil
 import sys
 import tempfile
@@ -66,13 +67,14 @@ UPSTREAM_MD = """# Telegram TL schema
 ## Layer %(layer)d
 
 Pinned by hand in `src/tg/mt/Layer.java`.
+%(known_lag)s
 """
 
 
 class FakeRepo(object):
     """A minimal tree with the four files the monitor reads."""
 
-    def __init__(self, layer=223, api=b"", mtproto=b""):
+    def __init__(self, layer=223, api=b"", mtproto=b"", known_lag=None):
         self.root = Path(tempfile.mkdtemp(prefix="drift-test-"))
         (self.root / "src" / "tg" / "mt").mkdir(parents=True)
         (self.root / "schema").mkdir()
@@ -80,6 +82,7 @@ class FakeRepo(object):
             LAYER_JAVA % layer, encoding="utf-8")
         (self.root / "schema" / "api.json").write_bytes(api)
         (self.root / "schema" / "mtproto.json").write_bytes(mtproto)
+        self.known_lag = known_lag
         self.write_upstream(layer=layer, api=api, mtproto=mtproto)
 
     def write_upstream(self, layer, api, mtproto):
@@ -93,6 +96,8 @@ class FakeRepo(object):
             "api_methods": api_m,
             "mtproto_constructors": mt_c,
             "mtproto_methods": mt_m,
+            "known_lag": ("Known lagging API endpoint SHA-256: `%s`" %
+                          self.known_lag) if self.known_lag else "",
         }, encoding="utf-8")
 
     def patch_upstream(self, old, new):
@@ -176,7 +181,7 @@ class LayerDrift(PinnedFixture):
                             api=self.api, mtproto=self.mtproto)
         self.assertFalse(any("api.json changed" in f for f in report["findings"]),
                          report["findings"])
-        self.assertTrue(any("layer number moved but both schema files are byte-identical" in s
+        self.assertTrue(any("production layer moved while the public schema files did not" in s
                             for s in report["next_steps"]), report["next_steps"])
 
 
@@ -206,6 +211,61 @@ class SchemaDrift(PinnedFixture):
         self.assertIn(sha256(fixture("api-drifted.json")), body)
         self.assertIn("225", body)
         self.assertNotIn("somethingNew", body)
+
+
+class KnownJsonLag(unittest.TestCase):
+    """A documented exact old endpoint hash is acceptable only at its layer."""
+
+    def setUp(self):
+        self.old_api = fixture("api-pinned.json")
+        self.pinned_api = fixture("api-drifted.json")
+        self.mtproto = fixture("mtproto-pinned.json")
+        self.repo = FakeRepo(
+            layer=225, api=self.pinned_api, mtproto=self.mtproto,
+            known_lag=sha256(self.old_api))
+        self.addCleanup(self.repo.close)
+
+    def check(self, layer, api):
+        return drift.check(
+            self.repo.root, online=True,
+            fetch=responder(config=json.dumps({"layer": layer}).encode("ascii"),
+                            api=api, mtproto=self.mtproto))
+
+    def test_documented_lag_is_ok_while_layer_matches(self):
+        report = self.check(225, self.old_api)
+        self.assertEqual(drift.STATUS_OK, report["status"])
+        self.assertTrue(any("documented older schema" in finding
+                            for finding in report["findings"]))
+
+    def test_endpoint_catching_up_to_the_pin_is_ok(self):
+        report = self.check(225, self.pinned_api)
+        self.assertEqual(drift.STATUS_OK, report["status"])
+        self.assertFalse(any("documented older schema" in finding
+                             for finding in report["findings"]))
+
+    def test_unknown_hash_at_the_same_layer_is_drift(self):
+        doc = json.loads(self.old_api.decode("utf-8"))
+        doc["constructors"][0]["predicate"] = "unexpected"
+        unexpected = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        report = self.check(225, unexpected)
+        self.assertEqual(drift.STATUS_DRIFT, report["status"])
+        self.assertTrue(any("api.json changed" in finding
+                            for finding in report["findings"]))
+
+    def test_old_hash_is_not_accepted_after_the_layer_moves(self):
+        report = self.check(226, self.old_api)
+        self.assertEqual(drift.STATUS_DRIFT, report["status"])
+        self.assertTrue(any("Layer moved" in finding
+                            for finding in report["findings"]))
+
+    def test_layer_outage_does_not_turn_the_known_hash_into_drift(self):
+        report = drift.check(
+            self.repo.root, online=True,
+            fetch=responder(config=drift.Unavailable("dns"),
+                            api=self.old_api, mtproto=self.mtproto))
+        self.assertEqual(drift.STATUS_UNAVAILABLE, report["status"])
+        self.assertFalse(any("api.json changed" in finding
+                             for finding in report["findings"]))
 
 
 class MalformedUpstream(PinnedFixture):
@@ -315,6 +375,42 @@ class PinnedRecord(PinnedFixture):
         self.assertEqual(drift.STATUS_PINNED_MISMATCH, report["status"])
         self.assertTrue(any("no '## Layer <n>' heading" in p for p in report["problems"]),
                         report["problems"])
+
+
+class TlSourceProvenance(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="source-provenance-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.root, ignore_errors=True))
+        for directory in ("schema", "tools", "src/tg/mt"):
+            (self.root / directory).mkdir(parents=True, exist_ok=True)
+        for name in ("api.tl", "api.json", "mtproto.json", "UPSTREAM.md"):
+            shutil.copy2(REPO / "schema" / name, self.root / "schema" / name)
+        shutil.copy2(REPO / "tools" / "import-tl-schema.py",
+                     self.root / "tools" / "import-tl-schema.py")
+        shutil.copy2(REPO / "src" / "tg" / "mt" / "Layer.java",
+                     self.root / "src" / "tg" / "mt" / "Layer.java")
+
+    def test_clean_source_record_is_consistent(self):
+        report = drift.check(self.root, online=False)
+        self.assertEqual(drift.STATUS_OK, report["status"], report["problems"])
+
+    def test_source_hash_change_is_caught_offline(self):
+        source = self.root / "schema" / "api.tl"
+        source.write_bytes(source.read_bytes() + b"\n// changed\n")
+        report = drift.check(self.root, online=False)
+        self.assertEqual(drift.STATUS_PINNED_MISMATCH, report["status"])
+        self.assertTrue(any("api.tl hashes" in problem
+                            for problem in report["problems"]))
+
+    def test_source_layer_marker_change_is_caught_offline(self):
+        source = self.root / "schema" / "api.tl"
+        text = source.read_text(encoding="utf-8")
+        source.write_text(text.replace("// LAYER 225", "// LAYER 224"),
+                          encoding="utf-8", newline="\n")
+        report = drift.check(self.root, online=False)
+        self.assertEqual(drift.STATUS_PINNED_MISMATCH, report["status"])
+        self.assertTrue(any("api.tl marks layer 224" in problem
+                            for problem in report["problems"]))
 
 
 class RealRepository(unittest.TestCase):

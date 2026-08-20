@@ -30,7 +30,7 @@ public final class Layer
      * Must equal the layer of the schema in schema/api.json.
      * Verified by tools/verify-tl-ids.py.
      */
-    public static final int LAYER = 223;
+    public static final int LAYER = 225;
 
     public static final String DEVICE_MODEL = "Java ME";
     public static final String SYSTEM_VERSION = "MIDP-2.0 CLDC-1.1";

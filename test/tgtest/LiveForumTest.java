@@ -67,6 +67,12 @@ public final class LiveForumTest
         SeTransport transport = new SeTransport();
         transport.setReadTimeoutMs(60000);
         Telegram tg = new Telegram(transport, new Rng(), store);
+        Peer forum = null;
+        int topicProbeRoot = 0;
+        int topicProbeId = 0;
+        int generalProbeId = 0;
+        String topicProbeText = null;
+        String generalProbeText = null;
 
         try
         {
@@ -76,9 +82,8 @@ public final class LiveForumTest
             tg.api.AuthCheck auth = tg.verifyAuthorization();
             if (auth.peer == null)
             {
-                System.out.println("Not signed in (" + auth.describe()
-                        + "). Run:  ./tools/live.ps1 login");
-                System.exit(2);
+                throw new IllegalStateException("Not signed in (" + auth.describe()
+                        + "). Run: ./tools/live.ps1 login");
             }
             Peer me = auth.peer;
             System.out.println("signed in as " + me.title);
@@ -86,7 +91,6 @@ public final class LiveForumTest
 
             // --- the forum is in the dialog list, and carries its flag ------
             Dialog[] dialogs = tg.getDialogs(60).dialogs;
-            Peer forum = null;
             for (int i = 0; i < dialogs.length; i++)
             {
                 if (dialogs[i] != null
@@ -98,10 +102,9 @@ public final class LiveForumTest
             }
             if (forum == null)
             {
-                System.out.println("no dialog titled \"" + forumTitle
+                throw new IllegalStateException("no dialog titled \"" + forumTitle
                         + "\" in the first " + dialogs.length
                         + "; is the account prepared?");
-                System.exit(2);
             }
             System.out.println("forum       : " + forum);
             check("channel.forum is set on the prepared group", forum.forum);
@@ -129,7 +132,10 @@ public final class LiveForumTest
             }
             check("General is listed", general != null);
             check("\"" + topicTitle + "\" is listed", named != null);
-            if (named == null) { finish(); return; }
+            if (named == null)
+            {
+                throw new IllegalStateException("prepared named topic is missing");
+            }
 
             // --- one topic's transcript is that topic's ---------------------
             System.out.println();
@@ -151,24 +157,26 @@ public final class LiveForumTest
             check("every fetched message maps to the topic", allInTopic);
 
             // --- send into the topic, and only into it ----------------------
-            String probe = "e2e topics " + System.currentTimeMillis();
-            tg.sendMessage(forum, probe, named.id);
+            topicProbeRoot = named.id;
+            topicProbeText = "e2e topics " + System.currentTimeMillis();
+            tg.sendMessage(forum, topicProbeText, named.id);
             System.out.println();
-            System.out.println("sent into the topic: " + probe);
+            System.out.println("sent into the topic: " + topicProbeText);
 
             Message[] after = tg.getHistory(forum, named.id, 15);
-            Message landed = find(after, probe);
+            Message landed = find(after, topicProbeText);
             check("the probe is in the topic transcript", landed != null);
             if (landed != null)
             {
+                topicProbeId = landed.id;
                 check("its reply header names the topic",
                         landed.threadRootIn(true) == named.id);
             }
             Message[] generalAfter = tg.getHistory(forum,
                     ForumTopic.GENERAL_ID, 20);
             check("the probe did not leak into General",
-                    find(generalAfter, probe) == null);
-            Message flatCopy = find(tg.getHistory(forum, 20), probe);
+                    find(generalAfter, topicProbeText) == null);
+            Message flatCopy = find(tg.getHistory(forum, 20), topicProbeText);
             check("the whole-peer history still carries it", flatCopy != null);
             if (flatCopy != null)
             {
@@ -177,13 +185,14 @@ public final class LiveForumTest
             }
 
             // --- the degenerate send: General is a plain send ---------------
-            String generalProbe = "e2e general " + System.currentTimeMillis();
-            tg.sendMessage(forum, generalProbe, ForumTopic.GENERAL_ID);
+            generalProbeText = "e2e general " + System.currentTimeMillis();
+            tg.sendMessage(forum, generalProbeText, ForumTopic.GENERAL_ID);
             Message inGeneral = find(tg.getHistory(forum,
-                    ForumTopic.GENERAL_ID, 20), generalProbe);
+                    ForumTopic.GENERAL_ID, 20), generalProbeText);
             check("a send into General lands in General", inGeneral != null);
             if (inGeneral != null)
             {
+                generalProbeId = inGeneral.id;
                 check("and maps to General",
                         inGeneral.threadRootIn(true) == ForumTopic.GENERAL_ID);
             }
@@ -246,7 +255,6 @@ public final class LiveForumTest
             System.out.println();
             System.out.println("bytes rx/tx : " + transport.bytesRead()
                     + " / " + transport.bytesWritten());
-            finish();
         }
         catch (Throwable t)
         {
@@ -255,11 +263,60 @@ public final class LiveForumTest
             System.out.println(t.getClass().getName() + ": " + t.getMessage());
             LiveHandshakeTest.dumpLog();
             t.printStackTrace(System.out);
-            System.exit(1);
+            failures++;
         }
         finally
         {
+            if (!cleanupProbe(tg, forum, topicProbeRoot,
+                              topicProbeText, topicProbeId))
+            {
+                fail("topic probe cleanup was not confirmed");
+            }
+            if (!cleanupProbe(tg, forum, ForumTopic.GENERAL_ID,
+                              generalProbeText, generalProbeId))
+            {
+                fail("General probe cleanup was not confirmed");
+            }
             tg.close();
+        }
+        finish();
+    }
+
+    /** Best-effort deletion becomes a required gate once a probe was sent. */
+    private static boolean cleanupProbe(Telegram tg, Peer forum, int topicId,
+                                        String text, int knownId)
+    {
+        if (text == null) { return true; }
+        if (forum == null)
+        {
+            System.out.println("  CLEANUP FAIL no forum peer for " + text);
+            return false;
+        }
+        try
+        {
+            int messageId = knownId;
+            if (messageId == 0)
+            {
+                Message found = find(tg.getHistory(forum, topicId, 40), text);
+                if (found == null)
+                {
+                    System.out.println("  CLEANUP FAIL could not locate " + text);
+                    return false;
+                }
+                messageId = found.id;
+            }
+            tg.deleteMessage(forum, messageId, true);
+            Thread.sleep(300);
+            boolean gone = find(tg.getHistory(forum, topicId, 40), text) == null;
+            System.out.println((gone ? "  OK   " : "  CLEANUP FAIL ")
+                    + "deleted probe #" + messageId + " from topic " + topicId);
+            return gone;
+        }
+        catch (Throwable cleanup)
+        {
+            System.out.println("  CLEANUP FAIL " + cleanup.getClass().getName()
+                    + ": " + cleanup.getMessage());
+            return false;
         }
     }
 
