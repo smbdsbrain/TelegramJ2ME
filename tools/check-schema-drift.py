@@ -85,7 +85,7 @@ PRECEDENCE = [
     STATUS_OK,
 ]
 
-USER_AGENT = "TelegramJ2ME-schema-drift-monitor (+https://github.com/smbdsbrain/TelegramJ2ME)"
+USER_AGENT = "J2MEgram-schema-drift-monitor (+https://github.com/smbdsbrain/J2MEgram)"
 
 # api.json is ~2 MB. Ten is room for years of growth and still a bound.
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024

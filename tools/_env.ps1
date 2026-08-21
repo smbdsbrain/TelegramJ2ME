@@ -268,8 +268,8 @@ function Get-TelegramSecrets {
     if ($env:TG_API_ID -and $env:TG_API_HASH) {
         $result.apiId   = [int]($env:TG_API_ID -replace '[^0-9]', '')
         $result.apiHash = $env:TG_API_HASH.Trim()
-        $result.title   = if ($env:TG_APP_TITLE) { $env:TG_APP_TITLE.Trim() } else { "TelegramJ2ME" }
-        $result.name    = if ($env:TG_APP_NAME)  { $env:TG_APP_NAME.Trim() }  else { "telegramj2me" }
+        $result.title   = if ($env:TG_APP_TITLE) { $env:TG_APP_TITLE.Trim() } else { "J2MEgram" }
+        $result.name    = if ($env:TG_APP_NAME)  { $env:TG_APP_NAME.Trim() }  else { "j2megram" }
         $result.source  = "environment"
         return $result
     }

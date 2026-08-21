@@ -35,7 +35,7 @@ $lockPath = Join-Path $PSScriptRoot "sdk.lock.json"
 $problems = New-Object System.Collections.ArrayList
 
 Write-Host ""
-Write-Host "TelegramJ2ME :: bootstrap" -ForegroundColor White
+Write-Host "J2MEgram :: bootstrap" -ForegroundColor White
 Write-Host "repo: $RepoRoot"
 Write-Host ""
 

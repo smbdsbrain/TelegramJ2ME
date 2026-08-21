@@ -26,8 +26,8 @@ $secretBytes = New-Object byte[] 16
 $crypto = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 try { $crypto.GetBytes($secretBytes) } finally { $crypto.Dispose() }
 $secretHex = ([BitConverter]::ToString($secretBytes)).Replace("-", "").ToLowerInvariant()
-$image = "telegramj2me-mtproxy:cafc338"
-$container = "telegramj2me-mtproxy-test"
+$image = "j2megram-mtproxy:cafc338"
+$container = "j2megram-mtproxy-test"
 
 try {
     $publicIpText = ([string](Invoke-RestMethod `

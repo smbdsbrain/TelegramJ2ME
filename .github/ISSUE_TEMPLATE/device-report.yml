@@ -13,7 +13,7 @@ body:
         **A report where everything worked is just as valuable as one where it
         did not.**
 
-        If you have not already, install `TelegramJ2ME Probe` first. It is about
+        If you have not already, install `J2MEgram Probe` first. It is about
         91 KB, installs in seconds, and its screens answer most of the questions
         below.
 
@@ -46,8 +46,8 @@ body:
     attributes:
       label: Which build did you install?
       options:
-        - "Normal (TelegramJ2ME-<version>.jar)"
-        - "Minified (TelegramJ2ME-<version>-min.jar)"
+        - "Normal (J2MEgram-<version>.jar)"
+        - "Minified (J2MEgram-<version>-min.jar)"
         - "Probe only"
         - "Crypto only"
         - Both normal and minified
@@ -95,7 +95,7 @@ body:
     attributes:
       label: Probe output
       description: |
-        From `TelegramJ2ME Probe`: Platform & build, Heap probe, RMS test,
+        From `J2MEgram Probe`: Platform & build, Heap probe, RMS test,
         Entropy measure, the raw TCP results, and PNG / JPEG decode. Paste
         whatever you have.
 

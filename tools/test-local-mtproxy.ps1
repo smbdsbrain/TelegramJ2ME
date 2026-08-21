@@ -26,9 +26,9 @@ $domain = "www.google.com"
 $domainHex = ([BitConverter]::ToString(
     [System.Text.Encoding]::ASCII.GetBytes($domain))).Replace("-", "").ToLowerInvariant()
 $image = "ghcr.io/telemt/telemt:3.4.25"
-$container = "telegramj2me-telemt-test"
+$container = "j2megram-telemt-test"
 $configPath = Join-Path ([IO.Path]::GetTempPath()) (
-    "telegramj2me-telemt-{0}.toml" -f [Guid]::NewGuid().ToString("N"))
+    "j2megram-telemt-{0}.toml" -f [Guid]::NewGuid().ToString("N"))
 
 try {
     $template = Get-Content -Raw (Join-Path (Join-Path $PSScriptRoot "telemt") "test-config.toml.in")

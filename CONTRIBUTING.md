@@ -1,7 +1,7 @@
 # Contributing
 
 The most valuable contribution right now is not code — it is a
-[device report](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=device-report.yml).
+[device report](https://github.com/smbdsbrain/J2MEgram/issues/new?template=device-report.yml).
 Exactly one handset has ever run this client, so every model anyone tries is new
 information, whether it works or not.
 

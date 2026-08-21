@@ -1,7 +1,7 @@
 # Alcatel One Touch 810D — RNG seeding, measured
 
 Nothing here is taken from a specification site. Every figure below was read off
-the physical handset by `TelegramJ2ME Probe`, menu item **Entropy measure**.
+the physical handset by `J2MEgram Probe`, menu item **Entropy measure**.
 
 **Verdict: about 58 bits of min-entropy per `Entropy.gather()` call, and no
 repeated seed across seven launches — six of them cold boots started from an

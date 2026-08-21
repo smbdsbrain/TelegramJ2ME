@@ -11,8 +11,8 @@
 [CmdletBinding()]
 param(
     [string[]]$ArtifactName = @(
-        'TelegramJ2ME-1.0.0-rc1',
-        'TelegramJ2ME-1.0.0-rc1-min'
+        'J2MEgram-1.3.0-rc1',
+        'J2MEgram-1.3.0-rc1-min'
     ),
     [ValidateRange(0, 1000)][int]$DelayMs = 10,
     [ValidateRange(32, 16384)][int]$ChunkBytes = 1024,

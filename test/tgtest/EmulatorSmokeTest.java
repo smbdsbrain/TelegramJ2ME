@@ -89,7 +89,7 @@ public final class EmulatorSmokeTest
         // possibly a warning to add - and MicroEmulator's setCurrent posts
         // rather than switches, so a visit that overlaps with that lands on the
         // *new* start screen and reports the screen it opened as having no
-        // Back. Seen on a CI runner as "Settings -> Form Telegram J2ME": not a
+        // Back. Seen on a CI runner as "Settings -> Form J2MEgram": not a
         // navigation defect, a race with the probe.
         awaitHeapMeasurement();
         Displayable start = awaitSettled(display);

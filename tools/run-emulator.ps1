@@ -54,7 +54,7 @@
     ./tools/run-emulator.ps1 -Target probe
     ./tools/run-emulator.ps1 -Target probe -UseWtk
     ./tools/run-emulator.ps1 -Target tg -EmulatorProfile 2fa
-    ./tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-0.1.0-min
+    ./tools/run-emulator.ps1 -Target tg -ArtifactName J2MEgram-1.3.0-min
     ./tools/run-emulator.ps1 -Target tg -EmulatorProfile small -JavaArgs -Xmx32m
 #>
 [CmdletBinding()]

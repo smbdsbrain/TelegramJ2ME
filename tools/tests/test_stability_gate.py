@@ -55,7 +55,7 @@ class StabilityGateSelfTest(unittest.TestCase):
     def test_public_looking_artifact_refuses_development_secrets(self):
         result = subprocess.run(
             [self.pwsh, "-NoProfile", "-File", str(BUILD), "-Target", "tg",
-             "-EmbedDevSecrets", "-ArtifactName", "TelegramJ2ME-c3-00"],
+             "-EmbedDevSecrets", "-ArtifactName", "J2MEgram-c3-00"],
             cwd=ROOT, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, timeout=30)
         self.assertNotEqual(0, result.returncode, result.stdout)

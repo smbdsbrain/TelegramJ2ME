@@ -1,9 +1,9 @@
-# TelegramJ2ME documentation
+# J2MEgram documentation
 
 | Page | What is in it |
 |---|---|
 | [building.md](building.md) | Prerequisites on Windows, Linux and macOS; bootstrap, build, test, credentials, live testing, and the rules for writing a cross-platform build script |
-| [installing.md](installing.md) | 1.0 RC normal/minified files, in-place upgrade from 0.8.1, and handset preparation |
+| [installing.md](installing.md) | Normal/minified files, upgrading from TelegramJ2ME, and handset preparation |
 | [architecture.md](architecture.md) | The `Transport` / `MtLink` seam, package map, build targets, how the crypto is verified, memory and threading discipline, durable state, and an honest statement of the security posture |
 | [1.0-stability-contract.md](1.0-stability-contract.md) | The bounded 1.0 promise, cache migration and downgrade boundary, and release-candidate handoff order |
 | [toolchain.md](toolchain.md) | Version matrix and pins, why JDK 8 specifically, how preverification works, the two bootclasspath modes, build outputs |

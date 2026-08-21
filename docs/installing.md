@@ -1,7 +1,7 @@
-# Installing TelegramJ2ME 1.0 RC
+# Installing J2MEgram
 
-The primary upgrade candidate is
-`TelegramJ2ME-1.0.0-rc1.jar` plus its matching `.jad`. The `-min` pair is the
+The primary candidate is
+`J2MEgram-<version>.jar` plus its matching `.jad`. The `-min` pair is the
 same application, optimised and obfuscated for handsets with a smaller JAR
 limit; use it only when the normal JAR is rejected.
 
@@ -10,17 +10,19 @@ card, then open the `.jad`. If the handset refuses local JAD installation, open
 the matching `.jar`. Do not rename files or mix normal/minified pairs: the JAD
 contains the exact JAR filename and byte length.
 
-## Upgrade from 0.8.1
+## Upgrade from TelegramJ2ME (1.2.0 and earlier)
 
-Install over the existing suite without deleting it. Both versions use
-`MIDlet-Name: TelegramJ2ME`, `MIDlet-Vendor: smbdsbrain`, and the production
-environment, so a conforming AMS treats 1.0.0 as an upgrade and preserves RMS.
-If the phone offers “replace/update” and “remove”, choose update. Removing the
-old suite usually deletes its auth key, settings, outbox, drafts, and caches.
+As of 1.3.0 the suite is renamed to `MIDlet-Name: J2MEgram` to comply with the
+[Telegram API Terms of Service](https://core.telegram.org/api/terms). MIDlet
+suite identity is Name plus Vendor, so a J2MEgram build installs **alongside**
+an existing TelegramJ2ME suite rather than upgrading it: it starts with empty
+record stores, and you sign in again. Once the new install works, remove the
+old TelegramJ2ME suite manually — removing it deletes its auth key, settings,
+outbox, drafts, and caches, so do it only after the new sign-in succeeds.
 
-History cache is upgraded on write from v1/v2 to v3. A later downgrade to 0.8.1
-may discard the newer history cache, so downgrade is not a cache-preservation
-path.
+From 1.3.0 onwards the name and vendor stay fixed, so a conforming AMS treats
+later versions as in-place upgrades again and preserves RMS. If the phone
+offers “replace/update” and “remove”, choose update.
 
 ## Before connecting
 

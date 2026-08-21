@@ -4,6 +4,15 @@
 
 ### Changed
 
+- The project and MIDlet suite are renamed from TelegramJ2ME to J2MEgram to
+  comply with the [Telegram API Terms of Service](https://core.telegram.org/api/terms),
+  which forbid the word "Telegram" in an app title. The JAD/manifest
+  description becomes "Unofficial Telegram J2ME Client", release artifacts are
+  now named `J2MEgram-<version>[-min]`, and the `initConnection` app_version
+  shown in Telegram's "Active sessions" reads `J2MEgram <version>`.
+- Because MIDlet suite identity is Name plus Vendor, a J2MEgram build installs
+  alongside an existing TelegramJ2ME install instead of upgrading it in place:
+  sign in again in the new install, then remove the old suite manually.
 - The generated Telegram API schema now targets layer 225, pinned to the final
   official Telegram Desktop layer-225 TL commit and converted to JSON offline.
   The public JSON endpoint's exact older hash is monitored without allowing an

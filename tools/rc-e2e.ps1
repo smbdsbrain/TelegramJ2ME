@@ -21,8 +21,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_env.ps1')
 
-if ($ArtifactName -notmatch '^TelegramJ2ME-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:-min)?$') {
-    Write-Bad 'Packaged E2E requires a TelegramJ2ME-<semver>[-min] artifact name'
+if ($ArtifactName -notmatch '^J2MEgram-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:-min)?$') {
+    Write-Bad 'Packaged E2E requires a J2MEgram-<semver>[-min] artifact name'
     exit 1
 }
 $artifactJar = Join-RepoPath 'dist' "$ArtifactName.jar"

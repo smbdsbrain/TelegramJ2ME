@@ -872,7 +872,7 @@ claims a key was compromised, because nothing here is evidence that one was.
   from any one of them was wrong on the other two in opposite directions —
   five gathers is ~290 bits on the first, ~105 on the second and ~675 on the
   third — which is
-  [issue #2](https://github.com/smbdsbrain/TelegramJ2ME/issues/2). Note that
+  [issue #2](https://github.com/smbdsbrain/J2MEgram/issues/2). Note that
   per-sample entropy is **not** constant across devices, as the first two
   suggested: it roughly halves between a 4 ms and a 1 ms tick, so a tick→bits
   formula would have been the same mistake one level down.

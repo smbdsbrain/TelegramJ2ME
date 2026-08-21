@@ -1395,7 +1395,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
 
     private void showStartScreen()
     {
-        Form form = new Form("Telegram J2ME");
+        Form form = new Form("J2MEgram");
         form.append("No network connection has been opened yet.\n\n");
         form.append("State: " + connectionLabel + "\n");
         form.append("Mode: " + ConnectionConfig.name(connectionConfig.mode) + "\n");
@@ -6085,7 +6085,7 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             entityConfirm = new Form("Open external target");
             entityConfirm.append("Shown text:\n" + target.label
                     + "\n\nActual target:\n" + target.value
-                    + "\n\nThe phone may close TelegramJ2ME to continue.");
+                    + "\n\nThe phone may close J2MEgram to continue.");
             entityConfirm.addCommand(cmdOpenExternal);
             entityConfirm.addCommand(cmdBack);
             entityConfirm.setCommandListener(this);

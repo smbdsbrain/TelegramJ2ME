@@ -110,8 +110,8 @@ right for diagnostics but cannot prove that an obfuscated RC behaves the same.
 The two-account release gate instead runs:
 
 ```powershell
-.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1
-.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1-min
+.\tools\rc-e2e.ps1 -ArtifactName J2MEgram-1.3.0-rc1
+.\tools\rc-e2e.ps1 -ArtifactName J2MEgram-1.3.0-rc1-min
 .\tools\rc-slow-e2e.ps1
 ```
 

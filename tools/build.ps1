@@ -47,18 +47,18 @@
 
         ./tools/build.ps1 -Target probe -EmbedDevSecrets
 
-    Never for anything published. Any TelegramJ2ME-* artifact name is refused.
+    Never for anything published. Any J2MEgram-* artifact name is refused.
 
 .PARAMETER ArtifactName
     Base name for dist/<name>.jar and dist/<name>.jad. Defaults to the target.
     The JAD's MIDlet-Jar-URL is derived from it, so renaming the files after the
     build would break the install - use this instead. Release builds pass a
-    versioned name, e.g. TelegramJ2ME-1.0.0-rc1.
+    versioned name, e.g. J2MEgram-1.3.0-rc1.
 
 .EXAMPLE
     ./tools/build.ps1 -Target probe
     ./tools/build.ps1 -Profile desktop
-    ./tools/build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-1.0.0-rc1
+    ./tools/build.ps1 -Target tg -Env production -ArtifactName J2MEgram-1.3.0-rc1
 #>
 [CmdletBinding()]
 param(
@@ -91,7 +91,7 @@ $ErrorActionPreference = "Stop"
 # Single source of truth for the released version. .github/workflows/release.yml
 # reads this line and refuses to publish if it disagrees with the git tag, so a
 # mistyped tag cannot ship a JAD whose MIDlet-Version is wrong.
-$AppVersion = "1.2.0"
+$AppVersion = "1.3.0"
 $AppVendor  = "smbdsbrain"
 
 $MidletClass = @{
@@ -100,8 +100,8 @@ $MidletClass = @{
 }[$Target]
 # What the phone's application menu shows under the icon.
 $MidletName = @{
-    probe  = "TelegramJ2ME Probe"
-    tg     = "TelegramJ2ME"
+    probe  = "J2MEgram Probe"
+    tg     = "J2MEgram"
 }[$Target]
 
 # A test build talks to Telegram's test data centres and carries the test server
@@ -121,11 +121,11 @@ if ($Env -eq 'test' -and $Target -ne 'probe') {
 if (-not $ArtifactName) { $ArtifactName = $Target }
 
 # A public-looking artifact name is what a release or RC is called. Nothing
-# beginning TelegramJ2ME- should ever carry the collector token or proxy secret,
+# beginning J2MEgram- should ever carry the collector token or proxy secret,
 # and the one time it did, it was
 # a local build using exactly this naming. Refused rather than warned about: by
 # the time a warning scrolls past, the file exists and is about to be uploaded.
-if ($EmbedDevSecrets -and $ArtifactName -match '(?i)^TelegramJ2ME-') {
+if ($EmbedDevSecrets -and $ArtifactName -match '(?i)^J2MEgram-') {
     Write-Bad "-EmbedDevSecrets cannot be combined with a release artifact name ($ArtifactName)."
     Write-Host "         Those names are what gets published. Drop the flag, or build" -ForegroundColor Red
     Write-Host "         under a local name for a handset session." -ForegroundColor Red
@@ -688,7 +688,7 @@ MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
 MIDlet-Jar-URL: $ArtifactName.jar
 MIDlet-Jar-Size: $jarSize
-MIDlet-Description: Direct MTProto 2.0 client, build $buildId
+MIDlet-Description: Unofficial Telegram J2ME Client, build $buildId
 "@ -replace "`r`n", "`n" | Set-Content -Path $jadPath -Encoding ASCII
 
 Write-Ok "dist/$ArtifactName.jar  ($([math]::Round($jarSize / 1KB, 1)) KB)"

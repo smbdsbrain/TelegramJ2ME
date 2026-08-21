@@ -1,4 +1,4 @@
-# Building TelegramJ2ME
+# Building J2MEgram
 
 Everything is driven from the command line. There is no IDE project, no Ant, no
 Maven and no Gradle — the build is a set of PowerShell scripts in `tools/` that
@@ -178,8 +178,8 @@ OK   default MTProxy present but NOT embedded (pass -EmbedDevSecrets to include 
 
 With the flag, both lines become `WARN EMBEDDED …` and the build ends with a
 `DO NOT PUBLISH IT` banner. Combining the flag with any public-looking
-`TelegramJ2ME-*` artifact name is refused outright, including non-numeric names
-such as `TelegramJ2ME-c3-00`.
+`J2MEgram-*` artifact name is refused outright, including non-numeric names
+such as `J2MEgram-c3-00`.
 
 The check that matters is not the flag but the one after packaging: the JAR is
 read back and searched for the values it was not asked to embed, and the build
@@ -195,8 +195,8 @@ published carrying the collector token and the proxy secret.
 is how releases produce versioned filenames:
 
 ```bash
-./tools/build.sh -Target tg -Env production -ArtifactName TelegramJ2ME-1.0.0-rc1
-pwsh -File tools/run-emulator.ps1 -Target tg -ArtifactName TelegramJ2ME-1.0.0-rc1
+./tools/build.sh -Target tg -Env production -ArtifactName J2MEgram-1.3.0-rc1
+pwsh -File tools/run-emulator.ps1 -Target tg -ArtifactName J2MEgram-1.3.0-rc1
 ```
 
 ### The two build profiles
@@ -385,7 +385,7 @@ failure surfaces as an opaque key mismatch that names no environment.
 
 Two things make that harder to hit. The build prints `env=` in its header and
 warns when a non-probe target is built for test. And a test build installs
-under the MIDlet name `TelegramJ2ME (test)`: because MIDlet suite identity is
+under the MIDlet name `J2MEgram (test)`: because MIDlet suite identity is
 name plus vendor, it lands **alongside** a production install rather than
 replacing it, so it can neither overwrite the real app nor inherit its record
 stores.

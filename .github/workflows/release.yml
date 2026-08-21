@@ -76,28 +76,28 @@ jobs:
       # -Env production is not optional here: the default is Telegram's test
       # data centres, which hold no real accounts. An auth_key is bound to one
       # environment, so a test-DC build cannot be fixed at runtime.
-      - name: Build TelegramJ2ME
+      - name: Build J2MEgram
         shell: pwsh
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
-        run: ./tools/build.ps1 -Target tg -Env production -ArtifactName "TelegramJ2ME-$env:APP_VERSION"
+        run: ./tools/build.ps1 -Target tg -Env production -ArtifactName "J2MEgram-$env:APP_VERSION"
 
       # Smaller JAR for handsets that cap install size, at the cost of readable
       # stack traces in bug reports.
-      - name: Build TelegramJ2ME (min)
+      - name: Build J2MEgram (min)
         shell: pwsh
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
-        run: ./tools/build.ps1 -Target tg -Env production -Release -ArtifactName "TelegramJ2ME-$env:APP_VERSION-min"
+        run: ./tools/build.ps1 -Target tg -Env production -Release -ArtifactName "J2MEgram-$env:APP_VERSION-min"
 
       # Both published variants must still start. Obfuscation is checked
       # statically at build time, but a static check is not a run, and this is
       # the last point before the artifacts are public.
       - name: Emulator smoke test
         shell: pwsh
-        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName "TelegramJ2ME-${env:APP_VERSION}","TelegramJ2ME-${env:APP_VERSION}-min" -JavaArgs -Xmx32m
+        run: ./tools/smoke-emulator.ps1 -SkipBuild -ArtifactName "J2MEgram-${env:APP_VERSION}","J2MEgram-${env:APP_VERSION}-min" -JavaArgs -Xmx32m
 
       - name: Verify JAD/JAR consistency
         shell: pwsh
@@ -141,8 +141,8 @@ jobs:
         with:
           name: midlets
           path: |
-            dist/TelegramJ2ME-*.jar
-            dist/TelegramJ2ME-*.jad
+            dist/J2MEgram-*.jar
+            dist/J2MEgram-*.jad
             dist/SHA256SUMS.txt
 
   release:
@@ -161,7 +161,7 @@ jobs:
           files: dist/**/*
           generate_release_notes: true
           body: |
-            TelegramJ2ME ${{ github.ref_name }} — Telegram over MTProto 2.0, directly on a Java ME phone.
+            J2MEgram ${{ github.ref_name }} — Telegram over MTProto 2.0, directly on a Java ME phone.
 
             ### Install
 
@@ -172,8 +172,8 @@ jobs:
 
             | Variant | Use |
             |---|---|
-            | `TelegramJ2ME-*.jar` + `.jad` | Start here. Crash reports name real classes, which is useful while the client is this young. |
-            | `TelegramJ2ME-*-min.jar` + `.jad` | Optimised and obfuscated — noticeably smaller. Try it if your phone rejects the normal build as too large. |
+            | `J2MEgram-*.jar` + `.jad` | Start here. Crash reports name real classes, which is useful while the client is this young. |
+            | `J2MEgram-*-min.jar` + `.jad` | Optimised and obfuscated — noticeably smaller. Try it if your phone rejects the normal build as too large. |
 
             The `.jad` records the exact byte size of its `.jar`, so do not rename
             either file and do not mix files from different variants or releases.
@@ -189,7 +189,7 @@ jobs:
             > handful of networks prove nothing about yours: compatibility,
             > performance and permission behaviour elsewhere are still unknown, so
             > reports are genuinely useful — especially your handset model and what
-            > `TelegramJ2ME Probe` shows.
+            > `J2MEgram Probe` shows.
             > Per-device measurements are written up under `docs/hardware/`.
             >
             > If the direct routes are refused with `Target port denied to untrusted
@@ -203,5 +203,5 @@ jobs:
             > four handsets resets its clock to 2011 on every power cycle, which is
             > how this was found.
 
-            TelegramJ2ME is an independent project. It is not affiliated with or
+            J2MEgram is an independent project. It is not affiliated with or
             endorsed by Telegram, and it is not a security-audited everyday client.

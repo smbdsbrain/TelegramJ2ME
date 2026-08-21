@@ -13,7 +13,7 @@ private endpoints. Test messages use an opaque marker only.
 | CLDC / MIDP | |
 | Network type | |
 | Fresh install or upgrade | |
-| Previous TelegramJ2ME version | |
+| Previous installed version | |
 | Available heap shown by diagnostics | |
 
 ## Scenario evidence

@@ -30,8 +30,8 @@ forks work.
 An RC is a local handoff artifact, not a tag. The order is mandatory:
 
 1. Run `tools/stability-gate.ps1` and fix any deterministic failure.
-2. Build `TelegramJ2ME-1.0.0-rc1` and
-   `TelegramJ2ME-1.0.0-rc1-min`, both with `-Env production` and without
+2. Build `J2MEgram-<version>-rc1` and
+   `J2MEgram-<version>-rc1-min`, both with `-Env production` and without
    `-EmbedDevSecrets`.
 3. Run offline packaged smoke for both exact RC JARs with `-Xmx32m`.
 4. Run the read-only `live`/`bigchats` scenarios and the marked two-account
@@ -54,24 +54,27 @@ Nokia C3-00 upgrade checklist has been run and its evidence recorded. See the
 
 ```powershell
 .\tools\stability-gate.ps1
-.\tools\build.ps1 -Target tg -Env production -ArtifactName TelegramJ2ME-1.0.0-rc1
-.\tools\build.ps1 -Target tg -Env production -Release -ArtifactName TelegramJ2ME-1.0.0-rc1-min
-.\tools\smoke-emulator.ps1 -SkipBuild -ArtifactName TelegramJ2ME-1.0.0-rc1,TelegramJ2ME-1.0.0-rc1-min -JavaArgs -Xmx32m
-.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1
-.\tools\rc-e2e.ps1 -ArtifactName TelegramJ2ME-1.0.0-rc1-min
+.\tools\build.ps1 -Target tg -Env production -ArtifactName J2MEgram-1.3.0-rc1
+.\tools\build.ps1 -Target tg -Env production -Release -ArtifactName J2MEgram-1.3.0-rc1-min
+.\tools\smoke-emulator.ps1 -SkipBuild -ArtifactName J2MEgram-1.3.0-rc1,J2MEgram-1.3.0-rc1-min -JavaArgs -Xmx32m
+.\tools\rc-e2e.ps1 -ArtifactName J2MEgram-1.3.0-rc1
+.\tools\rc-e2e.ps1 -ArtifactName J2MEgram-1.3.0-rc1-min
 .\tools\rc-slow-e2e.ps1
 ```
 
-The manifest and JAD version is `1.0.0`; `rc1` belongs to the filename only.
-Keeping `MIDlet-Name: TelegramJ2ME`, `MIDlet-Vendor: smbdsbrain`, and the
-production environment makes the normal RC an in-place 0.8.1 upgrade candidate.
+The manifest and JAD version is the release version; `rc1` belongs to the
+filename only. Keeping `MIDlet-Name: J2MEgram`, `MIDlet-Vendor: smbdsbrain`,
+and the production environment keeps every release from 1.3.0 onwards one
+suite, upgraded in place. (The 1.3.0 rename itself was the one deliberate
+break: a J2MEgram build installs alongside an old TelegramJ2ME suite, see
+[installing.md](installing.md).)
 `rc-e2e.ps1` drives the exact packaged JAR rather than desktop production
 classes. It obtains both usernames from authorized self-profile screens, keeps
 them under ignored `local/`, verifies the profiles are distinct without
 printing identities, and deletes them after the run.
 
 The script name is retained for compatibility, but its artifact validation
-accepts any `TelegramJ2ME-<semver>[-min]` release candidate, not only 1.0 RCs.
+accepts any `J2MEgram-<semver>[-min]` release candidate, not only 1.3 RCs.
 
 ## Cutting a release after device approval
 
@@ -94,8 +97,8 @@ install a MIDlet whose version contradicts the release it came from.
 
 | Asset | Build |
 |---|---|
-| `TelegramJ2ME-<version>.jar` / `.jad` | `-Target tg -Env production` |
-| `TelegramJ2ME-<version>-min.jar` / `.jad` | the same, plus `-Release` (optimise + obfuscate) |
+| `J2MEgram-<version>.jar` / `.jad` | `-Target tg -Env production` |
+| `J2MEgram-<version>-min.jar` / `.jad` | the same, plus `-Release` (optimise + obfuscate) |
 | `SHA256SUMS.txt` | checksums for all four files |
 
 `-Env production` is what makes the build talk to real data centres; the default is

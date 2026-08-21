@@ -1,10 +1,10 @@
-# TelegramJ2ME
+# J2MEgram
 
-**Telegram for Java ME feature phones.** A real MTProto 2.0 client that runs on
+**Unofficial Telegram J2ME Client.** A real MTProto 2.0 client that runs on
 the handset — no server, no proxy service, no web wrapper.
 
-[![CI](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml/badge.svg)](https://github.com/smbdsbrain/TelegramJ2ME/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/smbdsbrain/TelegramJ2ME?sort=semver)](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)
+[![CI](https://github.com/smbdsbrain/J2MEgram/actions/workflows/ci.yml/badge.svg)](https://github.com/smbdsbrain/J2MEgram/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/smbdsbrain/J2MEgram?sort=semver)](https://github.com/smbdsbrain/J2MEgram/releases/latest)
 [![License: WTFPL](https://img.shields.io/badge/license-WTFPL-blue.svg)](LICENSE)
 
 It installs as an ordinary `.jar` on a **MIDP 2.0 / CLDC 1.1** handset and signs
@@ -17,15 +17,15 @@ high-end handset from a few years before that. See
 [what your phone needs](#what-your-phone-needs).
 
 <p align="center">
-  <img src="docs/screenshots/dialog-list.png" width="320" alt="TelegramJ2ME chat list on a 320x240 Java ME screen">
-  <img src="docs/screenshots/weekend-chat.png" width="320" alt="TelegramJ2ME group chat with emoji on a feature phone">
-  <img src="docs/screenshots/j2me-club-dark.png" width="320" alt="TelegramJ2ME dark theme conversation">
+  <img src="docs/screenshots/dialog-list.png" width="320" alt="J2MEgram chat list on a 320x240 Java ME screen">
+  <img src="docs/screenshots/weekend-chat.png" width="320" alt="J2MEgram group chat with emoji on a feature phone">
+  <img src="docs/screenshots/j2me-club-dark.png" width="320" alt="J2MEgram dark theme conversation">
 </p>
 
 <p align="center"><sub>Real application UI at 320×240, scaled 2×. Every name and conversation is fictional.</sub></p>
 
 > [!WARNING]
-> TelegramJ2ME is an independent, early-stage project. It is not affiliated with
+> J2MEgram is an independent, early-stage project. It is not affiliated with
 > or endorsed by Telegram, and it should not yet be treated as a
 > security-audited everyday client.
 
@@ -237,14 +237,14 @@ earlier: the generation with megabytes of heap, a real file manager and no
 meaningful JAR ceiling.
 
 Rather than guess from a spec site — they disagree about exactly these
-numbers — install **`TelegramJ2ME Probe`** first. It is ~172 KB, installs in
+numbers — install **`J2MEgram Probe`** first. It is ~172 KB, installs in
 seconds, and reports the heap, the JAR limit, whether raw sockets are permitted,
 whether the phone can decode a JPEG, and what the cryptography costs on it.
 
 ### Getting the files on
 
 Prebuilt MIDlets are attached to every release:
-**[latest release](https://github.com/smbdsbrain/TelegramJ2ME/releases/latest)**.
+**[latest release](https://github.com/smbdsbrain/J2MEgram/releases/latest)**.
 
 Download **both files** of one variant into the **same folder**, copy that
 folder to the phone (USB, Bluetooth or memory card), then open the `.jad` from
@@ -255,8 +255,8 @@ instead — most will install it directly.
 
 | | |
 |---|---|
-| **`TelegramJ2ME-<version>.jar` + `.jad`**<br>~523 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
-| **`TelegramJ2ME-<version>-min.jar` + `.jad`**<br>~374 KB | The same client, optimised and obfuscated — about 29% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
+| **`J2MEgram-<version>.jar` + `.jad`**<br>~523 KB | **Start here.** Class and method names survive in this build, so if it crashes, the error names real code and the report is actionable. While the client is this young that is worth more than the kilobytes. |
+| **`J2MEgram-<version>-min.jar` + `.jad`**<br>~374 KB | The same client, optimised and obfuscated — about 29% smaller. Use it if your phone rejects the normal build as too large. **No features are removed:** same source, same entry point, same preverification. Only names and dead code go, so a crash report from it says `tg.h.x` instead of `tg.ui.SettingsScreen`. |
 
 Both are checked by an automated emulator run before release, obfuscated one
 included.
@@ -276,15 +276,15 @@ TLS, which these handsets do not have. Copy the files across instead.
 This is the part the project actually needs. Every handset is different, and
 three measured devices are still only three data points.
 
-- **[Report your phone](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=device-report.yml)**
-  — even if everything worked. Install `TelegramJ2ME Probe` first (it is tiny and
+- **[Report your phone](https://github.com/smbdsbrain/J2MEgram/issues/new?template=device-report.yml)**
+  — even if everything worked. Install `J2MEgram Probe` first (it is tiny and
   installs in seconds) and paste what it reports: the model, the heap, whether
   raw sockets are allowed, which route connected. That is the missing
   information.
-- **[Report a bug](https://github.com/smbdsbrain/TelegramJ2ME/issues/new?template=bug-report.yml)**
+- **[Report a bug](https://github.com/smbdsbrain/J2MEgram/issues/new?template=bug-report.yml)**
   — the Diagnostics and Log screens in the app are there so you can copy them
   into an issue.
-- Anything else: [open an issue](https://github.com/smbdsbrain/TelegramJ2ME/issues).
+- Anything else: [open an issue](https://github.com/smbdsbrain/J2MEgram/issues).
 
 Never paste your phone number, `api_id`, `api_hash` or an `auth_key` into an
 issue.
@@ -297,8 +297,8 @@ Builds on **Windows, Linux and macOS**. You need JDK 8, Python 3 and
 PowerShell 7.
 
 ```bash
-git clone https://github.com/smbdsbrain/TelegramJ2ME.git
-cd TelegramJ2ME
+git clone https://github.com/smbdsbrain/J2MEgram.git
+cd J2MEgram
 ./tools/bootstrap.sh            # JDK 8 check + pinned, SHA-256-verified downloads
 ./tools/build.sh -Target tg     # -> dist/tg.jar + dist/tg.jad
 ./tools/test.sh                 # 57 Java suites + 46 Python tests
@@ -317,7 +317,7 @@ testing against Telegram's servers: **[docs/building.md](docs/building.md)**.
 | | |
 |---|---|
 | [building.md](docs/building.md) | prerequisites, build, test, credentials, live testing |
-| [installing.md](docs/installing.md) | RC files, 0.8.1 upgrade path, and handset checklist |
+| [installing.md](docs/installing.md) | release files, upgrading from TelegramJ2ME, and handset checklist |
 | [architecture.md](docs/architecture.md) | how it is put together, and an honest security posture |
 | [1.0-stability-contract.md](docs/1.0-stability-contract.md) | what 1.0 guarantees, cache compatibility, and the RC handoff gate |
 | [toolchain.md](docs/toolchain.md) | pinned versions, why JDK 8, preverification |
