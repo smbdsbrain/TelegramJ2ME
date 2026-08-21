@@ -17,3 +17,13 @@
 # on the next commit. -text pins the bytes; the pin is the provenance claim.
 /third_party/bc/BigInteger.java.orig -text
 /third_party/bc/LICENSE.html -text
+
+# The pinned schema sources are verified byte-for-byte the same way: their
+# sha256 values are recorded in schema/UPSTREAM.md and asserted by
+# tools/check-schema-drift.py and tools/tests. `* text=auto` re-writes api.tl
+# to CRLF on a fresh Windows checkout (core.autocrlf=true is the runner
+# default), which is exactly how the layer-225 provenance tests fail in CI
+# while passing against a locally generated LF working tree.
+/schema/api.tl -text
+/schema/api.json -text
+/schema/mtproto.json -text
