@@ -4,8 +4,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Method;
+
+import javax.imageio.ImageIO;
 
 import javax.microedition.lcdui.Alert;
 import javax.microedition.lcdui.Canvas;
@@ -15,6 +21,8 @@ import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.StringItem;
 import javax.microedition.lcdui.TextBox;
+
+import org.microemu.device.j2se.J2SEMutableImage;
 
 /**
  * Semantic E2E driver for an exact packaged normal or obfuscated RC JAR.
@@ -50,7 +58,7 @@ public final class PackagedRcE2EDriver
             app = new EmulatorHarness();
             app.start();
             waitForHeapProbe(app);
-            requireSession(app);
+            requireSession(app, true);
 
             if ("identity".equals(role))
             {
@@ -68,6 +76,10 @@ public final class PackagedRcE2EDriver
             else if ("cleanup".equals(role) && "a".equals(side))
             {
                 exit = cleanup(app, state) ? 0 : 1;
+            }
+            else if ("poll-client".equals(role) && "a".equals(side))
+            {
+                exit = pollClient(app, state) ? 0 : 1;
             }
             else
             {
@@ -166,6 +178,47 @@ public final class PackagedRcE2EDriver
         awaitEither(cleaned, manual, RPC_MS);
         signal(state, "sender-complete");
         System.out.println("PACKAGED RC E2E SENDER PASS");
+        return true;
+    }
+
+    private static boolean pollClient(EmulatorHarness app, File state)
+            throws Exception
+    {
+        String title = read(new File(state, "chat-title"));
+        String marker = read(new File(state, "marker"));
+        // Open from the cached dialog window immediately after authorization,
+        // before the startup refresh replaces it with only the newest page.
+        openChatByTitle(app, title, state);
+        signal(state, "client-ready");
+        awaitFile(new File(state, "fixture-created"), RPC_MS);
+
+        Canvas chat = awaitCanvasTextScreen(app, marker, CONNECT_MS);
+        captureCanvas(chat, new File(state, "01-poll-arrived.png"), 2);
+        focusPoll(app);
+        press(app, "Poll");
+        Canvas picker = awaitPollPicker(app, 5000);
+        press(app, "Select");                 // Alpha
+        press(app, "Down");
+        press(app, "Select");                 // Beta; proves checkbox mode
+        if (!app.awaitCommand("Vote", 2000))
+        {
+            throw new Exception("selected poll exposed no Vote command");
+        }
+        captureCanvas(picker, new File(state, "02-poll-picker.png"), 2);
+        press(app, "Vote");
+        chat = awaitChat(app, 5000);
+        awaitPollChoice(chat, "Alpha", true, RPC_MS);
+        awaitPollChoice(chat, "Beta", true, RPC_MS);
+        captureCanvas(chat, new File(state, "03-local-vote.png"), 2);
+        signal(state, "client-voted");
+
+        awaitFile(new File(state, "fixture-changed"), RPC_MS);
+        awaitPollResult(chat, "Gamma", "50%", RPC_MS);
+        awaitPollChoice(chat, "Alpha", true, RPC_MS);
+        awaitCanvasValue(chat, "2 votes", RPC_MS);
+        captureCanvas(chat, new File(state, "04-unsolicited-revote.png"), 2);
+        signal(state, "client-complete");
+        System.out.println("PACKAGED POLL E2E CLIENT PASS");
         return true;
     }
 
@@ -409,7 +462,8 @@ public final class PackagedRcE2EDriver
         return true;
     }
 
-    private static void requireSession(EmulatorHarness app) throws Exception
+    private static void requireSession(EmulatorHarness app, boolean settle)
+            throws Exception
     {
         if (!app.awaitCommand("Connect", 10000))
         {
@@ -421,7 +475,7 @@ public final class PackagedRcE2EDriver
         {
             if (EmulatorHarness.command(app.current(), "Saved Messages") != null)
             {
-                Thread.sleep(5000);
+                if (settle) { Thread.sleep(5000); }
                 return;
             }
             Thread.sleep(250);
@@ -501,6 +555,486 @@ public final class PackagedRcE2EDriver
             throw new Exception("resolved peer did not open as a chat");
         }
         Thread.sleep(5000);
+    }
+
+    private static void openChatByTitle(EmulatorHarness app, String title,
+                                        File state)
+            throws Exception
+    {
+        long targetId = Long.parseLong(read(new File(state, "target-id")));
+        if (EmulatorHarness.command(app.current(), "Filter loaded") != null)
+        {
+            press(app, "Filter loaded");
+            TextBox filter = awaitTextBox(app, 10000);
+            filter.setString(title);
+            press(app, "Apply");
+            long filteredUntil = System.currentTimeMillis() + 10000;
+            while (System.currentTimeMillis() < filteredUntil)
+            {
+                Displayable current = app.current();
+                if (current instanceof Canvas)
+                {
+                    int found = canvasRowIndex((Canvas) current, title, targetId);
+                    if (found >= 0)
+                    {
+                        selectCanvasRow(app, found);
+                        press(app, "Open");
+                        enterGeneralTopicIfNeeded(app);
+                        return;
+                    }
+                }
+                if (current instanceof List)
+                {
+                    List rows = (List) current;
+                    for (int i = 0; i < rows.size(); i++)
+                    {
+                        String row = rows.getString(i);
+                        if (row != null && row.indexOf(title) >= 0)
+                        {
+                            rows.setSelectedIndex(i, true);
+                            press(app, "Open");
+                            enterGeneralTopicIfNeeded(app);
+                            return;
+                        }
+                    }
+                    break;
+                }
+                Thread.sleep(100);
+            }
+            if (EmulatorHarness.command(app.current(), "Clear") != null)
+            {
+                press(app, "Clear");
+                Thread.sleep(500);
+            }
+        }
+
+        // The group can be older than the retained startup page. Page the
+        // actual dialog list rather than assuming global peer search indexes
+        // private/basic groups by title.
+        writeDialogRows(app, new File(state, "dialog-rows-initial-private.txt"));
+        for (int page = 0; page < 50; page++)
+        {
+            Displayable current = app.current();
+            if (current instanceof Canvas)
+            {
+                int found = canvasRowIndex((Canvas) current, title, targetId);
+                if (found >= 0)
+                {
+                    selectCanvasRow(app, found);
+                    press(app, "Open");
+                    enterGeneralTopicIfNeeded(app);
+                    return;
+                }
+            }
+            if (current instanceof List)
+            {
+                List rows = (List) current;
+                for (int i = 0; i < rows.size(); i++)
+                {
+                    String row = rows.getString(i);
+                    if (row != null && row.indexOf(title) >= 0)
+                    {
+                        rows.setSelectedIndex(i, true);
+                        press(app, "Open");
+                        enterGeneralTopicIfNeeded(app);
+                        return;
+                    }
+                }
+            }
+            if (EmulatorHarness.command(app.current(), "More") == null) { break; }
+            press(app, "More");
+            Thread.sleep(2500);
+        }
+
+        writeDialogRows(app, new File(state, "dialog-rows-private.txt"));
+
+        // Fallback for a profile whose retained dialog window no longer
+        // includes the group.
+        press(app, "Find chat");
+        TextBox query = awaitTextBox(app, 10000);
+        query.setString(title);
+        press(app, "Search");
+        List results = awaitList(app, "Results for", RPC_MS);
+        int found = -1;
+        for (int i = 0; i < results.size(); i++)
+        {
+            String row = results.getString(i);
+            if (row != null && row.indexOf(title) >= 0)
+            {
+                found = i;
+                break;
+            }
+        }
+        if (found < 0) { throw new Exception("target group was not found"); }
+        results.setSelectedIndex(found, true);
+        press(app, "Open");
+        enterGeneralTopicIfNeeded(app);
+    }
+
+    private static void selectCanvasRow(EmulatorHarness app, int index)
+            throws Exception
+    {
+        for (int i = 0; i < 160; i++) { app.key(Canvas.KEY_NUM2); }
+        for (int i = 0; i < index; i++) { app.key(Canvas.KEY_NUM8); }
+    }
+
+    /** Locate a dialog row without naming obfuscated Dialog/Peer classes. */
+    private static int canvasRowIndex(Canvas canvas, String title, long targetId)
+    {
+        try
+        {
+            Class type = canvas.getClass();
+            while (type != null)
+            {
+                Field[] fields = type.getDeclaredFields();
+                for (int i = 0; i < fields.length; i++)
+                {
+                    if (Modifier.isStatic(fields[i].getModifiers())) { continue; }
+                    fields[i].setAccessible(true);
+                    Object value = fields[i].get(canvas);
+                    if (!(value instanceof Object[])) { continue; }
+                    Object[] rows = (Object[]) value;
+                    for (int row = 0; row < rows.length; row++)
+                    {
+                        if (nestedString(rows[row], title, 2)
+                                || nestedLong(rows[row], targetId, 2))
+                        {
+                            return row;
+                        }
+                    }
+                }
+                type = type.getSuperclass();
+            }
+        }
+        catch (Throwable ignored) { }
+        return -1;
+    }
+
+    private static boolean nestedString(Object value, String wanted, int depth)
+            throws Exception
+    {
+        if (value == null || depth < 0) { return false; }
+        Class type = value.getClass();
+        if (type.getName().startsWith("java.")
+                || type.getName().startsWith("javax."))
+        {
+            return false;
+        }
+        Field[] fields = type.getDeclaredFields();
+        for (int i = 0; i < fields.length; i++)
+        {
+            if (Modifier.isStatic(fields[i].getModifiers())) { continue; }
+            fields[i].setAccessible(true);
+            Object child = fields[i].get(value);
+            if (child instanceof String && wanted.equals(child)) { return true; }
+            if (depth > 0 && child != value
+                    && !(child instanceof Number)
+                    && !(child instanceof Boolean)
+                    && nestedString(child, wanted, depth - 1))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean nestedLong(Object value, long wanted, int depth)
+            throws Exception
+    {
+        if (value == null || depth < 0) { return false; }
+        Class type = value.getClass();
+        if (type.getName().startsWith("java.")
+                || type.getName().startsWith("javax."))
+        {
+            return false;
+        }
+        Field[] fields = type.getDeclaredFields();
+        for (int i = 0; i < fields.length; i++)
+        {
+            if (Modifier.isStatic(fields[i].getModifiers())) { continue; }
+            fields[i].setAccessible(true);
+            if (fields[i].getType() == Long.TYPE
+                    && fields[i].getLong(value) == wanted)
+            {
+                return true;
+            }
+            Object child = fields[i].get(value);
+            if (depth > 0 && child != null && child != value
+                    && !(child instanceof Number)
+                    && !(child instanceof Boolean)
+                    && nestedLong(child, wanted, depth - 1))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void enterGeneralTopicIfNeeded(EmulatorHarness app)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + RPC_MS;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Find messages") != null)
+            {
+                Thread.sleep(3000);
+                return;
+            }
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Open") != null
+                    && EmulatorHarness.command(current, "Find chat") == null)
+            {
+                int general = canvasRowIndex((Canvas) current, "General", 0);
+                if (general >= 0)
+                {
+                    selectCanvasRow(app, general);
+                    press(app, "Open");
+                }
+            }
+            if (current instanceof List
+                    && EmulatorHarness.command(current, "Open") != null
+                    && EmulatorHarness.command(current, "Find chat") == null)
+            {
+                List topics = (List) current;
+                if (topics.size() > 0)
+                {
+                    int general = 0;
+                    for (int i = 0; i < topics.size(); i++)
+                    {
+                        String row = topics.getString(i);
+                        if (row != null && row.indexOf("General") >= 0)
+                        {
+                            general = i;
+                            break;
+                        }
+                    }
+                    topics.setSelectedIndex(general, true);
+                    press(app, "Open");
+                }
+            }
+            Thread.sleep(100);
+        }
+        throw new Exception("target group/topic did not open as a chat");
+    }
+
+    private static void writeDialogRows(EmulatorHarness app, File file)
+            throws Exception
+    {
+        Displayable current = app.current();
+        if (!(current instanceof List))
+        {
+            String detail = "";
+            if (current instanceof Alert)
+            {
+                detail = "\n" + ((Alert) current).getString();
+            }
+            write(file, "screen=" + (current == null ? "null"
+                    : current.getClass().getName()) + detail);
+            return;
+        }
+        List rows = (List) current;
+        StringBuffer out = new StringBuffer();
+        for (int i = 0; i < rows.size(); i++)
+        {
+            out.append(i);
+            out.append(':');
+            out.append(rows.getString(i));
+            out.append('\n');
+        }
+        write(file, out.toString());
+    }
+
+    private static Canvas awaitCanvasTextScreen(EmulatorHarness app,
+            String text, int timeout) throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Canvas
+                    && canvasContains((Canvas) current, text)
+                    && canvasContains((Canvas) current, "[poll]"))
+            {
+                return (Canvas) current;
+            }
+            Thread.sleep(200);
+        }
+        throw new Exception("poll did not arrive through live updates");
+    }
+
+    private static boolean canvasLineContainsBoth(Canvas canvas, String first,
+                                                  String second)
+    {
+        try
+        {
+            Class type = canvas.getClass();
+            while (type != null)
+            {
+                Field[] fields = type.getDeclaredFields();
+                for (int i = 0; i < fields.length; i++)
+                {
+                    fields[i].setAccessible(true);
+                    Object value = fields[i].get(canvas);
+                    if (!(value instanceof String[])) { continue; }
+                    String[] lines = (String[]) value;
+                    for (int j = 0; j < lines.length; j++)
+                    {
+                        if (lines[j] != null && lines[j].indexOf(first) >= 0
+                                && lines[j].indexOf(second) >= 0)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                type = type.getSuperclass();
+            }
+        }
+        catch (Throwable ignored) { }
+        return false;
+    }
+
+    private static void focusPoll(EmulatorHarness app) throws Exception
+    {
+        for (int i = 0; i < 80; i++)
+        {
+            if (EmulatorHarness.command(app.current(), "Poll") != null) { return; }
+            if (!app.key(Canvas.KEY_NUM8))
+            {
+                throw new Exception("chat stopped accepting Down");
+            }
+            Thread.sleep(25);
+        }
+        throw new Exception("arrived poll could not be focused");
+    }
+
+    private static Canvas awaitPollPicker(EmulatorHarness app, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            Displayable current = app.current();
+            if (current instanceof Canvas
+                    && EmulatorHarness.command(current, "Select") != null
+                    && EmulatorHarness.command(current, "Find messages") == null)
+            {
+                return (Canvas) current;
+            }
+            Thread.sleep(50);
+        }
+        throw new Exception("poll picker did not open");
+    }
+
+    private static void awaitPollChoice(Canvas chat, String option,
+                                        boolean chosen, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            if (lineHasChoice(chat, option, chosen)) { return; }
+            Thread.sleep(100);
+        }
+        throw new Exception("authoritative poll choice was not repainted");
+    }
+
+    private static void awaitPollResult(Canvas chat, String option,
+                                        String result, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            if (canvasLineContainsBoth(chat, option, result)) { return; }
+            Thread.sleep(100);
+        }
+        throw new Exception("unsolicited poll totals were not repainted");
+    }
+
+    private static void awaitCanvasValue(Canvas chat, String value, int timeout)
+            throws Exception
+    {
+        long until = System.currentTimeMillis() + timeout;
+        while (System.currentTimeMillis() < until)
+        {
+            if (canvasContains(chat, value)) { return; }
+            Thread.sleep(100);
+        }
+        throw new Exception("expected poll summary was not repainted");
+    }
+
+    private static boolean lineHasChoice(Canvas canvas, String option,
+                                         boolean chosen)
+    {
+        String mark = chosen ? "[x]" : "[ ]";
+        try
+        {
+            Class type = canvas.getClass();
+            while (type != null)
+            {
+                Field[] fields = type.getDeclaredFields();
+                for (int i = 0; i < fields.length; i++)
+                {
+                    fields[i].setAccessible(true);
+                    Object value = fields[i].get(canvas);
+                    if (!(value instanceof String[])) { continue; }
+                    String[] lines = (String[]) value;
+                    for (int j = 0; j < lines.length; j++)
+                    {
+                        if (lines[j] != null && lines[j].indexOf(mark) >= 0
+                                && lines[j].indexOf(option) >= 0)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                type = type.getSuperclass();
+            }
+        }
+        catch (Throwable ignored) { }
+        return false;
+    }
+
+    private static void captureCanvas(Canvas canvas, File file, int scale)
+            throws Exception
+    {
+        int width = canvas.getWidth();
+        int height = canvas.getHeight();
+        J2SEMutableImage image = new J2SEMutableImage(width, height);
+        Method paint = null;
+        Class type = canvas.getClass();
+        while (type != null && paint == null)
+        {
+            try
+            {
+                paint = type.getDeclaredMethod("paint", new Class[] {
+                        javax.microedition.lcdui.Graphics.class });
+            }
+            catch (NoSuchMethodException missing) { type = type.getSuperclass(); }
+        }
+        if (paint == null) { throw new NoSuchMethodException("Canvas.paint"); }
+        paint.setAccessible(true);
+        paint.invoke(canvas, new Object[] { image.getGraphics() });
+        int[] pixels = new int[width * height];
+        image.getRGB(pixels, 0, width, 0, 0, width, height);
+        BufferedImage nativeImage = new BufferedImage(width, height,
+                BufferedImage.TYPE_INT_RGB);
+        nativeImage.setRGB(0, 0, width, height, pixels, 0, width);
+        BufferedImage scaled = new BufferedImage(width * scale, height * scale,
+                BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = scaled.createGraphics();
+        try
+        {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            graphics.drawImage(nativeImage, 0, 0, scaled.getWidth(),
+                    scaled.getHeight(), null);
+        }
+        finally { graphics.dispose(); }
+        ImageIO.write(scaled, "png", file);
     }
 
     /** Search the open chat and optionally open a matching result. */

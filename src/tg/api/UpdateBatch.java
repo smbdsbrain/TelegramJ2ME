@@ -12,6 +12,7 @@ public final class UpdateBatch
     public Message[] edits = new Message[0];
     public ReadState[] reads = new ReadState[0];
     public ReactionUpdate[] reactions = new ReactionUpdate[0];
+    public PollUpdate[] polls = new PollUpdate[0];
     public boolean fullRefresh;
     public String syncState;
     public String detail;

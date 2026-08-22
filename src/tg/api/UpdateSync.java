@@ -81,6 +81,7 @@ public final class UpdateSync
         final Vector edits = new Vector();
         final Vector reads = new Vector();
         final Vector reactions = new Vector();
+        final Vector polls = new Vector();
         boolean fullRefresh;
 
         UpdateBatch freeze()
@@ -94,6 +95,8 @@ public final class UpdateSync
             reads.copyInto(out.reads);
             out.reactions = new ReactionUpdate[reactions.size()];
             reactions.copyInto(out.reactions);
+            out.polls = new PollUpdate[polls.size()];
+            polls.copyInto(out.polls);
             out.fullRefresh = fullRefresh;
             return out;
         }
@@ -101,7 +104,8 @@ public final class UpdateSync
         boolean isEmpty()
         {
             return messages.size() == 0 && edits.size() == 0 && reads.size() == 0
-                    && reactions.size() == 0 && !fullRefresh;
+                    && reactions.size() == 0 && polls.size() == 0
+                    && !fullRefresh;
         }
     }
 
@@ -1169,6 +1173,28 @@ public final class UpdateSync
             changed.reactions = ReactionSummary.from(update.obj(
                     Api.F_UPDATE_MESSAGE_REACTIONS__REACTIONS));
             batch.reactions.addElement(changed);
+            return true;
+        }
+        if (update.id == Api.UPDATE_MESSAGE_POLL)
+        {
+            PollUpdate changed = new PollUpdate();
+            if (update.flag(1))
+            {
+                changed.peer = peers.resolve(Peer.fromPeerObj(
+                        update.obj(Api.F_UPDATE_MESSAGE_POLL__PEER)));
+                changed.messageId = update.intAt(
+                        Api.F_UPDATE_MESSAGE_POLL__MSG_ID);
+            }
+            if (update.flag(2))
+            {
+                changed.topMessageId = update.intAt(
+                        Api.F_UPDATE_MESSAGE_POLL__TOP_MSG_ID);
+            }
+            changed.pollId = update.num(Api.F_UPDATE_MESSAGE_POLL__POLL_ID);
+            changed.poll = Poll.partial(changed.pollId,
+                    update.obj(Api.F_UPDATE_MESSAGE_POLL__POLL),
+                    update.obj(Api.F_UPDATE_MESSAGE_POLL__RESULTS));
+            batch.polls.addElement(changed);
             return true;
         }
         if (update.id == Api.UPDATE_DELETE_MESSAGES

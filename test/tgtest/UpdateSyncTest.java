@@ -184,6 +184,43 @@ public final class UpdateSyncTest implements Test
                 "sender sees edit", capture.lastEdit.text);
         Assert.equal("duplicate local edit leaves pts", 13, waitPts(sync, 13));
 
+        // updateMessagePoll has no pts of its own. Both a result accepted from
+        // messages.sendVote and the same shape arriving unsolicited must be
+        // delivered without advancing or recovering the common cursor.
+        sync.accept(pollUpdate(7001L, null, 0, 4));
+        capture.waitPolls(1);
+        Assert.equal("global poll update id", 7001L,
+                capture.lastPoll.pollId);
+        Assert.isTrue("global poll update has no peer",
+                capture.lastPoll.peer == null);
+        Assert.equal("partial poll total", 4,
+                capture.lastPoll.poll.totalVoters);
+        tg.api.Poll retained = new tg.api.Poll();
+        retained.id = 7001L;
+        retained.question = "retained definition";
+        tg.api.PollOption retainedOption = new tg.api.PollOption();
+        retainedOption.text = "retained option";
+        retainedOption.option = new byte[] { 9 };
+        retained.options = new tg.api.PollOption[] { retainedOption };
+        retained.merge(capture.lastPoll.poll);
+        Assert.equal("results-only update retains question",
+                "retained definition", retained.question);
+        Assert.equal("results-only update retains options", 1,
+                retained.options.length);
+        Assert.equal("results-only update merges total", 4,
+                retained.totalVoters);
+        Assert.equal("poll-only update leaves pts", 13, waitPts(sync, 13));
+
+        sync.accept(pollUpdate(7001L, other, 1, 5));
+        capture.waitPolls(2);
+        Assert.equal("addressed poll message", 1,
+                capture.lastPoll.messageId);
+        Assert.equal("addressed poll peer", 200L,
+                capture.lastPoll.peer.id);
+        Assert.equal("unsolicited poll total", 5,
+                capture.lastPoll.poll.totalVoters);
+        Assert.equal("second poll update leaves pts", 13, waitPts(sync, 13));
+
         sync.accept(shortMessage(2, 200, "gap", 15, 1, 23));
         waitDifferenceCalls(rpc, 2);
         Assert.equal("gap message not applied", 1, capture.messageCount);
@@ -695,10 +732,12 @@ public final class UpdateSyncTest implements Test
         volatile int messageCount;
         volatile int editCount;
         volatile int readCount;
+        volatile int pollCount;
         volatile UpdateBatch last;
         volatile Message lastMessage;
         volatile Message lastEdit;
         volatile tg.api.ReadState lastRead;
+        volatile tg.api.PollUpdate lastPoll;
         volatile boolean sawRetry;
         volatile int fullRefreshCount;
 
@@ -708,6 +747,7 @@ public final class UpdateSyncTest implements Test
             messageCount += batch.messages.length;
             editCount += batch.edits.length;
             readCount += batch.reads.length;
+            pollCount += batch.polls.length;
             if (batch.retrySeconds >= 0) { sawRetry = true; }
             if (batch.fullRefresh) { fullRefreshCount++; }
             if (batch.messages.length > 0)
@@ -721,6 +761,10 @@ public final class UpdateSyncTest implements Test
             if (batch.reads.length > 0)
             {
                 lastRead = batch.reads[batch.reads.length - 1];
+            }
+            if (batch.polls.length > 0)
+            {
+                lastPoll = batch.polls[batch.polls.length - 1];
             }
             notifyAll();
         }
@@ -755,6 +799,16 @@ public final class UpdateSyncTest implements Test
             Assert.equal("edit callback count", expected, editCount);
         }
 
+        synchronized void waitPolls(int expected) throws Exception
+        {
+            long until = System.currentTimeMillis() + 3000;
+            while (pollCount < expected && System.currentTimeMillis() < until)
+            {
+                wait(50);
+            }
+            Assert.equal("poll callback count", expected, pollCount);
+        }
+
         synchronized void waitFullRefreshes(int expected) throws Exception
         {
             long until = System.currentTimeMillis() + 3000;
@@ -776,6 +830,40 @@ public final class UpdateSyncTest implements Test
         w.writeInt(date);
         w.writeInt(seq);
         w.writeInt(0);                       // unread_count
+        return w.toByteArray();
+    }
+
+    private static byte[] pollUpdate(long pollId, Peer peer, int messageId,
+                                     int totalVoters)
+    {
+        TlWriter w = new TlWriter(80);
+        w.writeInt(Api.UPDATE_SHORT);
+        w.writeInt(Api.UPDATE_MESSAGE_POLL);
+        w.writeInt(peer == null ? 0 : 2);     // flags; peer + msg_id share bit 1
+        if (peer != null)
+        {
+            if (peer.kind == Peer.USER)
+            {
+                w.writeInt(Api.PEER_USER);
+                w.writeLong(peer.id);
+            }
+            else if (peer.kind == Peer.CHAT)
+            {
+                w.writeInt(Api.PEER_CHAT);
+                w.writeLong(peer.id);
+            }
+            else
+            {
+                w.writeInt(Api.PEER_CHANNEL);
+                w.writeLong(peer.id);
+            }
+            w.writeInt(messageId);
+        }
+        w.writeLong(pollId);
+        w.writeInt(Api.POLL_RESULTS);
+        w.writeInt(4);                        // total_voters is present
+        w.writeInt(totalVoters);
+        w.writeInt(24);                       // updateShort.date
         return w.toByteArray();
     }
 

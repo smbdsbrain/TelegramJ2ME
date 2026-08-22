@@ -106,6 +106,8 @@ anyone can do for this project right now.
 - Delete for yourself, for everyone, or from a channel
 - Read receipts, incoming and outgoing, channels included
 - Send and remove reactions, with the picker and the "who reacted" list
+- Read ordinary, multiple-choice, quiz and closed polls; vote from a bounded
+  radio/checkbox picker and see results update live
 - View the complete text and inspect supported URL, username, phone, and email
   targets before a confirmed external action
 - Live updates with gap recovery — a real update state machine, not polling
@@ -128,11 +130,13 @@ anyone can do for this project right now.
 
 **Media**
 - View photos, with zoom and D-pad pan
+- Open polls, choose one or several answers, and read percentages, quiz
+  correctness and solutions when Telegram discloses them
 - Pure-Java JPEG decoder — most of these handsets cannot decode JPEG themselves
 - Blurred inline thumbnails in the chat list
 - Avatars, cached on the device
 - ~150 emoji from a sprite atlas
-- Every other media type labelled in place — `[sticker]`, `[voice]`, `[video]` —
+- Every other non-poll media type labelled in place — `[sticker]`, `[voice]`, `[video]` —
   so the conversation still reads correctly, though nothing but a photo can
   actually be opened
 
@@ -160,8 +164,8 @@ anyone can do for this project right now.
 Mostly because of what the platform is: a few megabytes of heap, no codecs, no
 background execution and a CPU without a JIT.
 
-**Sending — outbound is text only**
-- Photos, files, voice, any attachment at all
+**Sending — outbound is text plus votes**
+- Creating polls, photos, files, voice, or other new attachments
 
 **Opening incoming media other than photos.** The message itself arrives
 normally, text and all, but where the attachment should be there is only a label
@@ -176,7 +180,7 @@ Photos are the one exception: those download and open.
 - Notifications of any kind, including background alerts
 - Secret chats (end-to-end)
 - Voice and video calls
-- Folders, polls, scheduled messages, typing indicators
+- Folders, scheduled messages, typing indicators
 - Group and channel administration, including topic management — topics are
   read and written, not created, closed or pinned; forwarding into a forum
   lands in General

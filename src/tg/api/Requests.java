@@ -679,6 +679,34 @@ public final class Requests
         return w.toByteArray();
     }
 
+    /**
+     * messages.sendVote#10ea6184 peer:InputPeer msg_id:int
+     *     options:Vector&lt;bytes&gt; = Updates
+     *
+     * The values are opaque pollAnswer.option tokens. An empty vector is a
+     * valid wire shape (Telegram may interpret it as retracting a vote), even
+     * though the first product UI deliberately requires at least one choice.
+     */
+    public static byte[] sendVote(Peer peer, int messageId, byte[][] options)
+    {
+        int count = options == null ? 0 : options.length;
+        int bytes = 48;
+        for (int i = 0; i < count; i++)
+        {
+            bytes += options[i] == null ? 4 : options[i].length + 4;
+        }
+        TlWriter w = new TlWriter(bytes);
+        w.writeInt(Api.MESSAGES_SEND_VOTE);
+        writeInputPeer(w, peer);
+        w.writeInt(messageId);
+        w.writeVectorHeader(count);
+        for (int i = 0; i < count; i++)
+        {
+            w.writeBytes(options[i] == null ? new byte[0] : options[i]);
+        }
+        return w.toByteArray();
+    }
+
     /** First bounded page of peers who reacted to one message. */
     public static byte[] getMessageReactions(Peer peer, int messageId, int limit)
     {

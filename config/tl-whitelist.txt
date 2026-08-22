@@ -36,6 +36,11 @@ messages.getAvailableReactions
 messages.getFullChat
 channels.getFullChannel
 messages.sendMessage
+# Poll creation is not a product feature. sendMedia is exposed only so the
+# desktop emulator E2E fixture can create one disposable/marked poll through
+# the same pinned layer instead of depending on a bot or another client.
+messages.sendMedia
+messages.sendVote
 messages.editMessage
 messages.forwardMessages
 messages.deleteMessages
@@ -172,6 +177,42 @@ messageService.out
 # Service messages inside a topic carry the same reply header; without it a
 # pin or join notice would be bucketed into General.
 messageService.reply_to
+
+messageMediaPoll.poll
+messageMediaPoll.results
+
+poll.id
+poll.closed
+poll.public_voters
+poll.multiple_choice
+poll.quiz
+poll.open_answers
+poll.revoting_disabled
+poll.shuffle_answers
+poll.hide_results_until_close
+poll.creator
+poll.subscribers_only
+poll.question
+poll.answers
+poll.close_period
+poll.close_date
+poll.countries_iso2
+poll.hash
+
+pollAnswer.text
+pollAnswer.option
+textWithEntities.text
+textWithEntities.entities
+
+pollResults.min
+pollResults.results
+pollResults.total_voters
+pollResults.solution
+pollResults.solution_entities
+pollAnswerVoters.chosen
+pollAnswerVoters.correct
+pollAnswerVoters.option
+pollAnswerVoters.voters
 
 messages.dialogs.dialogs
 messages.dialogs.messages
@@ -374,6 +415,12 @@ reactionEmoji.emoticon
 updateMessageReactions.peer
 updateMessageReactions.msg_id
 updateMessageReactions.reactions
+updateMessagePoll.peer
+updateMessagePoll.msg_id
+updateMessagePoll.top_msg_id
+updateMessagePoll.poll_id
+updateMessagePoll.poll
+updateMessagePoll.results
 
 messages.messageReactionsList.count
 messages.messageReactionsList.reactions

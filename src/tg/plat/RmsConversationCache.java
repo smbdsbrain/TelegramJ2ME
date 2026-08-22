@@ -18,6 +18,8 @@ import tg.api.Message;
 import tg.api.MessageEntity;
 import tg.api.Peer;
 import tg.api.ReactionSummary;
+import tg.api.Poll;
+import tg.api.PollOption;
 import tg.api.RecordEnvelope;
 import tg.diag.Diag;
 import tg.tl.TlReader;
@@ -63,7 +65,7 @@ public final class RmsConversationCache implements AccountStore
     private static final int DIALOG_MAGIC = 0x54474434;
     private static final int HISTORY_MAGIC = 0x54474834;
     private static final int DIALOG_VERSION = 3;
-    private static final int HISTORY_VERSION = 4;
+    private static final int HISTORY_VERSION = 5;
     private static final int MAX_CACHED_DIALOGS = 80;
     private static final int MAX_CACHED_MESSAGES = 30;
     private static final int MAX_HISTORIES = 6;
@@ -331,6 +333,15 @@ public final class RmsConversationCache implements AccountStore
             w.writeInt(1);
             w.writeInt(m.media.kind);
             w.writeString(text(m.media.label));
+            if (m.media.poll == null)
+            {
+                w.writeInt(0);
+            }
+            else
+            {
+                w.writeInt(1);
+                writePoll(w, m.media.poll);
+            }
         }
         w.writeInt(m.replyToMessageId);
         ReactionSummary[] reactions = m.reactions == null
@@ -397,6 +408,10 @@ public final class RmsConversationCache implements AccountStore
             m.media = new Media();
             m.media.kind = r.readInt();
             m.media.label = r.readString();
+            if (version >= 5 && r.readInt() != 0)
+            {
+                m.media.poll = readPoll(r);
+            }
         }
         m.replyToMessageId = r.readInt();
         int count = bounded(r.readInt(), 12);
@@ -450,6 +465,82 @@ public final class RmsConversationCache implements AccountStore
             m.repliesCount = bounded(r.readInt(), 1000000);
         }
         return m;
+    }
+
+    private static void writePoll(TlWriter w, Poll poll)
+    {
+        w.writeLong(poll.id);
+        int flags = (poll.closed ? 1 : 0)
+                | (poll.publicVoters ? 2 : 0)
+                | (poll.multipleChoice ? 4 : 0)
+                | (poll.quiz ? 8 : 0)
+                | (poll.openAnswers ? 16 : 0)
+                | (poll.revotingDisabled ? 32 : 0)
+                | (poll.shuffleAnswers ? 64 : 0)
+                | (poll.hideResultsUntilClose ? 128 : 0)
+                | (poll.creator ? 256 : 0)
+                | (poll.subscribersOnly ? 512 : 0);
+        w.writeInt(flags);
+        w.writeString(text(poll.question));
+        w.writeInt(poll.totalVoters);
+        w.writeString(text(poll.solution));
+        w.writeInt(poll.closePeriod);
+        w.writeInt(poll.closeDate);
+        PollOption[] options = poll.options == null
+                ? new PollOption[0] : poll.options;
+        int count = Math.min(options.length, Poll.MAX_OPTIONS);
+        w.writeInt(count);
+        for (int i = 0; i < count; i++)
+        {
+            PollOption option = options[i];
+            w.writeString(text(option == null ? "" : option.text));
+            w.writeBytes(option == null || option.option == null
+                    ? new byte[0] : option.option);
+            w.writeInt(option == null ? -1 : option.voters);
+            int optionFlags = option != null && option.chosen ? 1 : 0;
+            if (option != null && option.correct) { optionFlags |= 2; }
+            w.writeInt(optionFlags);
+        }
+    }
+
+    private static Poll readPoll(TlReader r) throws IOException
+    {
+        Poll poll = new Poll();
+        poll.id = r.readLong();
+        int flags = r.readInt();
+        poll.closed = (flags & 1) != 0;
+        poll.publicVoters = (flags & 2) != 0;
+        poll.multipleChoice = (flags & 4) != 0;
+        poll.quiz = (flags & 8) != 0;
+        poll.openAnswers = (flags & 16) != 0;
+        poll.revotingDisabled = (flags & 32) != 0;
+        poll.shuffleAnswers = (flags & 64) != 0;
+        poll.hideResultsUntilClose = (flags & 128) != 0;
+        poll.creator = (flags & 256) != 0;
+        poll.subscribersOnly = (flags & 512) != 0;
+        poll.question = r.readString();
+        poll.totalVoters = r.readInt();
+        poll.solution = r.readString();
+        poll.closePeriod = r.readInt();
+        poll.closeDate = r.readInt();
+        int count = bounded(r.readInt(), Poll.MAX_OPTIONS);
+        poll.options = new PollOption[count];
+        for (int i = 0; i < count; i++)
+        {
+            PollOption option = new PollOption();
+            option.text = r.readString();
+            option.option = r.readBytes();
+            if (option.option.length == 0 || option.option.length > 256)
+            {
+                throw new IOException("invalid cached poll option token");
+            }
+            option.voters = r.readInt();
+            int optionFlags = r.readInt();
+            option.chosen = (optionFlags & 1) != 0;
+            option.correct = (optionFlags & 2) != 0;
+            poll.options[i] = option;
+        }
+        return poll;
     }
 
     /**

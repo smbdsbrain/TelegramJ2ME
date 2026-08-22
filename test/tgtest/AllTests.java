@@ -71,6 +71,7 @@ public final class AllTests
             new MessageEntityTest(),
             new RichTextTest(),
             new Phase4ContentTest(),
+            new PollTest(),
             new Phase5AuthTest(),
             new Phase6Test(),
             new Phase7DesignTest(),

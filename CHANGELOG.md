@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+
+- Incoming ordinary, multiple-choice, quiz and closed polls render inline and
+  open into a keypad-driven radio/checkbox picker. `messages.sendVote` sends
+  opaque option tokens, while `updateMessagePoll` supplies the authoritative
+  choice, totals, quiz correctness and solution without a manual refresh.
+- A two-session `tools/poll-e2e.ps1` scenario creates a uniquely marked poll in
+  the prepared group, drives normal and minified packaged JARs through voting
+  and an unsolicited revote, and retains screenshots plus the final test poll.
+
+### Changed
+
+- History cache v5 retains poll definitions, opaque answer tokens, choices,
+  totals and quiz results. The reader accepts v1-v5; a downgrade may discard
+  v5 history and fetch it again without touching auth, outbox or drafts.
+
+### Testing
+
+- Poll parsing, wire encoding, update sync, UI and cache coverage pass in the
+  desktop suite. Normal and minified packaged JARs pass emulator smoke and the
+  two-account live poll flow; voting was also verified on a Nokia E6-00.
+
 ## 1.3.0
 
 ### Changed

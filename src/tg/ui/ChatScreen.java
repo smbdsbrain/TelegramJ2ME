@@ -9,6 +9,8 @@ import tg.api.Media;
 import tg.api.Message;
 import tg.api.MessageEntity;
 import tg.api.Peer;
+import tg.api.Poll;
+import tg.api.PollOption;
 import tg.api.ReactionSummary;
 import tg.api.ThreadInfo;
 import tg.mem.MemoryBudget;
@@ -500,9 +502,15 @@ public class ChatScreen extends Canvas
                         m.id, 200, m.entities);
                 if (m.media != null)
                 {
-                    count = wrap(m.media.label, width, pass, count,
-                            m.outgoing, m.id, 1000);
+                    if (m.media.kind == Media.POLL && m.media.poll != null)
                     {
+                        count = layoutPoll(m.media.poll, width, pass, count,
+                                m.outgoing, m.id);
+                    }
+                    else
+                    {
+                        count = wrap(m.media.label, width, pass, count,
+                                m.outgoing, m.id, 1000);
                         int rows = thumbnailRows(m);
                         for (int row = 0; row < rows; row++)
                         {
@@ -656,11 +664,18 @@ public class ChatScreen extends Canvas
         }
         if (m.media != null)
         {
-            if (m.media.label != null && m.media.label.length() > 0)
+            if (m.media.kind == Media.POLL && m.media.poll != null)
             {
-                count += countWrapped(m.media.label, width);
+                count += pollLineCount(m.media.poll, width);
             }
-            count += thumbnailRows(m);
+            else
+            {
+                if (m.media.label != null && m.media.label.length() > 0)
+                {
+                    count += countWrapped(m.media.label, width);
+                }
+                count += thumbnailRows(m);
+            }
         }
         String reactions = reactionLine(m.reactions);
         if (reactions.length() > 0) { count += countWrapped(reactions, width); }
@@ -1243,6 +1258,120 @@ public class ChatScreen extends Canvas
             out.append(reaction.count);
         }
         return out.toString();
+    }
+
+    private int layoutPoll(Poll poll, int width, int pass, int at,
+                           boolean isOutgoing, int messageId)
+    {
+        int offset = 1200;
+        at = wrap(pollHeader(poll), width, pass, at, isOutgoing,
+                messageId, offset);
+        offset += 32;
+        for (int i = 0; i < poll.options.length; i++)
+        {
+            at = wrap(pollOptionLine(poll, poll.options[i]), width, pass, at,
+                    isOutgoing, messageId, offset);
+            offset += 32;
+        }
+        int footerStart = at;
+        at = wrap(pollFooter(poll), width, pass, at, isOutgoing,
+                messageId, 1700);
+        if (pass == 1)
+        {
+            for (int i = footerStart; i < at; i++) { meta[i] = true; }
+        }
+        if (poll.solution != null && poll.solution.length() > 0)
+        {
+            int solutionStart = at;
+            at = wrap("Solution: " + poll.solution, width, pass, at,
+                    isOutgoing, messageId, 1800);
+            if (pass == 1)
+            {
+                for (int i = solutionStart; i < at; i++) { meta[i] = true; }
+            }
+        }
+        return at;
+    }
+
+    private int pollLineCount(Poll poll, int width)
+    {
+        int count = countWrapped(pollHeader(poll), width);
+        for (int i = 0; i < poll.options.length; i++)
+        {
+            count += countWrapped(pollOptionLine(poll, poll.options[i]), width);
+        }
+        count += countWrapped(pollFooter(poll), width);
+        if (poll.solution != null && poll.solution.length() > 0)
+        {
+            count += countWrapped("Solution: " + poll.solution, width);
+        }
+        return count;
+    }
+
+    private static String pollHeader(Poll poll)
+    {
+        String label = poll.quiz ? "[quiz]" : "[poll]";
+        return poll.question == null || poll.question.length() == 0
+                ? label : label + " " + poll.question;
+    }
+
+    private static String pollOptionLine(Poll poll, PollOption option)
+    {
+        if (option == null) { return "[ ]"; }
+        StringBuffer out = new StringBuffer();
+        out.append(option.chosen ? "[x] " : "[ ] ");
+        int percent = poll.percent(option);
+        if (percent >= 0)
+        {
+            out.append(percent);
+            out.append("% ");
+        }
+        out.append(option.text == null ? "" : option.text);
+        if (poll.quiz && option.correct)
+        {
+            out.append(" (correct)");
+        }
+        else if (poll.quiz && option.chosen && knownCorrect(poll))
+        {
+            out.append(" (wrong)");
+        }
+        return out.toString();
+    }
+
+    private static boolean knownCorrect(Poll poll)
+    {
+        for (int i = 0; i < poll.options.length; i++)
+        {
+            if (poll.options[i] != null && poll.options[i].correct) { return true; }
+        }
+        return poll.solution != null && poll.solution.length() > 0;
+    }
+
+    private static String pollFooter(Poll poll)
+    {
+        StringBuffer out = new StringBuffer();
+        if (poll.totalVoters >= 0)
+        {
+            out.append(poll.totalVoters);
+            out.append(poll.totalVoters == 1 ? " vote" : " votes");
+        }
+        appendPollFact(out, poll.publicVoters ? "public" : "anonymous");
+        if (poll.multipleChoice) { appendPollFact(out, "multiple"); }
+        if (poll.closed) { appendPollFact(out, "closed"); }
+        else if (poll.revotingDisabled) { appendPollFact(out, "one vote only"); }
+        if (poll.hideResultsUntilClose && !poll.closed
+                && !poll.hasOptionResults())
+        {
+            appendPollFact(out, "results hidden");
+        }
+        if (poll.subscribersOnly) { appendPollFact(out, "members only"); }
+        return out.toString();
+    }
+
+    private static void appendPollFact(StringBuffer out, String value)
+    {
+        if (out.length() > 0) { out.append(", "); }
+        out.append(value);
     }
 
     public static String replyLine(Message message, Message[] messages)

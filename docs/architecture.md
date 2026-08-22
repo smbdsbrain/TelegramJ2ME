@@ -617,13 +617,27 @@ that silently dropped the user's unsent messages would not be acceptable for
 either.
 
 Conversation caches are deliberately a separate, discardable compatibility
-line. Dialog cache stays v1. History v1 contains the bounded message core, v2
-adds bounded entities, and v3 adds `edit_date`; the current reader accepts all
-three and the writer emits v3. Missing newer fields default empty/zero. A
-downgrade to 0.8.1 may discard v3 history and refetch it, so downgrade cache
-retention is not part of the 1.0 contract. Auth keys, outbox, drafts, settings,
-and update cursors are not conversation-cache records and are not discarded by
-that migration.
+line. History v1 contains the bounded message core, v2 adds bounded entities,
+v3 adds `edit_date`, v4 adds thread/reply facts, and v5 adds bounded poll
+definitions, opaque option tokens and results. The current reader accepts all
+five and the writer emits v5. Missing newer fields default empty/zero. An older
+build may discard v5 history and refetch it; auth keys, outbox, drafts,
+settings, and update cursors are separate records and are not affected.
+
+**Poll state is keyed by bytes, never row number.** `Poll` retains at most
+twelve `PollOption` values and their original `option:bytes` tokens. Result
+vectors may be unordered, so counts, `chosen`, and quiz `correct` flags are
+matched by token. A partial `updateMessagePoll` can omit the definition; its
+results merge into the retained message by `(peer,msg_id)` when supplied and
+otherwise by globally unique `poll_id`. A `min` result never clears a choice
+already known for the current account. A miss outside the retained history
+window is ignored instead of provoking a snapshot refresh.
+
+`PollScreen` owns only a transient selection. `Vote` submits the complete token
+set and returns to the chat with `voting...`; neither inline rows nor cached
+results change until the returned/unsolicited `Updates` reaches `UpdateSync`,
+is delivered on the display thread, and reflows `ChatScreen`. Closed polls and
+non-revotable completed polls use the same picker read-only.
 
 ## Durable user state
 

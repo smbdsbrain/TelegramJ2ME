@@ -2229,6 +2229,35 @@ public final class Telegram
         updates.accept(result);
     }
 
+    /** Send the complete selected option set for one poll message. */
+    public void sendVote(Peer peer, int messageId, byte[][] options)
+            throws IOException
+    {
+        if (!peers.isAddressable(peer))
+        {
+            throw new IOException("cannot address " + peer
+                    + " - refresh the dialog list");
+        }
+        if (messageId <= 0) { throw new IOException("poll is not sent yet"); }
+        if (options == null || options.length == 0)
+        {
+            throw new IOException("choose at least one poll option");
+        }
+        if (options.length > Poll.MAX_OPTIONS)
+        {
+            throw new IOException("too many poll options selected");
+        }
+        for (int i = 0; i < options.length; i++)
+        {
+            if (options[i] == null || options[i].length == 0)
+            {
+                throw new IOException("invalid empty poll option");
+            }
+        }
+        byte[] result = invoke(Requests.sendVote(peer, messageId, options));
+        updates.accept(result);
+    }
+
     /**
      * Open a one-shot, separately-sessioned photo stream. No file RPC is made
      * until the returned stream is read.

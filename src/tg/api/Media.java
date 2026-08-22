@@ -26,6 +26,7 @@ public final class Media
     public int kind;
     public String label;
     public PhotoRef photo;
+    public Poll poll;
 
     public static Media from(TlObj obj)
     {
@@ -70,7 +71,14 @@ public final class Media
             return simple(LOCATION, "[location]");
         }
         if (obj.id == Api.MESSAGE_MEDIA_CONTACT) { return simple(CONTACT, "[contact]"); }
-        if (obj.id == Api.MESSAGE_MEDIA_POLL) { return simple(POLL, "[poll]"); }
+        if (obj.id == Api.MESSAGE_MEDIA_POLL)
+        {
+            Media pollMedia = simple(POLL, "[poll]");
+            pollMedia.poll = Poll.from(
+                    obj.obj(Api.F_MESSAGE_MEDIA_POLL__POLL),
+                    obj.obj(Api.F_MESSAGE_MEDIA_POLL__RESULTS));
+            return pollMedia;
+        }
         if (obj.id == Api.MESSAGE_MEDIA_DICE) { return simple(DICE, "[dice]"); }
         if (obj.id == Api.MESSAGE_MEDIA_GAME) { return simple(GAME, "[game]"); }
         if (obj.id == Api.MESSAGE_MEDIA_INVOICE) { return simple(INVOICE, "[invoice]"); }

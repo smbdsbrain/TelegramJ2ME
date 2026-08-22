@@ -135,6 +135,26 @@ Use `-DelayMs 20 -ChunkBytes 512` for a harsher manual GPRS-like stress run;
 the release gate keeps the calibrated profile above so unrelated live Telegram
 timeouts do not masquerade as a deterministic UI regression.
 
+### Packaged poll E2E
+
+With the authorized `live` profile and the prepared group available, build the
+normal and minified production artifacts and run:
+
+```powershell
+.\tools\poll-e2e.ps1
+```
+
+The script copies the authorized `live` client and `bigchats` fixture profiles
+into isolated MicroEmulator homes per artifact. A temporary text bump brings
+the old forum into the first dialog page, the exact packaged JAR opens General,
+and only then does the distinct fixture account create a uniquely marked
+multiple-choice poll, proving live arrival without `Refresh`. The client
+selects two answers and waits for authoritative results; the fixture account
+then replaces its own vote, changing public totals and producing an unsolicited
+`updateMessagePoll`. Four screenshots and a compact evidence file per artifact
+are kept below `local/poll-e2e/`. Bumps and intermediate polls are removed; the
+final uniquely marked poll is intentionally retained in its final state.
+
 ### The menu-ordering rule it enforces
 
 MIDP only promises to honour a command's priority *within* one command type;

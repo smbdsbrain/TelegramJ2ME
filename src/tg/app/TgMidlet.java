@@ -29,6 +29,8 @@ import tg.api.MessageSearchPage;
 import tg.api.OutgoingMessage;
 import tg.api.PageMerge;
 import tg.api.Peer;
+import tg.api.Poll;
+import tg.api.PollUpdate;
 import tg.api.ReadState;
 import tg.api.ReactionUpdate;
 import tg.api.ReactionCatalog;
@@ -77,6 +79,7 @@ import tg.ui.SettingsScreen;
 import tg.ui.TextScreen;
 import tg.ui.TopicListScreen;
 import tg.ui.PhotoScreen;
+import tg.ui.PollScreen;
 import tg.ui.ImageScaler;
 import tg.ui.JpegDecoder;
 import tg.ui.ReactionScreen;
@@ -169,6 +172,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             new Command("Select", Command.ITEM, 1);
     private final Command cmdReactionUp = new Command("Up", Command.SCREEN, 2);
     private final Command cmdReactionDown = new Command("Down", Command.SCREEN, 3);
+    private final Command cmdPoll = new Command("Poll", Command.SCREEN, 1);
+    private final Command cmdSelectPoll = new Command("Select", Command.ITEM, 1);
+    private final Command cmdVote = new Command("Vote", Command.SCREEN, 1);
+    private final Command cmdPollUp = new Command("Up", Command.SCREEN, 2);
+    private final Command cmdPollDown = new Command("Down", Command.SCREEN, 3);
     private final Command cmdRetryPhoto = new Command("Retry", Command.SCREEN, 1);
     private final Command cmdZoomPhoto = new Command("Zoom", Command.SCREEN, 1);
     private final Command cmdOlder = new Command("Older", Command.SCREEN, 4);
@@ -308,9 +316,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
     private boolean editCommandVisible;
     private boolean commentsCommandVisible;
     private boolean revealSpoilerCommandVisible;
+    private boolean pollCommandVisible;
     private TextBox composeBox;
     private List outboxList;
     private ReactionScreen reactionScreen;
+    private PollScreen pollScreen;
+    private int pollMessageId;
+    private boolean pollVoteCommandVisible;
     private TextScreen reactionActorsScreen;
     private int reactionMessageId;
     private Peer reactionActorsPeer;
@@ -1144,6 +1156,22 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             reactionScreen.moveSelection(1);
         }
+        else if (c == cmdSelectPoll && d == pollScreen)
+        {
+            pollScreen.activateSelected();
+        }
+        else if (c == cmdPollUp && d == pollScreen)
+        {
+            pollScreen.moveSelection(-1);
+        }
+        else if (c == cmdPollDown && d == pollScreen)
+        {
+            pollScreen.moveSelection(1);
+        }
+        else if (c == cmdVote && d == pollScreen)
+        {
+            sendPollVote();
+        }
         else if (c == cmdFindChat)
         {
             showSearchBox(d == forwardList);
@@ -1274,6 +1302,10 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         else if (c == cmdReactions && d == chatScreen)
         {
             showReactionPalette(chatScreen.focusedMessageId());
+        }
+        else if (c == cmdPoll && d == chatScreen)
+        {
+            showPoll(chatScreen.focusedMessageId());
         }
         else if (c == cmdRetryPhoto && d == photoScreen)
         {
@@ -4206,6 +4238,12 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
                     profilePhoto = false;
                     openPhoto(message);
                 }
+                else if (message != null && message.media != null
+                        && message.media.kind == Media.POLL
+                        && message.media.poll != null)
+                {
+                    showPoll(messageId);
+                }
                 else { showReactionPalette(messageId); }
             }
         });
@@ -4241,9 +4279,11 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             editCommandVisible = false;
             commentsCommandVisible = false;
             revealSpoilerCommandVisible = false;
+            pollCommandVisible = false;
             screen.removeCommand(cmdEditMessage);
             screen.removeCommand(cmdOpenComments);
             screen.removeCommand(cmdRevealSpoiler);
+            screen.removeCommand(cmdPoll);
         }
         Message selected = null;
         int id = screen.focusedMessageId();
@@ -4278,6 +4318,16 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             if (reveal) { screen.addCommand(cmdRevealSpoiler); }
             else { screen.removeCommand(cmdRevealSpoiler); }
             revealSpoilerCommandVisible = reveal;
+        }
+        boolean poll = selected != null && selected.id > 0
+                && selected.media != null
+                && selected.media.kind == Media.POLL
+                && selected.media.poll != null;
+        if (poll != pollCommandVisible)
+        {
+            if (poll) { screen.addCommand(cmdPoll); }
+            else { screen.removeCommand(cmdPoll); }
+            pollCommandVisible = poll;
         }
     }
 
@@ -5257,6 +5307,13 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
         {
             if (!applyReactionUpdate(batch.reactions[i])) { refresh = true; }
         }
+        for (int i = 0; i < batch.polls.length; i++)
+        {
+            // Poll updates can legally omit peer/msg_id and name only their
+            // globally unique poll_id. A poll outside the retained window is
+            // therefore an ordinary miss, not a reason to snapshot-refresh.
+            applyPollUpdate(batch.polls[i]);
+        }
 
         if (dialogList != null && display.getCurrent() == dialogList)
         {
@@ -5592,6 +5649,46 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             }
         }
         return false;
+    }
+
+    /** Merge a partial updateMessagePoll into the retained open transcript. */
+    private void applyPollUpdate(PollUpdate update)
+    {
+        if (update == null || update.poll == null) { return; }
+        if (update.peer != null && !samePeer(openPeer, update.peer)) { return; }
+        for (int i = 0; i < openHistory.length; i++)
+        {
+            Message message = openHistory[i];
+            if (message == null || message.media == null
+                    || message.media.poll == null)
+            {
+                continue;
+            }
+            if (update.messageId > 0 && message.id != update.messageId)
+            {
+                continue;
+            }
+            Poll current = message.media.poll;
+            if (update.pollId != 0 && current.id != update.pollId)
+            {
+                continue;
+            }
+            current.merge(update.poll);
+            if (pollScreen != null && navigation.current() == pollScreen
+                    && pollMessageId == message.id)
+            {
+                pollScreen.setPoll(current);
+                updatePollVoteCommand();
+            }
+            // While the picker is on top the chat Canvas is not repainted by
+            // applyUpdateBatch's visible-screen branch. Reflow it now so Back
+            // reveals the authoritative numbers immediately.
+            if (chatScreen != null && display.getCurrent() != chatScreen)
+            {
+                chatScreen.setMessages(openHistory);
+            }
+            return;
+        }
     }
 
     private void applyKnownReadState(Message[] messages, Peer peer)
@@ -6704,6 +6801,168 @@ public class TgMidlet extends MIDlet implements CommandListener, MemoryRelief
             showRefused("Profile not saved", "Press Save again in a moment.",
                     editProfileForm);
         }
+    }
+
+    private void showPoll(int messageId)
+    {
+        Message message = findOpenMessage(messageId);
+        if (message == null || message.media == null
+                || message.media.poll == null)
+        {
+            showAlert("This poll is no longer in the loaded history.",
+                    AlertType.INFO, chatScreen);
+            return;
+        }
+        pollMessageId = messageId;
+        pollScreen = new PollScreen(currentTheme());
+        pollScreen.addCommand(cmdSelectPoll);
+        pollScreen.addCommand(cmdPollUp);
+        pollScreen.addCommand(cmdPollDown);
+        pollScreen.addCommand(cmdBack);
+        pollScreen.setCommandListener(this);
+        pollScreen.setSelectionListener(new PollScreen.SelectionListener()
+        {
+            public void onSelectionChanged()
+            {
+                updatePollVoteCommand();
+            }
+        });
+        pollVoteCommandVisible = false;
+        pollScreen.setPoll(message.media.poll);
+        updatePollVoteCommand();
+        pushScreen(pollScreen);
+    }
+
+    private void updatePollVoteCommand()
+    {
+        if (pollScreen == null) { return; }
+        boolean visible = pollScreen.canSubmit();
+        if (visible == pollVoteCommandVisible) { return; }
+        if (visible) { pollScreen.addCommand(cmdVote); }
+        else { pollScreen.removeCommand(cmdVote); }
+        pollVoteCommandVisible = visible;
+    }
+
+    private void sendPollVote()
+    {
+        final PollScreen picker = pollScreen;
+        final Message message = findOpenMessage(pollMessageId);
+        final Peer peer = openPeer;
+        if (picker == null || message == null || peer == null
+                || message.media == null || message.media.poll == null)
+        {
+            Displayable back = picker == null
+                    ? (Displayable) chatScreen : (Displayable) picker;
+            showAlert("This poll is no longer available.", AlertType.INFO,
+                    back);
+            return;
+        }
+        Poll poll = message.media.poll;
+        if (poll.closed)
+        {
+            showAlert("This poll is closed.", AlertType.INFO, picker);
+            return;
+        }
+        if (poll.revotingDisabled && poll.hasVote())
+        {
+            showAlert("This poll does not allow changing your vote.",
+                    AlertType.INFO, picker);
+            return;
+        }
+        final byte[][] options = picker.selectedTokens();
+        if (options.length == 0)
+        {
+            showAlert("Choose at least one option.", AlertType.INFO, picker);
+            return;
+        }
+        picker.setStatus("voting...");
+        final int messageId = message.id;
+        final AsyncScope.Token asked = scope.capture(peer, openThreadId());
+        boolean submitted = worker.submit(new Worker.Task()
+        {
+            public String name() { return "messages.sendVote"; }
+            public Object run() throws Exception
+            {
+                telegram.sendVote(peer, messageId, options);
+                return null;
+            }
+        }, new Worker.Callback()
+        {
+            public void onSuccess(Object ignored)
+            {
+                if (!asked.sameChat(openPeer, openThreadId()))
+                {
+                    dropStale("messages.sendVote");
+                    return;
+                }
+                chatScreen.setStatus(connectionLabel + "/" + updateLabel);
+            }
+
+            public void onFailure(Throwable error)
+            {
+                if (!asked.sameChat(openPeer, openThreadId()))
+                {
+                    dropStale("messages.sendVote");
+                    return;
+                }
+                chatScreen.setStatus("vote failed");
+                String detail = shortMessage(error);
+                boolean stalePoll = containsError(detail,
+                        "MESSAGE_POLL_CLOSED")
+                        || containsError(detail, "OPTION_INVALID");
+                if (stalePoll) { scheduleSnapshotRefresh(); }
+                String friendly = pollFailureMessage(detail);
+                if (friendly != null)
+                {
+                    showAlert(friendly, AlertType.ERROR, chatScreen);
+                }
+                else
+                {
+                    showAlertThen("Vote failed", error, chatScreen);
+                }
+            }
+        });
+        if (!submitted)
+        {
+            picker.setStatus("");
+            showRefused("Vote not sent",
+                    "Press Vote again in a moment.", picker);
+            return;
+        }
+        // No local result is changed here. The picker selection is transient;
+        // the chat remains at its server state until Updates are accepted.
+        restoreScreen(navigation.pop());
+        chatScreen.setStatus("voting...");
+    }
+
+    private static boolean containsError(String detail, String type)
+    {
+        return detail != null && detail.indexOf(type) >= 0;
+    }
+
+    private static String pollFailureMessage(String detail)
+    {
+        if (containsError(detail, "MESSAGE_POLL_CLOSED"))
+        {
+            return "This poll has closed. Its latest state is being loaded.";
+        }
+        if (containsError(detail, "OPTION_INVALID"))
+        {
+            return "That option is no longer valid. The poll is being refreshed.";
+        }
+        if (containsError(detail, "REVOTE_NOT_ALLOWED"))
+        {
+            return "This poll does not allow changing your vote.";
+        }
+        if (containsError(detail, "POLL_MEMBER_RESTRICTED"))
+        {
+            return "Only eligible members of this chat can vote in this poll.";
+        }
+        if (containsError(detail, "POLL_COUNTRY_RESTRICTED"))
+        {
+            return "Voting in this poll is not available for this account's country.";
+        }
+        return null;
     }
 
     private void showReactionPalette(int messageId)
